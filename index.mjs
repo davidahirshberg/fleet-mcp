@@ -68,7 +68,7 @@ function unblockDependents(state, completedId) {
       if (!isBlocked(state, t)) {
         // All deps done — send the deferred message and activate
         if (t.deferredMessage) {
-          try { sendMessage(t.win, `[You are agent in kitty window ${t.win}.] ${t.deferredMessage}`); } catch { }
+          try { sendMessage(t.win, `[You are agent in kitty window ${t.win}. Use chat() to report progress, results, or issues — don't wait to be checked on.] ${t.deferredMessage}`); } catch { }
           delete t.deferredMessage;
         }
         t.status = 'pending';
@@ -120,10 +120,44 @@ function windowTail(output, n = 40) {
   return output.split('\n').slice(-n).join('\n');
 }
 
+function sendEnter(win) {
+  const sock = execSync(`ls -t /tmp/kitty-sock-* 2>/dev/null | head -1`, { encoding: 'utf8' }).trim();
+  if (sock) execSync(`kitty @ --to "unix:${sock}" send-key --match id:${win} enter`, { timeout: 5000 });
+}
+
+function hasUnsubmittedText(output) {
+  // Detect text sitting at the ❯ prompt without having been submitted.
+  // After a successful send+enter, the agent starts working (no ❯ line visible)
+  // or shows response output. If ❯ has text after it, enter didn't fire.
+  const lines = output.split('\n').filter(l => l.trim());
+  const chromePattern = /^[\s─━═\-]+$|^\s*(\?|esc |[0-9]+ bash|\u2193|Context left|Tip:|ctrl\+)/;
+  const filtered = lines.filter(l => !chromePattern.test(l));
+  if (!filtered.length) return false;
+  const last = filtered[filtered.length - 1];
+  // ❯ with text after it = unsubmitted input (but not UI messages like "Press up to edit")
+  if (/Press up to edit|queued messages/.test(last)) return false;
+  return /^[❯>]\s+\S/.test(last);
+}
+
 function sendMessage(win, message) {
   // agent-ask accepts win + message; use shell so message can contain special chars
   const escaped = message.replace(/'/g, `'\\''`);
   execSync(`${BIN}/agent-ask ${win} '${escaped}'`, { timeout: 15000 });
+
+  // Verify the enter went through — agent-ask's send-text + send-key is racy.
+  // Check for text sitting at the ❯ prompt (sent but not submitted).
+  execSync('sleep 0.5');
+  const result = readWindow(win);
+  if (result.ok && hasUnsubmittedText(result.text)) {
+    // Text at prompt — enter didn't fire. Retry.
+    sendEnter(win);
+    execSync('sleep 0.5');
+    const retry = readWindow(win);
+    if (retry.ok && hasUnsubmittedText(retry.text)) {
+      // Still stuck after retry
+      throw new Error(`Message sent to win ${win} but enter failed after retry — text sitting at prompt`);
+    }
+  }
 }
 
 // ---- MCP server ----
@@ -250,7 +284,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!blocked) {
       // Send immediately, prefixed with window identity
       try {
-        sendMessage(win, `[You are agent in kitty window ${win}.] ${message}`);
+        sendMessage(win, `[You are agent in kitty window ${win}. Use chat() to report progress, results, or issues — don't wait to be checked on.] ${message}`);
       } catch (e) {
         return { content: [{ type: 'text', text: `Failed to send message to win ${win}: ${e.message}` }], isError: true };
       }
@@ -335,8 +369,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- wait_for_any ----
   if (name === 'wait_for_any') {
-    const timeoutMs = (args.timeout ?? 1800) * 1000;
-    const intervalMs = (args.interval ?? 60) * 1000;
+    const maxTimeout = 600; // 10 min cap — don't let manager zone out in a wait loop
+    const timeoutMs = Math.min(args.timeout ?? 600, maxTimeout) * 1000;
+    const intervalMs = Math.min(args.interval ?? 60, 120) * 1000; // cap interval at 2 min
     const deadline = Date.now() + timeoutMs;
 
     while (Date.now() < deadline) {
@@ -479,10 +514,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
       taskStr = ` [${task.id}: ${task.description} | ${age}m ago${depInfo}]`;
     }
+
+    // Nudge about other agents to fight tunnel vision
+    const others = state.tasks.filter(t => t.status !== 'done' && t.win !== win);
+    const otherIdle = others.filter(t => t.status === 'idle');
+    const otherStale = others.filter(t => t.status === 'pending' && (Date.now() - new Date(t.last_checked)) > 600000);
+    let nudge = '';
+    if (otherIdle.length > 0) {
+      nudge += `\n\n⚠ ${otherIdle.length} other agent(s) idle: ${otherIdle.map(t => `win ${t.win} (${t.description})`).join(', ')}. Check on them before diving deeper here.`;
+    }
+    if (otherStale.length > 0) {
+      nudge += `\n\n⚠ ${otherStale.length} agent(s) not checked in 10+ min: ${otherStale.map(t => `win ${t.win} (${t.description})`).join(', ')}.`;
+    }
+
     return {
       content: [{
         type: 'text',
-        text: `win ${win} ${statusStr}${taskStr}:\n${windowTail(result.text)}`,
+        text: `win ${win} ${statusStr}${taskStr}:\n${windowTail(result.text)}${nudge}`,
       }],
     };
   }
@@ -512,7 +560,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (others.length > 0) {
       othersInfo = '\n\nOther active tasks:\n' + others.map(t => `  win ${t.win} | ${t.status} | ${t.description}`).join('\n');
     }
-    return { content: [{ type: 'text', text: `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago${depInfo}${othersInfo}` }] };
+    return { content: [{ type: 'text', text: `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago${depInfo}${othersInfo}\n\nReminder: Use chat() to report progress, results, issues, or questions — don't wait to be checked on.` }] };
   }
 
   // ---- chat ----
@@ -531,7 +579,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (e) {
       return { content: [{ type: 'text', text: `Failed to send to win ${win}: ${e.message}` }], isError: true };
     }
-    return { content: [{ type: 'text', text: `Sent to win ${win}.` }] };
+
+    // Warn manager if chat() looks like it should be delegate()
+    const state = loadState();
+    let warning = '';
+    if (callerWin && state.manager_win === callerWin && message.length > 200) {
+      warning = '\n\n⚠ This message is long (>200 chars). If you\'re assigning work, use delegate() instead — chat() bypasses task tracking, so keepalive and task_list won\'t know about it.';
+    }
+
+    return { content: [{ type: 'text', text: `Sent to win ${win}.${warning}` }] };
   }
 
   // ---- register_manager ----
@@ -553,7 +609,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
     }
 
-    return { content: [{ type: 'text', text: `Registered win ${win} as manager. Keepalive watcher running.` }] };
+    return { content: [{ type: 'text', text: `Registered win ${win} as manager. Keepalive watcher running.\n\nRead ~/.claude/reference/managing-agents.md before proceeding.` }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

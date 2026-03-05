@@ -82,7 +82,7 @@ print('|'.join(parts))
   fi
 
   # Format and send
-  msg="Status: $(echo "$reason" | tr '|' '. '). Anything to act on, or just waiting? — keepalive watcher"
+  msg="Kick: $(echo "$reason" | tr '|' '. '). Run task_list() and check on your agents — read their output, see if they've flagged issues or questions. Don't just wait, look at what they're telling you. — keepalive watcher"
 
   "$BIN/agent-ask" "$manager_win" "$msg" >/dev/null 2>&1
   LAST_KICK=$now_epoch
