@@ -139,7 +139,7 @@ Status flow: `blocked` → `pending` → `working` (acknowledged) → `idle`/`do
 
 ## State File
 
-`~/.claude/agent-tasks.json` — persists across sessions and compaction.
+`~/.claude/agent-tasks.json` — persists across sessions and compaction. Auto-prunes on save: done tasks older than 24h and read messages older than 1h are dropped. History lives in agent JONSLs.
 
 ## Keepalive Watcher
 
