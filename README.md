@@ -93,6 +93,10 @@ A background process (auto-started by `register_manager`) polls every 45 seconds
 
 Task state persists in `~/.claude/agent-tasks.json`. Survives context compaction and session restarts.
 
+## Provenance
+
+This was written almost entirely by Claude (Opus), with human direction on design and behavior. The code, docs, and commit messages are AI-generated.
+
 ## License
 
 MIT
