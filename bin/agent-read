@@ -1,0 +1,16 @@
+#!/bin/bash
+# Usage: agent-read <window-id|pattern>
+# Matches by window ID first, then falls back to title pattern
+SOCK=$(ls -t /tmp/kitty-sock-* 2>/dev/null | head -1)
+[ -z "$SOCK" ] && { echo "no kitty socket found"; exit 1; }
+
+pattern="$1"
+
+match=""
+if [[ "$pattern" =~ ^[0-9]+$ ]]; then
+    match="id:$pattern"
+else
+    match="title:$pattern"
+fi
+
+kitty @ --to "unix:$SOCK" get-text --match "$match" 2>/dev/null || { echo "no window found matching: $pattern" >&2; exit 1; }

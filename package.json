@@ -1,0 +1,13 @@
+{
+  "name": "agent-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for managing delegated agent tasks",
+  "type": "module",
+  "main": "index.mjs",
+  "scripts": {
+    "start": "node index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0"
+  }
+}

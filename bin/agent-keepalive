@@ -1,0 +1,98 @@
+#!/bin/bash
+# agent-keepalive — Background watcher that kicks the manager when agents need attention.
+# Usage: agent-keepalive [--interval SECONDS] [--cooldown SECONDS]
+#
+# Polls agent state. When there's pending/idle work or cluster jobs running,
+# kicks the registered manager window (not the workers — the manager has context
+# to decide what to assign where).
+
+BIN="$(cd "$(dirname "$0")" && pwd)"
+INTERVAL=45          # poll interval (seconds)
+COOLDOWN=300         # min seconds between kicks
+STATE_FILE="$HOME/.claude/agent-tasks.json"
+LOG_FILE="$HOME/.claude/keepalive.log"
+LAST_KICK=0
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --interval) INTERVAL="$2"; shift 2 ;;
+    --cooldown) COOLDOWN="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+log() {
+  echo "$(date '+%Y-%m-%d %H:%M:%S') $*" >> "$LOG_FILE"
+}
+
+log "keepalive started (interval=${INTERVAL}s cooldown=${COOLDOWN}s)"
+
+while true; do
+  sleep "$INTERVAL"
+
+  # Read state file
+  [[ -f "$STATE_FILE" ]] || continue
+  tasks=$(cat "$STATE_FILE" 2>/dev/null) || continue
+
+  # Get manager window
+  manager_win=$(echo "$tasks" | python3 -c "
+import json, sys
+state = json.load(sys.stdin)
+print(state.get('manager_win', ''))
+" 2>/dev/null)
+
+  [[ -z "$manager_win" ]] && continue
+
+  # Cooldown check
+  now_epoch=$(date +%s)
+  elapsed=$((now_epoch - LAST_KICK))
+  [[ $elapsed -lt $COOLDOWN ]] && continue
+
+  # Check what needs attention
+  summary=$(echo "$tasks" | python3 -c "
+import json, sys
+state = json.load(sys.stdin)
+tasks = state.get('tasks', [])
+pending = sum(1 for t in tasks if t['status'] == 'pending')
+idle = sum(1 for t in tasks if t['status'] == 'idle')
+blocked = sum(1 for t in tasks if t['status'] == 'blocked')
+parts = []
+if idle > 0: parts.append(f'{idle} idle agent(s) awaiting review')
+if pending > 0: parts.append(f'{pending} pending task(s)')
+if blocked > 0: parts.append(f'{blocked} blocked task(s)')
+print('|'.join(parts))
+" 2>/dev/null)
+
+  cluster_jobs=0
+  cluster_jobs=$(ssh qtm "squeue -u skip -h 2>/dev/null" 2>/dev/null | wc -l | tr -d ' ') || cluster_jobs=0
+
+  # Build reason string
+  reason=""
+  [[ -n "$summary" ]] && reason="$summary"
+  [[ "$cluster_jobs" -gt 0 ]] && {
+    [[ -n "$reason" ]] && reason="$reason|"
+    reason="${reason}${cluster_jobs} cluster job(s) running"
+  }
+
+  [[ -z "$reason" ]] && continue
+
+  # Check if manager is idle
+  output=$("$BIN/agent-read" "$manager_win" 2>/dev/null) || continue
+  [[ -z "$output" ]] && continue
+
+  if echo "$output" | grep -q "esc to interrupt"; then
+    continue  # manager is working
+  fi
+
+  last_line=$(echo "$output" | grep -v '^[[:space:]─━═-]*$' | grep -v '^\s*\(\?\|esc \|[0-9]* bash\|⬇\|Context left\|Tip:\)' | tail -1)
+  if ! echo "$last_line" | grep -qE '^[❯>][[:space:]]*$'; then
+    continue  # not idle
+  fi
+
+  # Format and send
+  msg="Status: $(echo "$reason" | tr '|' '. '). Anything to act on, or just waiting? — keepalive watcher"
+
+  "$BIN/agent-ask" "$manager_win" "$msg" >/dev/null 2>&1
+  LAST_KICK=$now_epoch
+  log "kicked manager (win $manager_win): $msg"
+done

@@ -1,0 +1,24 @@
+#!/bin/bash
+# Usage: agent-ask <window-id|pattern> <message>
+# Matches by window ID first, then falls back to title pattern
+SOCK=$(ls -t /tmp/kitty-sock-* 2>/dev/null | head -1)
+[ -z "$SOCK" ] && { echo "no kitty socket found" >&2; exit 1; }
+
+pattern="$1"
+shift
+message="$*"
+
+# Try matching by window id first, then by title
+match=""
+if [[ "$pattern" =~ ^[0-9]+$ ]]; then
+    match="id:$pattern"
+else
+    match="title:$pattern"
+fi
+
+# Escape backslashes so kitty's Python escape interpreter doesn't mangle \n etc.
+escaped=$(printf '%s' "$message" | sed 's/\\/\\\\/g')
+kitty @ --to "unix:$SOCK" send-text --match "$match" "$escaped" 2>/dev/null || { echo "no window found matching: $pattern" >&2; exit 1; }
+sleep 0.2
+kitty @ --to "unix:$SOCK" send-key --match "$match" enter 2>/dev/null
+echo "sent to $match"
