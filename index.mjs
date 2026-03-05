@@ -49,6 +49,18 @@ function loadState() {
 function saveState(state) {
   if (!state.messages) state.messages = [];
   if (!state.agents) state.agents = [];
+
+  // Prune: drop done tasks older than 24h, read messages older than 1h
+  const now_ = Date.now();
+  state.tasks = state.tasks.filter(t => {
+    if (t.status !== 'done') return true;
+    return (now_ - new Date(t.completed_at || t.delegated_at).getTime()) < 86400000;
+  });
+  state.messages = state.messages.filter(m => {
+    if (!m.read) return true;
+    return (now_ - new Date(m.timestamp).getTime()) < 3600000;
+  });
+
   fs.mkdirSync(`${os.homedir()}/.claude`, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
