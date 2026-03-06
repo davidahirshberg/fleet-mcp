@@ -82,8 +82,8 @@ print('|'.join(parts))
     continue  # manager is working
   fi
 
-  last_line=$(echo "$output" | grep -v '^[[:space:]─━═-]*$' | grep -v '^\s*\(\?\|esc \|[0-9]* bash\|⬇\|Context left\|Tip:\)' | tail -1)
-  if ! echo "$last_line" | grep -qE '^[❯>][[:space:]]*$'; then
+  prompt_line=$(echo "$output" | grep -v '^[[:space:]]*$' | grep -B1 '^[[:space:]─━═-]*$' | grep -v '^[[:space:]─━═-]*$' | tail -1)
+  if ! echo "$prompt_line" | grep -qE '^[[:space:]]*[❯>][[:space:]📬]*$'; then
     continue  # not idle
   fi
 
