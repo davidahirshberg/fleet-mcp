@@ -19,9 +19,10 @@ fi
 kitty @ --to "unix:$SOCK" send-key --match "$match" escape 2>/dev/null || { echo "no window found matching: $pattern" >&2; exit 1; }
 sleep 0.1
 
-# Check if prompt is clear (last non-content line is just ❯ or >, ignoring Claude chrome)
-last_line=$(kitty @ --to "unix:$SOCK" get-text --match "$match" 2>/dev/null | grep -v '^[[:space:]]*$' | grep -v '^[[:space:]─━═\-]*$' | grep -v '^\s*\(\?\|esc \|[0-9]* bash\|⬇\|Context left\|Tip:\)' | tail -1)
-if [[ "$last_line" =~ ^[[:space:]]*[❯\>][[:space:]📬]*$ ]]; then
+# Check if prompt is idle: look for ❯ + only mailboxes/whitespace above a separator line
+screen=$(kitty @ --to "unix:$SOCK" get-text --match "$match" 2>/dev/null)
+prompt_line=$(echo "$screen" | grep -v '^[[:space:]]*$' | grep -B1 '^[[:space:]─━═-]*$' | grep -v '^[[:space:]─━═-]*$' | tail -1)
+if [[ "$prompt_line" =~ ^[[:space:]]*[❯\>][[:space:]📬]*$ ]]; then
     # Idle — safe to send 📬 + Enter so the agent processes it immediately
     kitty @ --to "unix:$SOCK" send-text --match "$match" '📬\r' 2>/dev/null
     echo "kicked $match"
