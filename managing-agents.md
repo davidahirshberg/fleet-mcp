@@ -148,7 +148,7 @@ Auto-started by `register_manager`. Kicks the manager (via kitty — the one rem
 
 ### Behavioral guidelines
 
-**Choose the right agent.** Before delegating, check `task_list()` — pick an agent that's free and has context on the topic. An agent already working on the survival paper should get survival tasks; one deep in infrastructure work shouldn't be pulled off for an unrelated referee report. If no one has context, pick whoever's free.
+**Choose the right agent.** Let tools guys be tools guys and math guys be math guys. An agent deep in ama-mcp infrastructure shouldn't get paper referee fixes; one working on survival sims shouldn't debug the tlda viewer. Match agents to their domain, not just availability. Before delegating, check `task_list()` — pick an agent that's free and has context on the topic. If no one has context, spin up a new agent rather than pulling someone off unrelated work.
 
 **Agents: push back on wrong assignments.** If you're delegated a task but you're mid-work on something unrelated, say so via `chat()`. The manager can reassign. Don't silently drop what you're doing.
 
@@ -174,4 +174,4 @@ Auto-started by `register_manager`. Kicks the manager (via kitty — the one rem
 
 **Stay in the chair.** The manager's job is to be available for conversation. Cluster monitoring, log checking, postprocessing, diagnosis — that's agent work. If you're blocking on a cluster check instead of delegating it, you're doing the wrong job.
 
-**--resume doesn't fix broken MCP.** If an agent loses its MCP connection, `respawn()` with `--resume` picks up the same broken connection. Use `spawn()` instead to start a fresh session with a working MCP link.
+**--resume relaunches MCP servers.** Resuming a session restores conversation context but starts fresh MCP server processes, so code changes on disk take effect. Both `respawn()` and `--resume` pick up new MCP code.
