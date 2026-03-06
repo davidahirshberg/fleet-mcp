@@ -87,7 +87,14 @@ print('|'.join(parts))
     continue  # not idle
   fi
 
-  # Kick the manager (agent-ask sends 📬 + Enter)
+  # Write reason to state file as a message, then kick
+  python3 -c "
+import json, sys, datetime
+with open('$STATE_FILE', 'r') as f: state = json.load(f)
+msg = {'to': state.get('manager'), 'from': 'keepalive', 'text': sys.argv[1], 'timestamp': datetime.datetime.now().isoformat(), 'read': False}
+state.setdefault('messages', []).append(msg)
+with open('$STATE_FILE', 'w') as f: json.dump(state, f, indent=2)
+" "$(echo "$reason" | tr '|' '. ')" 2>/dev/null
   "$BIN/agent-ask" "$manager_win" >/dev/null 2>&1
   LAST_KICK=$now_epoch
   log "kicked manager (win $manager_win): $reason"
