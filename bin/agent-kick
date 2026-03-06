@@ -18,6 +18,15 @@ fi
 # ESC interrupts blocking tool calls (wait_for_any, wait_for_task)
 kitty @ --to "unix:$SOCK" send-key --match "$match" escape 2>/dev/null || { echo "no window found matching: $pattern" >&2; exit 1; }
 sleep 0.1
-# 📬 + Enter — agent sees it as input, calls my_task()
-kitty @ --to "unix:$SOCK" send-text --match "$match" '📬\r' 2>/dev/null
-echo "kicked $match"
+
+# Check if prompt is clear (last non-blank line is just ❯ or >)
+last_line=$(kitty @ --to "unix:$SOCK" get-text --match "$match" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1)
+if [[ "$last_line" =~ ^[[:space:]]*[❯\>][[:space:]]*$ ]]; then
+    # Idle — safe to send 📬 + Enter so the agent processes it immediately
+    kitty @ --to "unix:$SOCK" send-text --match "$match" '📬\r' 2>/dev/null
+    echo "kicked $match"
+else
+    # Someone typing or agent working — just inject 📬 without submitting
+    kitty @ --to "unix:$SOCK" send-text --match "$match" '📬' 2>/dev/null
+    echo "nudged $match"
+fi
