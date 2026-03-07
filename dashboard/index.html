@@ -634,6 +634,54 @@
   .term-chat-msg { color: var(--green); border-left: 2px solid var(--green); padding-left: 8px; margin: 2px 0; }
   .term-tool-result { color: #b0b0c8; }
   .term-decision { color: var(--yellow); }
+  /* Fleet MCP call summaries */
+  .term-fleet {
+    color: #9370db;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(147,112,219,0.08);
+    display: inline-block;
+    margin: 1px 0;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .term-fleet:hover { background: rgba(147,112,219,0.14); }
+  .term-fleet::before { content: '▸ '; font-size: 9px; }
+  .term-fleet.expanded::before { content: '▾ '; }
+  .term-fleet.expanded + .term-fold-body { display: block; }
+  /* Fleet chat bubbles */
+  .term-bubble {
+    display: block;
+    margin: 3px 0;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-width: 85%;
+  }
+  .term-bubble-from {
+    font-size: 9px;
+    opacity: 0.5;
+    margin-bottom: 1px;
+  }
+  .term-bubble-in {
+    background: rgba(122,184,160,0.12);
+    border-left: 2px solid var(--green);
+    color: var(--text);
+  }
+  .term-bubble-out {
+    background: rgba(147,112,219,0.12);
+    border-left: 2px solid #9370db;
+    color: var(--text);
+  }
+  /* Mini chat log from my_task */
+  .term-minichat {
+    border-left: 2px solid rgba(147,112,219,0.3);
+    margin: 2px 0 2px 4px;
+    padding: 2px 0 2px 8px;
+  }
   .term-verbatim-btn {
     background: none;
     border: 1px solid var(--border);
@@ -2542,6 +2590,22 @@ function foldTerminalOutput(raw) {
       continue;
     }
 
+    // Detect fleet MCP tool calls (fleet - my_task, fleet - chat, etc.)
+    const fleetMatch = isFleetMcpCall(trimmed);
+    if (fleetMatch) {
+      const start = i;
+      i++;
+      // Consume result lines
+      const resultLines = [];
+      while (i < lines.length && isToolResultLine(lines[i], lines, i)) {
+        resultLines.push(lines[i]);
+        i++;
+      }
+      const fleetResult = parseFleetResult(fleetMatch, resultLines);
+      chunks.push(fleetResult);
+      continue;
+    }
+
     // Detect tool call sequences (Read, Edit, Grep, Glob, Write, Bash)
     if (isToolCallStart(trimmed)) {
       const start = i;
@@ -2580,6 +2644,161 @@ function foldTerminalOutput(raw) {
   }
 
   return renderChunks(chunks);
+}
+
+// --- Fleet MCP detection & parsing ---
+
+function isFleetMcpCall(line) {
+  // Match patterns like "⏺ fleet - my_task", "⏺ mcp__fleet__chat", "fleet - register", etc.
+  const m = line.match(/^[⏺●◆▶]?\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|unregister_manager|search_logs|label_agent)\b/i);
+  if (m) return m[1].toLowerCase();
+  // Also match "Tool: fleet - chat" or "Using: mcp__fleet__chat"
+  const m2 = line.match(/^(?:Tool|Using):\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|search_logs|label_agent)\b/i);
+  if (m2) return m2[1].toLowerCase();
+  return null;
+}
+
+function parseFleetResult(toolName, resultLines) {
+  const rawText = resultLines.map(l => l.trim()).join('\n').trim();
+  const allLines = resultLines;
+
+  switch (toolName) {
+    case 'register':
+    case 'register_manager': {
+      const isManager = /manager/i.test(rawText);
+      const label = isManager ? 'fleet: registered as manager' : 'fleet: registered';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'my_task': {
+      const messages = parseFleetMessages(rawText);
+      if (messages.length > 0) {
+        return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} message${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
+      }
+      const hasTask = /task|description|message/i.test(rawText) && rawText.length > 30;
+      const label = hasTask ? 'fleet: my_task — has task' : 'fleet: my_task → nothing new';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'chat': {
+      const toMatch = rawText.match(/(?:"to"|to)\s*[:=]\s*"?([^",}\n]+)/i);
+      const msgMatch = rawText.match(/(?:"(?:message|text)"|message|text)\s*[:=]\s*"([^"]{0,80})/i);
+      const to = toMatch ? toMatch[1].trim() : 'manager';
+      const preview = msgMatch ? msgMatch[1].substring(0, 50) : '';
+      const label = `fleet: chat → ${to}${preview ? ': "' + preview + (preview.length >= 50 ? '…' : '') + '"' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'delegate': {
+      const agentMatch = rawText.match(/(?:"agent"|agent)\s*[:=]\s*"?([^",}\n]+)/i);
+      const descMatch = rawText.match(/(?:"description"|description)\s*[:=]\s*"([^"]{0,60})/i);
+      const agent = agentMatch ? agentMatch[1].trim() : '?';
+      const desc = descMatch ? descMatch[1] : '';
+      const label = `fleet: delegate → ${agent}${desc ? ': "' + desc + '"' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'task_list': {
+      const agentCount = (rawText.match(/agent|registered/gi) || []).length;
+      const taskCount = (rawText.match(/"status"\s*:/gi) || []).length;
+      const label = `fleet: task_list — ${taskCount || '?'} task${taskCount !== 1 ? 's' : ''}, ${agentCount || '?'} agent${agentCount !== 1 ? 's' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'task_done': {
+      return { type: 'fleet', label: 'fleet: task_done ✓', lines: allLines };
+    }
+    case 'task_check': {
+      return { type: 'fleet', label: 'fleet: task_check (peek)', lines: allLines };
+    }
+    case 'wait_for_task': {
+      const hasResult = rawText.length > 20;
+      const label = hasResult ? 'fleet: wait_for_task — woke up' : 'fleet: wait_for_task (waiting…)';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'name_agent': {
+      const nameMatch = rawText.match(/(?:friendly_name|name)\s*[:=]\s*"?([^",}\n]+)/i);
+      const label = nameMatch ? `fleet: named agent "${nameMatch[1].trim()}"` : 'fleet: name_agent';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'search_logs': {
+      return { type: 'fleet', label: 'fleet: search_logs', lines: allLines };
+    }
+    default: {
+      return { type: 'fleet', label: `fleet: ${toolName}`, lines: allLines };
+    }
+  }
+}
+
+function parseFleetMessages(text) {
+  // Parse messages from my_task output — various formats:
+  // JSON arrays, "from: X\ntext: Y" blocks, or "X said: Y" patterns
+  const messages = [];
+
+  // Try JSON array of messages
+  try {
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(arr)) {
+        for (const msg of arr) {
+          if (msg.text || msg.message) {
+            messages.push({
+              from: msg.from || msg.sender || 'unknown',
+              text: unescapeFleetText(msg.text || msg.message),
+              direction: msg.from === 'self' ? 'out' : 'in'
+            });
+          }
+        }
+        if (messages.length > 0) return messages;
+      }
+    }
+  } catch (e) { /* not JSON */ }
+
+  // Try line-by-line "from: X" / "text: Y" blocks
+  const lines = text.split('\n');
+  let currentFrom = null;
+  for (const line of lines) {
+    const fromMatch = line.match(/^\s*(?:"?from"?\s*[:=]|From:)\s*"?([^",}\n]+)/i);
+    if (fromMatch) { currentFrom = fromMatch[1].trim(); continue; }
+    const textMatch = line.match(/^\s*(?:"?text"?\s*[:=]|Message:)\s*"?(.*)/i);
+    if (textMatch && currentFrom) {
+      messages.push({ from: currentFrom, text: unescapeFleetText(textMatch[1].replace(/"$/, '')), direction: 'in' });
+      currentFrom = null;
+    }
+  }
+  if (messages.length > 0) return messages;
+
+  // Try "agent_name: message text" or "[agent_name] message text"
+  for (const line of lines) {
+    const chatMatch = line.match(/^\s*(?:\[([^\]]+)\]|([a-z0-9_-]+):)\s+(.+)/i);
+    if (chatMatch) {
+      const from = chatMatch[1] || chatMatch[2];
+      const txt = chatMatch[3];
+      if (from && txt && txt.length > 5) {
+        messages.push({ from, text: unescapeFleetText(txt), direction: 'in' });
+      }
+    }
+  }
+
+  return messages;
+}
+
+function unescapeFleetText(text) {
+  // Unescape JSON string escapes (\n, \t, \\, \")
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function renderFleetBubbles(messages) {
+  let html = '<span class="term-minichat">';
+  for (const msg of messages) {
+    const cls = msg.direction === 'out' ? 'term-bubble-out' : 'term-bubble-in';
+    html += `<span class="term-bubble ${cls}">`;
+    html += `<span class="term-bubble-from">${escHtml(String(msg.from))}</span> `;
+    html += escHtml(msg.text);
+    html += `</span>`;
+  }
+  html += '</span>';
+  return html;
 }
 
 function isKeepaliveNoise(line) {
@@ -2684,6 +2903,21 @@ function renderChunks(chunks) {
         const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
         html += `<span class="term-fold" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
         html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        break;
+      }
+      case 'fleet': {
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fleet" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        break;
+      }
+      case 'fleet-mytask': {
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fleet" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        if (chunk.messages && chunk.messages.length > 0) {
+          html += renderFleetBubbles(chunk.messages) + '\n';
+        }
         break;
       }
       case 'chat':
