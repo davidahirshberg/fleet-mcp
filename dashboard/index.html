@@ -1138,6 +1138,137 @@
   .type-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
   .type-refs { background: rgba(200,176,96,0.2); color: var(--yellow); }
 
+  /* File preview thumbnails */
+  .file-thumb {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 4px 0;
+    max-width: 360px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .file-thumb:hover { border-color: var(--cyan); }
+  .file-thumb-header {
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-thumb-body {
+    padding: 6px 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-height: 100px;
+    overflow: hidden;
+    position: relative;
+  }
+  .file-thumb-body::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 24px;
+    background: linear-gradient(transparent, #1a1a1a);
+    pointer-events: none;
+  }
+  .file-thumb-body pre {
+    margin: 0;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .file-thumb-body .md-preview h1,
+  .file-thumb-body .md-preview h2,
+  .file-thumb-body .md-preview h3 {
+    margin: 0 0 2px;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .file-thumb-body .md-preview strong { color: var(--fg); }
+  .file-thumb-body .md-preview code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 3px;
+    border-radius: 2px;
+    font-size: 10px;
+  }
+  .file-thumb-loading {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  /* File modal */
+  .file-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .file-modal {
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90vw;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .file-modal-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 13px;
+    color: var(--cyan);
+  }
+  .file-modal-close {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 18px;
+    padding: 0 4px;
+  }
+  .file-modal-close:hover { color: var(--fg); }
+  .file-modal-body {
+    padding: 12px 14px;
+    overflow: auto;
+    flex: 1;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .file-modal-body pre {
+    margin: 0;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .file-modal-body .md-preview h1 { font-size: 18px; margin: 0 0 6px; }
+  .file-modal-body .md-preview h2 { font-size: 15px; margin: 0 0 4px; }
+  .file-modal-body .md-preview h3 { font-size: 13px; margin: 0 0 4px; }
+  .file-modal-body .md-preview code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  .file-modal-body .md-preview pre {
+    background: rgba(255,255,255,0.05);
+    padding: 8px;
+    border-radius: 4px;
+    margin: 4px 0;
+  }
+
   /* Mobile: stack vertically */
   @media (max-width: 700px) {
     .split { flex-direction: column; }
@@ -1566,6 +1697,7 @@ function renderMarkdown(html) {
 }
 
 const IMG_EXTS = /\.(svg|png|jpe?g|gif|webp)$/i;
+const TEXT_EXTS = /\.(md|r|mjs|js|ts|py|tex|sh|css|json|yaml|yml|txt|csv|toml|html)$/i;
 
 function resolveFilePath(match, cwd) {
   if (match.startsWith('~/')) return '/Users/skip/' + match.slice(2);
@@ -1584,10 +1716,16 @@ function linkifyFiles(html, cwd) {
   function makeLink(match) {
     const abs = resolveFilePath(match, cwd);
     const isImg = IMG_EXTS.test(abs);
+    const isText = TEXT_EXTS.test(abs);
     const link = `<a href="zed://file${abs}" style="color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--cyan)">${match}</a>`;
     if (isImg) {
       const cacheBust = Math.floor(Date.now() / 10000); // refreshes every 10s
       return link + `<br><a href="zed://file${abs}"><img src="/api/file?path=${encodeURIComponent(abs)}&t=${cacheBust}" style="max-width:240px;max-height:160px;border-radius:4px;margin:4px 0;border:1px solid var(--border);display:block" onerror="this.style.display='none'"></a>`;
+    }
+    if (isText) {
+      const basename = abs.split('/').pop();
+      const thumbType = /\.md$/i.test(abs) ? 'md' : 'code';
+      return link + `<div class="file-thumb" data-path="${abs.replace(/"/g, '&quot;')}" data-type="${thumbType}" onclick="event.preventDefault();openFileModal('${abs.replace(/'/g, "\\'")}')"><div class="file-thumb-header">${esc(basename)}</div><div class="file-thumb-body"><span class="file-thumb-loading">loading...</span></div></div>`;
     }
     return link;
   }
@@ -1606,6 +1744,82 @@ function linkifyFiles(html, cwd) {
   // Restore placeholders
   html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => slots[i]);
   return html;
+}
+
+function renderSimpleMarkdown(text) {
+  let html = esc(text);
+  // Code blocks
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${code.replace(/^\n|\n$/g, '')}</code></pre>`);
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  // Bold/italic
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bullet lists
+  html = html.replace(/^[- ] (.+)$/gm, '<div style="padding-left:12px">- $1</div>');
+  return html;
+}
+
+async function loadFilePreviews() {
+  const thumbs = document.querySelectorAll('.file-thumb[data-path]:not([data-loaded])');
+  for (const thumb of thumbs) {
+    thumb.setAttribute('data-loaded', '1');
+    const filePath = thumb.dataset.path;
+    const type = thumb.dataset.type;
+    const body = thumb.querySelector('.file-thumb-body');
+    try {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&lines=6`);
+      if (!res.ok) { body.innerHTML = '<span class="file-thumb-loading">unavailable</span>'; continue; }
+      const data = await res.json();
+      if (type === 'md') {
+        body.innerHTML = `<div class="md-preview">${renderSimpleMarkdown(data.content)}</div>`;
+      } else {
+        body.innerHTML = `<pre>${esc(data.content)}</pre>`;
+      }
+    } catch {
+      body.innerHTML = '<span class="file-thumb-loading">unavailable</span>';
+    }
+  }
+}
+
+function openFileModal(filePath) {
+  const overlay = document.createElement('div');
+  overlay.className = 'file-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const basename = filePath.split('/').pop();
+  const isMd = /\.md$/i.test(filePath);
+  overlay.innerHTML = `
+    <div class="file-modal">
+      <div class="file-modal-header">
+        <span>${esc(basename)}</span>
+        <a href="zed://file${filePath}" style="color:var(--cyan);text-decoration:none;font-size:11px;margin-left:8px">open in editor</a>
+        <span style="flex:1"></span>
+        <span class="file-modal-close" onclick="this.closest('.file-modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="file-modal-body"><em style="color:var(--text-dim)">Loading...</em></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const closeOnEsc = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', closeOnEsc); } };
+  document.addEventListener('keydown', closeOnEsc);
+  fetch(`/api/file?path=${encodeURIComponent(filePath)}`)
+    .then(r => { if (!r.ok) throw new Error('not found'); return r.json(); })
+    .then(data => {
+      const body = overlay.querySelector('.file-modal-body');
+      if (isMd) {
+        body.innerHTML = `<div class="md-preview">${renderSimpleMarkdown(data.content)}</div>`;
+      } else {
+        body.innerHTML = `<pre>${esc(data.content)}</pre>`;
+      }
+    })
+    .catch(() => {
+      const body = overlay.querySelector('.file-modal-body');
+      if (body) body.innerHTML = '<em style="color:var(--orange)">Failed to load file</em>';
+    });
 }
 
 function linkifyAgents(text, state, fromId) {
@@ -1851,6 +2065,7 @@ function renderChat(state) {
   }).join('');
 
   chatLog.innerHTML = lines;
+  loadFilePreviews();
   if (shouldAutoScroll) scrollToBottom();
 }
 

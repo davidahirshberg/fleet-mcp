@@ -747,39 +747,70 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Serve local files (images only, for chat thumbnails)
+  // Serve local files (images + text for chat thumbnails)
   if (url.pathname === '/api/file' && req.method === 'GET') {
     const filePath = url.searchParams.get('path') || '';
-    // Resolve to absolute, normalize
     const resolved = path.resolve(filePath);
-    // Only serve image files
-    const ext = path.extname(resolved).toLowerCase();
-    const mimeTypes = {
-      '.svg': 'image/svg+xml',
-      '.png': 'image/png',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.gif': 'image/gif',
-      '.webp': 'image/webp',
-    };
-    const mime = mimeTypes[ext];
-    if (!mime) {
+
+    // Safe path check: must be under /tmp/, contain /scratch/, or be under server cwd
+    const serverCwd = process.cwd();
+    const isSafe = resolved.startsWith('/tmp/') ||
+                   resolved.includes('/scratch/') ||
+                   resolved.startsWith(serverCwd + '/') ||
+                   resolved.startsWith(os.homedir() + '/.claude/');
+    if (!isSafe) {
       res.writeHead(403, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'only image files allowed' }));
+      res.end(JSON.stringify({ error: 'path not allowed — must be under scratch/, /tmp/, or cwd' }));
       return;
     }
+
+    const ext = path.extname(resolved).toLowerCase();
+    const imageMimes = {
+      '.svg': 'image/svg+xml', '.png': 'image/png',
+      '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg',
+      '.gif': 'image/gif', '.webp': 'image/webp',
+    };
+    const textExts = new Set([
+      '.md', '.r', '.mjs', '.js', '.ts', '.py', '.tex', '.sh', '.css',
+      '.html', '.json', '.yaml', '.yml', '.txt', '.csv', '.toml', '.zsh',
+      '.bash', '.lua', '.rb', '.go', '.rs', '.c', '.h', '.cpp', '.hpp',
+    ]);
+
+    const isImage = !!imageMimes[ext];
+    const isText = textExts.has(ext);
+
+    if (!isImage && !isText) {
+      res.writeHead(403, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'unsupported file type' }));
+      return;
+    }
+
     try {
-      const data = fs.readFileSync(resolved);
-      // Sniff actual content type — uploaded SVGs may have .png extension
-      let actualMime = mime;
-      if (data[0] === 0x3C) {
-        const head = data.slice(0, 256).toString('utf8');
-        if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) {
-          actualMime = 'image/svg+xml';
+      if (isImage) {
+        const data = fs.readFileSync(resolved);
+        let mime = imageMimes[ext];
+        if (data[0] === 0x3C) {
+          const head = data.slice(0, 256).toString('utf8');
+          if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) {
+            mime = 'image/svg+xml';
+          }
         }
+        res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+        res.end(data);
+      } else {
+        const maxLines = parseInt(url.searchParams.get('lines') || '0');
+        let content = fs.readFileSync(resolved, 'utf8');
+        let truncated = false;
+        if (maxLines > 0) {
+          const allLines = content.split('\n');
+          if (allLines.length > maxLines) {
+            content = allLines.slice(0, maxLines).join('\n');
+            truncated = true;
+          }
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Cache-Control': 'no-cache' });
+        res.end(JSON.stringify({ content, truncated, path: resolved }));
       }
-      res.writeHead(200, { 'Content-Type': actualMime, 'Cache-Control': 'no-cache' });
-      res.end(data);
     } catch (e) {
       res.writeHead(404);
       res.end('not found');
