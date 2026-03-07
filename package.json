@@ -1,5 +1,5 @@
 {
-  "name": "ama-mcp",
+  "name": "fleet",
   "version": "1.0.0",
   "description": "MCP server for managing delegated agent tasks",
   "type": "module",

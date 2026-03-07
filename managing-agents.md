@@ -53,7 +53,7 @@ With `agent-read` and `agent-kick` available, a meta session can actively interv
 
 ## Managing Multiple Agents
 
-**Use the agent-manager MCP server.** All agents have the `agent-manager` MCP server (`~/work/ama-mcp/`), configured in `~/.claude/settings.json`. Communication is MCP-native: agents receive work via `wait_for_task()` and send messages via `chat()`. No kitty terminal scraping for normal communication. State persists in `~/.claude/agent-tasks.json` across compaction and session restarts.
+**Use the fleet MCP server.** All agents have the `fleet` MCP server (`~/work/fleet/`), configured in `~/.claude/mcp.json`. Communication is MCP-native: agents receive work via `wait_for_task()` and send messages via `chat()`. No kitty terminal scraping for normal communication. State persists in `~/.claude/agent-tasks.json` across compaction and session restarts.
 
 ### Tools
 
@@ -69,9 +69,9 @@ With `agent-read` and `agent-kick` available, a meta session can actively interv
 - `spawn(cwd?, win?)` — launch a fresh claude agent in a new kitty tab. Creates the tab, runs `claude`. Manager only.
 - `respawn(agent, win?)` — resume a dead agent by name. Finds an idle kitty tab, cd's to the agent's cwd, runs `claude --resume`. Manager only.
 - `register_manager()` — alias for `register(manager=true)`.
-- `unregister_manager(to?)` — step down as manager. Pass `to` to hand off to a specific agent.
+- `unregister_manager()` — step down as manager.
 
-See `~/work/ama-mcp/CLAUDE.md` for full tool reference, task schema, and status flow.
+See `~/work/fleet/CLAUDE.md` for full tool reference, task schema, and status flow.
 
 ### Notification model
 
@@ -201,7 +201,7 @@ See `writing-style.md` § "Writing Is Craft, Not Production" for the full guidan
 **Don't accept "done" without user-experience testing.** The agent claiming completion is not sufficient. The manager should require — and verify — that the agent tested their work the way the user would experience it.
 
 - **Web apps / UI**: Use playwright or puppeteer to actually open the page, interact with it, and confirm the fix works visually. "It compiles" or "the server starts" is not done.
-- **Agent infrastructure (ama-mcp, hooks, etc.)**: Role-play the actual usage. If you built a multi-manager feature, spawn a second manager and test the handoff. If you fixed a kick system, send a kick and confirm receipt.
+- **Agent infrastructure (fleet, hooks, etc.)**: Role-play the actual usage. If you built a multi-manager feature, spawn a second manager and test the handoff. If you fixed a kick system, send a kick and confirm receipt.
 - **CLI tools**: Run the command with realistic inputs and check the output.
 - **LaTeX**: Build, check for errors with `tlda errors --wait`, and inspect the rendered output with `tlda preview`.
 - **R scripts**: Run on actual data (cluster for sims, local for postprocessing) and check output files exist and look right.

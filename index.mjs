@@ -60,16 +60,25 @@ const KITTY_WIN = process.env.AGENT_WIN ? parseInt(process.env.AGENT_WIN)
   : null;
 
 // Agent identity = session UUID (auto-detected from most recent JSONL)
+// When multiple sessions share a project dir, prefer the one actively being
+// written (mtime within last 30s) over the most-recently-modified overall.
+// This avoids picking a stale session that another agent happened to touch.
 function detectSessionId() {
   const cwd = process.env.PWD || '';
   const projectHash = cwd.replace(/\//g, '-') || '-';
   const projectDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
   try {
+    const now = Date.now();
     const jsonls = fs.readdirSync(projectDir)
       .filter(f => f.endsWith('.jsonl'))
       .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
       .sort((a, b) => b.mtime - a.mtime);
-    if (jsonls.length > 0) return jsonls[0].name.replace('.jsonl', '');
+    if (jsonls.length === 0) return null;
+    // Prefer the JSONL being written right now (within 30s of server start)
+    const hot = jsonls.filter(f => now - f.mtime < 30000);
+    if (hot.length === 1) return hot[0].name.replace('.jsonl', '');
+    // Multiple hot or none — fall back to most recent
+    return jsonls[0].name.replace('.jsonl', '');
   } catch { /* project dir doesn't exist */ }
   return null;
 }
@@ -117,7 +126,12 @@ function saveState(state) {
   // Heartbeat: update last_seen for this agent on every save
   if (ME) {
     const me = state.agents.find(a => a.id === ME);
-    if (me) me.last_seen = new Date().toISOString();
+    if (me) {
+      me.last_seen = new Date().toISOString();
+      // Clear compacting flag — agent is alive and making MCP calls
+      delete me.compacting;
+      delete me.compacting_since;
+    }
   }
 
   // Prune: drop done tasks older than 24h, read messages older than 1h
@@ -173,23 +187,14 @@ function requireManager() {
   const state = loadState();
   const agent = getAgent(state, ME);
   if (agent?.is_manager) return null;
-  if (state.manager === ME) return null;
   return `Only a manager can do this. You are ${ME} (not a manager).`;
 }
 
 // Check if the calling manager can manage a specific agent.
-// Returns null if allowed, error string if not.
-// Rules: top of chain can manage anyone. Otherwise you can manage agents
-// whose active task was delegated_by you, or agents with no active task.
+// All managers are peers — any manager can manage any agent.
 function requireAuthOver(state, targetId) {
   if (!ME) return 'Cannot identify caller.';
-  if (state.manager === ME) return null; // top of chain
-  const activeTask = state.tasks?.find(t => t.agent === targetId && t.status !== 'done');
-  if (!activeTask) return null; // unassigned — any manager can claim
-  if (activeTask.delegated_by === ME) return null; // your report
-  const boss = getAgent(state, activeTask.delegated_by);
-  const bossName = boss?.friendly_name || activeTask.delegated_by?.slice(0, 8) || 'unknown';
-  return `Agent ${targetId} reports to ${bossName} (not you). Ask them, or go through top of chain.`;
+  return null;
 }
 
 // ---- Agent registry ----
@@ -412,12 +417,10 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'unregister_manager',
-      description: 'Step down as manager. Pass "to" to hand it to a specific agent. Manager only.',
+      description: 'Step down as manager. Manager only.',
       inputSchema: {
         type: 'object',
-        properties: {
-          to: { type: 'string', description: 'Agent to pass manager role to. Omit to just vacate.' },
-        },
+        properties: {},
       },
     },
     {
@@ -464,6 +467,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           query: { type: 'string', description: 'Search query (supports FTS5 syntax: AND, OR, "exact phrase", prefix*)' },
           project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
           agent: { type: 'string', description: 'Filter to a specific agent (by UUID, name, or friendly name)' },
+          role: { type: 'string', description: 'Filter by role: "user" (human messages), "assistant" (agent responses), "chat", "delegate", "task_done"' },
           limit: { type: 'number', description: 'Max results (default 20, max 100)' },
         },
         required: ['query'],
@@ -482,6 +486,31 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
           limit: { type: 'number', description: 'Max messages (default 50, max 200).' },
         },
+      },
+    },
+    {
+      name: 'get_refs',
+      description: 'Get pinned reference material — conversation excerpts, files, and other artifacts marked as authoritative. Check this when starting a new task or when you need to understand what the human has approved.',
+      inputSchema: { type: 'object', properties: {} },
+    },
+    {
+      name: 'pin_ref',
+      description: 'Pin a reference — mark something as authoritative source material. Use this when you find approved content in the logs (user said "perfect", "that\'s it", etc.) or when the user tells you something is the reference. Types: "file" (a file path), "conversation" (a log excerpt), "snippet" (inline text).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          type: { type: 'string', description: '"file", "conversation", or "snippet"' },
+          label: { type: 'string', description: 'Short description of what this reference is' },
+          path: { type: 'string', description: 'File path (for type=file)' },
+          project: { type: 'string', description: 'Project dir (for type=conversation)' },
+          sessionId: { type: 'string', description: 'Session UUID (for type=conversation)' },
+          line: { type: 'number', description: 'Center line number (for type=conversation)' },
+          startLine: { type: 'number', description: 'Start line (for type=conversation)' },
+          endLine: { type: 'number', description: 'End line (for type=conversation)' },
+          content: { type: 'string', description: 'Text content (for type=snippet)' },
+          note: { type: 'string', description: 'Optional note about why this is authoritative' },
+        },
+        required: ['type', 'label'],
       },
     },
     {
@@ -517,17 +546,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const id = ME || agentName;
 
-    // If claiming top-of-chain and it's occupied by a live agent, just register as a subordinate manager
-    // Top-of-chain is only for keepalive and default chat routing
-    if (isManager && state.manager && state.manager !== id) {
-      const currentTop = getAgent(state, state.manager);
-      if (!currentTop || !agentAlive(currentTop)) {
-        // Top manager is dead or gone — clean up and allow takeover
-        if (currentTop) removeAgent(state, state.manager);
-        delete state.manager;
-      }
-    }
-
     // Upsert: preserve friendly_name from old entry, then remove
     const oldEntry = getAgent(state, id);
     const oldFriendlyName = oldEntry?.friendly_name;
@@ -544,25 +562,28 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     else if (ME) entry.session_id = ME;
     if (oldFriendlyName) entry.friendly_name = oldFriendlyName;
     entry.last_seen = now();
+    // Clear compacting flag (set by PreCompact hook) — agent is back
+    // (don't carry over from oldEntry)
     // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
 
     state.agents.push(entry);
 
-    // Claim top-of-chain if vacant or if we're re-registering as the current top
-    const claimTop = isManager && (!state.manager || state.manager === id);
-    if (claimTop) {
-      state.manager = id;
-      // Kill any stale keepalives, start fresh with the correct script
-      try { execSync(`pkill -f agent-keepalive`, { timeout: 5000 }); } catch {}
-      exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
+    // Start keepalive if this is the first manager (or restart if stale)
+    if (isManager) {
+      const aliveManagers = state.agents.filter(a => a.is_manager && agentAlive(a));
+      if (aliveManagers.length <= 1) {
+        // First live manager — ensure keepalive is running
+        try { execSync(`pkill -f agent-keepalive`, { timeout: 5000 }); } catch {}
+        exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
+      }
     }
 
     saveState(state);
 
     const agentCount = state.agents.length;
-    const role = isManager ? (claimTop ? 'manager (top of chain)' : 'manager') : 'agent';
+    const role = isManager ? 'manager' : 'agent';
     let msg = `Registered ${id} as ${role}. ${agentCount} agent(s) registered.`;
 
     const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
@@ -570,11 +591,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const refExists = fs.existsSync(refPath);
 
     if (isManager) {
-      if (claimTop) msg += ' Keepalive watcher running.';
       msg += '\n\nWhen you see 📬 as input, call my_task() — it means an agent sent you a message or a task changed.';
-      if (!claimTop) {
-        msg += `\nchat() without a recipient goes to the top of chain (${state.manager}).`;
-      }
       if (refExists) {
         msg += '\nRead ~/.claude/reference/managing-agents.md before proceeding.';
       } else {
@@ -598,27 +615,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
     const state = loadState();
     const oldAgent = getAgent(state, ME);
-    const wasPrimary = state.manager === ME;
     if (oldAgent) delete oldAgent.is_manager;
-
-    const to = args.to != null ? args.to : null;
-    if (to) {
-      if (!wasPrimary) return { content: [{ type: 'text', text: `Only the top of chain can hand off the top slot. Use unregister_manager() without 'to' to just step down.` }], isError: true };
-      const newManager = getAgent(state, to);
-      if (!newManager) return { content: [{ type: 'text', text: `Agent ${to} not registered.` }], isError: true };
-      newManager.is_manager = true;
-      state.manager = to;
-      saveState(state);
-      interruptAgent(state, to);
-      return { content: [{ type: 'text', text: `Passed top of chain to ${to}. (interrupted)` }] };
-    }
-
-    if (wasPrimary) {
-      delete state.manager;
-    }
+    // Clean up legacy top-of-chain if it was us
+    if (state.manager === ME) delete state.manager;
     saveState(state);
-    const roleMsg = wasPrimary ? 'Stepped down. Top of chain is now open.' : 'Stepped down as manager.';
-    return { content: [{ type: 'text', text: roleMsg }] };
+    return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
   }
 
   // ---- delegate ----
@@ -679,10 +680,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const statusMsg = blocked ? `Queued (blocked by ${blockedBy.join(', ')})` : 'Delegated';
     const agentRegistered = !!getAgent(state, agent);
     const notifyMsg = !blocked && !agentRegistered ? ' ⚠ agent not registered — task created but no way to notify' : '';
+    const autoNotify = !blocked && agentRegistered ? ' (agent notified automatically via fs.watch — no need to kick or message them)' : '';
     return {
       content: [{
         type: 'text',
-        text: `${statusMsg} to ${agent} [${taskId}]: ${description}${notifyMsg}\n${nudge}`,
+        text: `${statusMsg} to ${agent} [${taskId}]: ${description}${notifyMsg}${autoNotify}\n${nudge}`,
       }],
     };
   }
@@ -693,7 +695,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let to = args.to != null ? args.to : null;
     const state = loadState();
     if (to == null) {
-      to = state.manager;
+      // Route to whoever delegated our current task, or fall back to any manager
+      const myTask = ME ? state.tasks?.find(t => t.agent === ME && t.status !== 'done') : null;
+      if (myTask?.delegated_by) {
+        to = myTask.delegated_by;
+      } else {
+        // Fall back to any live manager
+        const mgr = (state.agents || []).find(a => a.is_manager && a.id !== ME && agentAlive(a));
+        to = mgr?.id || state.manager; // legacy fallback
+      }
       if (!to) return { content: [{ type: 'text', text: 'No recipient specified and no manager registered.' }], isError: true };
     } else if (to === 'web' || to === 'skip' || to === 'human') {
       // Route to the dashboard — message is saved to state, dashboard picks it up via SSE
@@ -710,12 +720,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     logEvent({ type: 'chat', from, to, message });
 
     let warning = '';
-    if (ME && state.manager === ME && message.length > 200) {
+    const callerAgent = ME ? getAgent(state, ME) : null;
+    if (callerAgent?.is_manager && message.length > 200) {
       warning = '\n\n⚠ Long message (>200 chars). If assigning work, use delegate() instead.';
     }
 
     const toRegistered = !!getAgent(state, to);
-    const notifyMsg = !toRegistered ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
+    const notifyMsg = (!toRegistered && to !== 'web') ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
     return { content: [{ type: 'text', text: `Message queued for ${to}${notifyMsg}.${warning}` }] };
   }
 
@@ -781,8 +792,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id.slice(0, 8));
         if (a.friendly_name && a.name) label += ` (${a.name})`;
         if (a.friendly_name) label += ` [${a.id.slice(0, 8)}]`;
-        if (a.is_manager && a.id === state.manager) label += ' [top]';
-        else if (a.is_manager) label += ' [manager]';
+        if (a.is_manager) label += ' [manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
       });
@@ -1084,6 +1094,51 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Spawned new agent in win ${targetWin} (cwd: ${cwd}). Will kick in ~15s to trigger registration. Once registered, find its UUID via task_list() and use delegate() with that.` }] };
   }
 
+  // ---- get_refs ----
+  if (name === 'get_refs') {
+    const refsFile = `${os.homedir()}/.claude/references.json`;
+    let refs = [];
+    try { refs = JSON.parse(fs.readFileSync(refsFile, 'utf8')); } catch {}
+    if (refs.length === 0) {
+      return { content: [{ type: 'text', text: 'No references pinned.' }] };
+    }
+    const lines = refs.map(r => {
+      const parts = [`[${r.type}] ${r.label}`];
+      if (r.note) parts.push(r.note);
+      if (r.type === 'file') parts.push(r.path);
+      if (r.type === 'conversation') parts.push(`${r.project} / ${r.sessionId?.slice(0, 8)} lines ${r.startLine}-${r.endLine}`);
+      if (r.preview) parts.push(r.preview);
+      return parts.join('\n  ');
+    });
+    return { content: [{ type: 'text', text: `${refs.length} reference(s):\n\n${lines.join('\n\n')}` }] };
+  }
+
+  // ---- pin_ref ----
+  if (name === 'pin_ref') {
+    const refsFile = `${os.homedir()}/.claude/references.json`;
+    let refs = [];
+    try { refs = JSON.parse(fs.readFileSync(refsFile, 'utf8')); } catch {}
+    const ref = {
+      id: 'ref-' + Date.now().toString(36),
+      type: args.type,
+      label: args.label,
+      note: args.note || '',
+      path: args.path,
+      project: args.project,
+      sessionId: args.sessionId,
+      line: args.line,
+      startLine: args.startLine,
+      endLine: args.endLine,
+      content: args.content,
+      created: now(),
+      pinned_by: ME || 'unknown',
+    };
+    refs.push(ref);
+    fs.writeFileSync(refsFile, JSON.stringify(refs, null, 2));
+    logEvent({ type: 'pin_ref', from: ME || 'unknown', ref_type: args.type, label: args.label });
+    return { content: [{ type: 'text', text: `Pinned: [${args.type}] ${args.label}` }] };
+  }
+
   // ---- search_logs ----
   if (name === 'search_logs') {
     const idx = getSearchIndex();
@@ -1097,19 +1152,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const limit = Math.min(args.limit || 20, 100);
-    let results = idx.search(query, { project: args.project || undefined, limit });
-
-    // Filter by agent if requested
+    let agentIds;
     if (args.agent) {
       const state = loadState();
-      const agentEntry = getAgent(state, args.agent);
-      const agentId = agentEntry?.id || args.agent;
-      results = results.filter(r =>
-        r.from === agentId || r.to === agentId ||
-        r.sessionId === agentId ||
-        (r.project && r.sessionId && r.sessionId === agentId)
+      // Collect all matching agent IDs (name, friendly_name, session_id)
+      const matches = (state.agents || []).filter(a =>
+        a.id === args.agent || a.name === args.agent || a.friendly_name === args.agent ||
+        a.id.startsWith(args.agent)
       );
+      const ids = new Set();
+      for (const a of matches) {
+        ids.add(a.id);
+        if (a.session_id) ids.add(a.session_id);
+      }
+      if (ids.size === 0) ids.add(args.agent);
+      agentIds = [...ids];
     }
+    let results = idx.search(query, { project: args.project || undefined, agent: agentIds, role: args.role || undefined, limit });
 
     if (results.length === 0) {
       return { content: [{ type: 'text', text: `No results for "${query}".` }] };
@@ -1135,6 +1194,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     const stats = idx.stats();
+
+    // Log search event so dashboard can show what agents searched for
+    const filters = [];
+    if (args.agent) filters.push(`agent=${args.agent}`);
+    if (args.role) filters.push(`role=${args.role}`);
+    if (args.project) filters.push(`project=${args.project}`);
+    const snippets = results.slice(0, 5).map(r => {
+      const snip = r.snippet.replace(/⟨⟨/g, '').replace(/⟩⟩/g, '');
+      return snip.length > 120 ? snip.slice(0, 120) + '...' : snip;
+    });
+    logEvent({
+      type: 'search',
+      from: ME || 'unknown',
+      query: args.query,
+      filters: filters.join(', '),
+      resultCount: results.length,
+      snippets,
+    });
+
     return { content: [{ type: 'text', text: `${results.length} results (index: ${stats.totalEntries} entries, ${stats.totalFiles} files)\n\n${lines.join('\n\n')}` }] };
   }
 

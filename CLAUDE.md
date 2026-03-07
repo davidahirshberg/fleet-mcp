@@ -32,7 +32,7 @@ Returns task ID. Use in `after` for dependent tasks.
 Send a message to another agent's inbox. Writes to state and kicks the recipient via kitty. Recipient must be registered — rejects unknown identifiers.
 
 - `message`: Message to send
-- `to`: Optional. Session UUID, agent name, or friendly name. Omit to send to the manager.
+- `to`: Optional. Session UUID, agent name, or friendly name. Omit to send to the manager. Use `"web"`, `"skip"`, or `"human"` to send to the dashboard — it receives messages via SSE (no agent registration needed).
 
 ### wait_for_task(timeout?)
 
@@ -58,9 +58,9 @@ Show own task, unread messages (reads them inline).
 
 Alias for `register(manager=true)`.
 
-### unregister_manager(to?)
+### unregister_manager()
 
-Step down as manager. Manager only. Pass `to` to hand the role to a specific registered agent (they get kicked to let them know). Omit `to` to just vacate the slot.
+Step down as manager. Manager only.
 
 ### name_agent(agent, friendly_name)
 
@@ -104,16 +104,9 @@ Send a kitty ESC interrupt to break into an agent that is mid-tool-chain. Manage
 
 If you'd want to know when it's done, use `delegate`.
 
-## Chain of Command
+## Multiple Managers
 
-Multiple managers can coexist. One is **top of chain** (`state.manager`) — gets keepalive, is the default `chat()` recipient.
-
-Manager tools that target a specific agent (`delegate`, `task_done` for others, `interrupt`) enforce chain of command:
-- **Top of chain** can manage anyone.
-- **Other managers** can manage agents whose active task they delegated, or unassigned agents.
-- Attempting to manage someone else's report returns an error naming the responsible manager.
-
-`name_agent`, `respawn`, `spawn` are unrestricted for any manager (cosmetic/operational).
+All managers are peers — any manager can manage any agent. No hierarchy. `chat()` without a `to` goes to whoever delegated your current task, falling back to any live manager.
 
 ## Agent Lifecycle
 
@@ -204,14 +197,6 @@ Status flow: `blocked` → `pending` → `working` (acknowledged) → `idle`/`do
 
 ## Keepalive Watcher
 
-Auto-started for the top-of-chain manager only. Polls every 45s, nudges the manager via kitty when agents need attention and the manager is idle. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1h). Resets when something changes. Doesn't write messages — just sends 📬. Manager should call `task_list()` when nudged.
+Auto-started when the first manager registers. Polls every 45s, nudges all idle managers via kitty when agents need attention. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1h). Resets when something changes. Doesn't write messages — just sends 📬. Manager should call `task_list()` when nudged.
 
 Log: `~/.claude/keepalive.log`
-
-## Multiple Managers
-
-Any agent can register as a manager with `register(manager=true)`. Multiple managers coexist. The first to register (or the one handed the role via `unregister_manager(to=...)`) is **top of chain** — they get keepalive and are the default `chat()` recipient.
-
-Chain of command is enforced: you can only `delegate`/`task_done`/`interrupt` agents you manage (agents whose active task you delegated, or unassigned agents). Top of chain can manage everyone.
-
-`task_list()` shows `[top]` for the top-of-chain manager and `[manager]` for others. When multiple managers exist, task ownership is always visible via `delegated_by`.

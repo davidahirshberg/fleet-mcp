@@ -37,20 +37,19 @@ while true; do
   # Read state file
   [[ -f "$STATE_FILE" ]] || continue
 
-  # Get manager window (pipe file directly — echo mangles backslashes in JSON)
-  manager_win=$(python3 -c "
+  # Get all manager windows
+  manager_wins=$(python3 -c "
 import json, sys
 state = json.load(open('$STATE_FILE'))
-m = state.get('manager', state.get('manager_win', ''))
-# resolve kitty_win from agent registry if manager is registered
-if m and state.get('agents'):
-    agent = next((a for a in state['agents'] if a.get('id') == m), None)
-    if agent and agent.get('kitty_win'):
-        m = agent['kitty_win']
-print(m)
+agents = state.get('agents', [])
+wins = []
+for a in agents:
+    if a.get('is_manager') and a.get('kitty_win'):
+        wins.append(str(a['kitty_win']))
+print(' '.join(wins))
 " 2>/dev/null)
 
-  [[ -z "$manager_win" ]] && continue
+  [[ -z "$manager_wins" ]] && continue
 
   # Cooldown check (with backoff for repeated identical state)
   now_epoch=$(date +%s)
@@ -98,38 +97,9 @@ print('|'.join(parts))
 
   [[ -z "$reason" ]] && continue
 
-  # Skip if manager was recently active (MCP tool call within CURRENT_COOLDOWN)
-  # Scales with backoff: 5min → 10min → 20min → ... so the more stale the state,
-  # the longer the manager needs to be truly idle before we interrupt.
-  ACTIVE_THRESHOLD=$CURRENT_COOLDOWN
-  manager_active=$(python3 -c "
-import json, sys
-from datetime import datetime, timedelta, timezone
-state = json.load(open('$STATE_FILE'))
-mgr_id = state.get('manager')
-agents = state.get('agents', [])
-agent = next((a for a in agents if a.get('id') == mgr_id), None)
-if agent:
-    ls = agent.get('last_seen', '')
-    if ls:
-        seen = datetime.fromisoformat(ls.replace('Z', '+00:00'))
-        now = datetime.now(timezone.utc)
-        if (now - seen).total_seconds() < $ACTIVE_THRESHOLD:
-            print('active')
-            sys.exit(0)
-print('')" 2>/dev/null)
-  if [[ "$manager_active" == "active" ]]; then
-    log "skipped kick: manager recently active (last_seen < ${ACTIVE_THRESHOLD}s)"
-    continue
-  fi
-
-  # Only kick if manager is idle (screen check — catches long tool executions)
-  "$BIN/agent-idle" "$manager_win" 2>/dev/null || continue
-
   # Backoff: if same summary repeats, double the cooldown (up to MAX_COOLDOWN)
   if [[ "$reason" == "$LAST_SUMMARY" ]]; then
     REPEAT_COUNT=$((REPEAT_COUNT + 1))
-    # Double cooldown each repeat: 5m, 10m, 20m, 40m, capped at 60m
     CURRENT_COOLDOWN=$((COOLDOWN * (1 << REPEAT_COUNT)))
     [[ $CURRENT_COOLDOWN -gt $MAX_COOLDOWN ]] && CURRENT_COOLDOWN=$MAX_COOLDOWN
   else
@@ -138,9 +108,16 @@ print('')" 2>/dev/null)
   fi
   LAST_SUMMARY="$reason"
 
-  # Just kick — no message. The kick itself is the nudge.
-  # The manager calls task_list() to see what's up.
-  "$BIN/agent-kick" "$manager_win" >/dev/null 2>&1
-  LAST_KICK=$now_epoch
-  log "kicked manager (win $manager_win, next in ${CURRENT_COOLDOWN}s): $reason"
+  # Kick all idle managers
+  kicked=0
+  for mwin in $manager_wins; do
+    # Only kick if manager is idle (screen check)
+    "$BIN/agent-idle" "$mwin" 2>/dev/null || continue
+    "$BIN/agent-kick" "$mwin" >/dev/null 2>&1
+    kicked=$((kicked + 1))
+  done
+  if [[ $kicked -gt 0 ]]; then
+    LAST_KICK=$now_epoch
+    log "kicked $kicked manager(s) (wins: $manager_wins, next in ${CURRENT_COOLDOWN}s): $reason"
+  fi
 done

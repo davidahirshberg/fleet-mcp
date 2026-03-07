@@ -324,6 +324,40 @@
     flex-shrink: 0;
   }
   .section-header:hover { color: var(--text); }
+  .agents-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .agents-table th {
+    padding: 4px 8px;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    background: var(--surface);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .agents-table th:hover { color: var(--text); }
+  .agents-table th.sorted { color: var(--blue); }
+  .agents-table th .sort-arrow { font-size: 8px; margin-left: 2px; }
+  .agents-table td {
+    padding: 3px 8px;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+  }
+  .agents-table tr:last-child td { border-bottom: none; }
+  .agents-table td.col-msg { color: var(--text-dim); }
+  .agents-table td.col-seen { color: var(--text-dim); }
+  .agents-table td.col-peek { text-align: center; }
   .section-body { padding: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; min-height: 0; }
   .section-body.collapsed { display: none; }
 
@@ -336,7 +370,7 @@
     font-size: 12px;
   }
   .agent-row:last-child { border-bottom: none; }
-  .agent-name { font-weight: 700; color: var(--blue); cursor: pointer; position: relative; }
+  .agent-name { font-weight: 700; cursor: pointer; position: relative; }
   .agent-name:hover { text-decoration: underline; }
   .agent-name.agent-dead { color: var(--text-dim); cursor: default; opacity: 0.5; }
   .agent-name.agent-dead:hover { text-decoration: none; }
@@ -421,26 +455,39 @@
 
   /* Terminal tab */
   .terminal-header {
-    padding: 6px 10px;
+    padding: 8px 12px;
     background: var(--surface);
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
     justify-content: space-between;
     flex-shrink: 0;
+    min-height: 36px;
   }
   .terminal-label {
     font-size: 12px;
     color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
   }
   .terminal-label .term-agent-name {
     color: var(--blue);
     font-weight: 400;
   }
+  .terminal-label .term-win-id {
+    font-size: 10px;
+    opacity: 0.35;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .terminal-label .term-empty {
+    color: var(--text-dim);
+    font-style: italic;
+  }
   .terminal-controls {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
   }
   .terminal-freeze-btn {
     background: none;
@@ -448,27 +495,59 @@
     border-radius: 4px;
     color: var(--green);
     cursor: pointer;
-    padding: 2px 8px;
+    padding: 3px 10px;
     font-size: 11px;
+    transition: border-color 0.15s, color 0.15s;
   }
   .terminal-freeze-btn:hover { border-color: var(--text-dim); }
   .terminal-freeze-btn.frozen {
     color: var(--yellow);
+    border-color: color-mix(in srgb, var(--yellow) 30%, transparent);
   }
   .terminal-output {
     flex: 1;
     overflow: auto;
     -webkit-overflow-scrolling: touch;
-    padding: 8px 10px;
-    margin: 0;
+    padding: 12px 14px;
+    margin: 6px 8px;
+    border-radius: 6px;
     font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
     font-size: 11px;
-    line-height: 1.35;
+    line-height: 1.4;
     color: var(--text);
     white-space: pre-wrap;
     word-break: break-all;
-    background: var(--bg);
+    background: #0a0a14;
+    box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
   }
+  .terminal-output:empty::after {
+    content: 'Click the 👁 button on an agent to view their terminal';
+    color: var(--text-dim);
+    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-style: italic;
+    font-size: 12px;
+  }
+  /* ANSI color classes */
+  .ansi-black { color: #555; }
+  .ansi-red { color: #e06c75; }
+  .ansi-green { color: #7ab8a0; }
+  .ansi-yellow { color: #c8b060; }
+  .ansi-blue { color: #7a9ec8; }
+  .ansi-magenta { color: #9370db; }
+  .ansi-cyan { color: #6aafb0; }
+  .ansi-white { color: #c8c8d8; }
+  .ansi-bright-black { color: #6b6b88; }
+  .ansi-bright-red { color: #f08080; }
+  .ansi-bright-green { color: #90d4b8; }
+  .ansi-bright-yellow { color: #e0d080; }
+  .ansi-bright-blue { color: #98bee0; }
+  .ansi-bright-magenta { color: #b098e8; }
+  .ansi-bright-cyan { color: #88d0d0; }
+  .ansi-bright-white { color: #e8e8f0; }
+  .ansi-bold { font-weight: 600; }
+  .ansi-dim { opacity: 0.6; }
+  .ansi-italic { font-style: italic; }
+  .ansi-underline { text-decoration: underline; }
 
   /* Log search */
   .log-search-bar {
@@ -665,6 +744,123 @@
     line-height: 1.4;
   }
 
+  /* Refs */
+  .ref-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .ref-item:hover { background: rgba(255,255,255,0.03); }
+
+  /* Docs tab */
+  .docs-header {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .docs-header select {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .docs-header select:focus { border-color: var(--blue); }
+  .docs-refresh-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 3px 8px;
+    font-size: 14px;
+  }
+  .docs-refresh-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .docs-list {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ann-card {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+  }
+  .ann-card:hover { background: rgba(108,155,255,0.04); }
+  .ann-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .ann-color {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .ann-anchor {
+    font-size: 10px;
+    color: var(--cyan);
+    font-family: 'SF Mono','Menlo',monospace;
+    cursor: pointer;
+  }
+  .ann-anchor:hover { text-decoration: underline; }
+  .ann-done { opacity: 0.4; }
+  .ann-text {
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-bottom: 4px;
+  }
+  .ann-text[contenteditable] { outline: none; }
+  .ann-text[contenteditable]:focus {
+    background: rgba(255,255,255,0.03);
+    border-radius: 3px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+  }
+  .ann-actions {
+    display: flex;
+    gap: 8px;
+    opacity: 0;
+  }
+  .ann-card:hover .ann-actions { opacity: 1; }
+  .ann-action-btn {
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    background: none;
+    border: none;
+    font-family: inherit;
+    padding: 0;
+  }
+  .ann-action-btn:hover { color: var(--text); }
+  .ann-action-btn.danger:hover { color: var(--orange); }
+  .ann-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .ann-tab {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .ann-tab.active { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .ann-tab:hover { background: rgba(255,255,255,0.1); }
+
   /* Cmd+K unified search */
   .cmdk-overlay {
     display: none;
@@ -811,7 +1007,7 @@
     <div class="chat-input-bar">
       <div class="chat-input-wrap">
         <div class="cmd-palette" id="cmdPalette"></div>
-        <textarea id="chatInput" placeholder="Message (to manager)..." autocomplete="off" rows="1"></textarea>
+        <textarea id="chatInput" placeholder="Message (to manager)..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" rows="1"></textarea>
       </div>
       <button id="interruptToggle" onclick="toggleInterrupt()" title="Toggle interrupt mode — next message sends ESC">&#x26A1;</button>
       <button id="chatSend" onclick="sendChat()">send</button>
@@ -825,6 +1021,8 @@
       <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
       <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
       <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
+      <button class="tab-btn" onclick="switchTab('docs')">Docs</button>
+      <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
     </div>
 
     <div class="tab-view active" id="tab-dashboard">
@@ -851,6 +1049,14 @@
       <div class="logs-filter-bar" id="logsFilterBar"></div>
       <div class="log-search-bar">
         <input type="text" id="logSearchInput" placeholder="Search all logs..." autocomplete="off">
+        <select id="logRoleFilter" onchange="searchLogs()">
+          <option value="">all roles</option>
+          <option value="user">user (human)</option>
+          <option value="assistant">assistant</option>
+          <option value="chat">chat</option>
+          <option value="delegate">delegate</option>
+        </select>
+        <select id="logAgentFilter" onchange="searchLogs()"><option value="">all agents</option></select>
         <select id="logProjectFilter"><option value="">all projects</option></select>
       </div>
       <div class="log-search-status" id="logStatus"></div>
@@ -859,7 +1065,7 @@
 
     <div class="tab-view" id="tab-terminal">
       <div class="terminal-header" id="terminalHeader">
-        <span class="terminal-label" id="terminalLabel">Select an agent to view terminal</span>
+        <span class="terminal-label" id="terminalLabel"><span class="term-empty">No agent selected</span></span>
         <div class="terminal-controls">
           <button class="terminal-freeze-btn" id="terminalFreeze" onclick="toggleTerminalFreeze()" title="Freeze/unfreeze">&#x23f8; freeze</button>
         </div>
@@ -867,9 +1073,28 @@
       <pre class="terminal-output" id="terminalOutput"></pre>
     </div>
 
+    <div class="tab-view" id="tab-docs">
+      <div class="docs-header">
+        <select id="docsProjectSelect" onchange="loadAnnotations()">
+          <option value="">Select a document...</option>
+        </select>
+        <button class="docs-refresh-btn" onclick="loadAnnotations()" title="Refresh">&#x21bb;</button>
+      </div>
+      <div class="docs-list" id="docsList">
+        <div class="cmdk-empty">Select a document to see annotations</div>
+      </div>
+    </div>
+
+    <div class="tab-view" id="tab-refs" style="overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px;">
+      <div style="display:flex;gap:6px;margin-bottom:8px;">
+        <input type="text" id="refFileInput" placeholder="Add file path..." style="flex:1;font-size:12px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:4px;" autocomplete="off">
+        <button onclick="addFileRef()" style="font-size:11px;padding:4px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;">+ file</button>
+      </div>
+      <div id="refsList"></div>
+    </div>
+
     <!-- Active Agents — always visible, fixed height -->
     <div class="agents-panel">
-      <div class="section-header" onclick="toggle('agents')">Active Agents</div>
       <div class="section-body" id="agents"></div>
     </div>
   </div>
@@ -879,6 +1104,7 @@
     <div class="context-modal">
       <div class="context-header">
         <span id="contextTitle">Context</span>
+        <button id="contextPinBtn" onclick="pinContext()" style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:auto;margin-right:8px;">pin as reference</button>
         <button class="close-btn" onclick="closeContext()">&times;</button>
       </div>
       <div class="context-body" id="contextBody"></div>
@@ -1029,8 +1255,10 @@ function agentLink(state, id) {
   const agent = (state.agents || []).find(a => a.id === id || a.name === id);
   const alive = agent && isActive(agent);
   const cls = alive ? 'agent-name' : 'agent-name agent-dead';
-  const click = alive ? ` onclick="selectAgent('${esc(String(id))}')"` : '';
-  return `<span class="${cls}"${click}>${esc(label)}${tip}</span>`;
+  const nickCls = getNickClass(id, state);
+  const click = ` onclick="selectAgent('${esc(String(id))}')"`;
+
+  return `<span class="${cls} ${nickCls}"${click}>${esc(label)}${tip}</span>`;
 }
 
 function timeAgo(ts) {
@@ -1066,11 +1294,7 @@ function renderMarkdown(html) {
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   // Italic: *...*
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
-  // Images: ![alt](url) — unescape &amp; in src since text was HTML-escaped before markdown
-  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
-    const src = url.replace(/&amp;/g, '&');
-    return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
-  });
+  // Images: ![alt](url) handled in linkifyAgents before file linkification
   // Bullet lists: lines starting with - or *
   html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>');
   return html;
@@ -1103,21 +1327,46 @@ function linkifyFiles(html, cwd) {
     return link;
   }
 
-  html = html.replace(absRe, makeLink);
+  // Use placeholders so absRe results don't get re-matched by relRe
+  const slots = [];
+  html = html.replace(absRe, match => {
+    const idx = slots.length;
+    slots.push(makeLink(match));
+    return `\x00LINK${idx}\x00`;
+  });
   html = html.replace(relRe, match => {
-    // Skip things that look like URLs, CSS selectors, or code tokens
     if (/^https?:/.test(match) || /^[.#]/.test(match)) return match;
     return makeLink(match);
   });
+  // Restore placeholders
+  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => slots[i]);
   return html;
 }
 
 function linkifyAgents(text, state, fromId) {
   let html = esc(text);
   const agents = state.agents || [];
-  // Resolve sender's cwd for relative paths
   const sender = agents.find(a => a.id === fromId);
   const cwd = sender?.cwd || null;
+  // Handle markdown images FIRST — extract ![alt](url) before linkifyFiles mangles the URLs.
+  // Replace with <img> tags; resolve paths the same way linkifyFiles would.
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const src = url.replace(/&amp;/g, '&');
+    // If src is already an /api/ URL (from paste/drop upload), use it directly
+    if (src.startsWith('/api/')) {
+      return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+    }
+    const abs = resolveFilePath(src, cwd);
+    const isImg = IMG_EXTS.test(abs);
+    if (isImg) {
+      const cacheBust = Math.floor(Date.now() / 10000);
+      return `<img src="/api/file?path=${encodeURIComponent(abs)}&t=${cacheBust}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+    }
+    return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+  });
+  // Linkify file paths BEFORE bolding agent names — names inside paths break the path regex
+  html = linkifyFiles(html, cwd);
+  // Bold agent names, but skip content inside HTML tags (hrefs, srcs, etc.)
   const names = [];
   for (const a of agents) {
     if (a.friendly_name) names.push({ name: a.friendly_name, id: a.id });
@@ -1126,10 +1375,14 @@ function linkifyAgents(text, state, fromId) {
   names.sort((a, b) => b.name.length - a.name.length);
   for (const { name } of names) {
     const escaped = esc(name);
-    const re = new RegExp('\\b' + escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
-    html = html.replace(re, `<strong style="color:var(--blue)">${escaped}</strong>`);
+    const pattern = escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Split on HTML tags, only replace in text segments
+    html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+      if (segment.startsWith('<')) return segment;
+      return segment.replace(new RegExp('\\b' + pattern + '\\b', 'gi'),
+        `<strong style="color:var(--blue)">${escaped}</strong>`);
+    });
   }
-  html = linkifyFiles(html, cwd);
   return html;
 }
 
@@ -1151,6 +1404,11 @@ function toggleChatFilter(id) {
   renderTimelineEvents();
 }
 
+function setChatTarget(id) {
+  chatSendTarget = id;
+  renderFilterBar();
+}
+
 function clearChatFilter() {
   chatFilterSet.clear();
   chatSendTarget = null;
@@ -1163,7 +1421,9 @@ function renderFilterChips() {
   return [...chatFilterSet].map(id => {
     const label = currentState ? agentLabel(currentState, id) : id.slice(0, 8);
     const color = getNickColor(id, currentState);
-    return `<span class="chat-tag" style="color:${color};background:${color}18;border-color:${color}40" onclick="toggleChatFilter('${esc(id)}')">${esc(label)}<span class="tag-x">&times;</span></span>`;
+    const isTarget = chatSendTarget === id;
+    const targetStyle = isTarget ? ';font-weight:700;border-width:2px' : '';
+    return `<span class="chat-tag" style="color:${color};background:${color}18;border-color:${color}40${targetStyle}" onclick="setChatTarget('${esc(id)}')">${esc(label)}<span class="tag-x" onclick="event.stopPropagation();toggleChatFilter('${esc(id)}')">&times;</span></span>`;
   }).join('');
 }
 
@@ -1229,6 +1489,21 @@ function render(state) {
   renderChat(state);
   renderAgents(state);
   renderTasks(state);
+  updateLogAgentFilter(state);
+}
+
+function updateLogAgentFilter(state) {
+  const sel = $('logAgentFilter');
+  const cur = sel.value;
+  const agents = (state.agents || []).slice().sort((a, b) => {
+    const na = (a.friendly_name || a.name || a.id).toLowerCase();
+    const nb = (b.friendly_name || b.name || b.id).toLowerCase();
+    return na.localeCompare(nb);
+  });
+  sel.innerHTML = '<option value="">all agents</option>' + agents.map(a => {
+    const label = a.friendly_name || a.name || a.id.slice(0, 8);
+    return `<option value="${esc(a.id)}"${a.id === cur ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
 }
 
 function renderChat(state) {
@@ -1290,35 +1565,84 @@ function getLastMsgTime(state, agentId) {
   return null;
 }
 
+let agentSortMode = 'seen'; // 'seen' | 'name' | 'msg'
+let agentSortAsc = false; // false = descending (most recent first)
+
+function setAgentSort(mode) {
+  if (agentSortMode === mode) {
+    agentSortAsc = !agentSortAsc;
+  } else {
+    agentSortMode = mode;
+    agentSortAsc = mode === 'name'; // name defaults ascending, others descending
+  }
+  if (currentState) renderAgents(currentState);
+}
+
+function sortArrow(col) {
+  if (agentSortMode !== col) return '';
+  return `<span class="sort-arrow">${agentSortAsc ? '▲' : '▼'}</span>`;
+}
+
 function renderAgents(state) {
-  let agents = (state.agents || []).filter(isActive);
+  let agents = (state.agents || []).slice();
   const teamIds = getTeamAgentIds(state);
   if (teamIds) agents = agents.filter(a => teamIds.has(a.id));
+  const dir = agentSortAsc ? 1 : -1;
+  agents.sort((a, b) => {
+    const aa = isActive(a), ab = isActive(b);
+    if (aa !== ab) return aa ? -1 : 1;
+    if (agentSortMode === 'name') {
+      const na = (a.friendly_name || a.name || a.id).toLowerCase();
+      const nb = (b.friendly_name || b.name || b.id).toLowerCase();
+      return dir * na.localeCompare(nb);
+    }
+    if (agentSortMode === 'msg') {
+      const ma = getLastMsgTime(state, a.id);
+      const mb = getLastMsgTime(state, b.id);
+      const ta = ma ? new Date(ma).getTime() : 0;
+      const tb = mb ? new Date(mb).getTime() : 0;
+      return dir * (ta - tb);
+    }
+    // default: seen
+    const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0;
+    const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0;
+    return dir * (ta - tb);
+  });
   if (agents.length === 0) {
-    $('agents').innerHTML = '<div class="empty">No active agents</div>';
+    $('agents').innerHTML = '<div class="empty">No agents registered</div>';
     return;
   }
-  $('agents').innerHTML = agents.map(a => {
+  const header = `<thead><tr>
+    <th class="${agentSortMode === 'name' ? 'sorted' : ''}" onclick="setAgentSort('name')">Agent${sortArrow('name')}</th>
+    <th></th>
+    <th class="${agentSortMode === 'msg' ? 'sorted' : ''}" onclick="setAgentSort('msg')">Msg${sortArrow('msg')}</th>
+    <th class="${agentSortMode === 'seen' ? 'sorted' : ''}" onclick="setAgentSort('seen')">Seen${sortArrow('seen')}</th>
+    <th></th>
+  </tr></thead>`;
+  const rows = agents.map(a => {
+    const active = isActive(a);
+    const dimStyle = active ? '' : ' style="opacity:0.4"';
     const badges = [];
     if (a.is_manager && a.id === state.manager) badges.push('<span class="agent-badge badge-top">top</span>');
     else if (a.is_manager) badges.push('<span class="agent-badge badge-manager">mgr</span>');
     const seen = a.last_seen ? timeAgo(a.last_seen) : '-';
     const spark = sparklineSvg(a.id);
-    const peekBtn = a.kitty_win ? `<span style="cursor:pointer;opacity:0.4;font-size:10px" onclick="peekAgent('${esc(a.friendly_name || a.name || a.id)}')" title="Peek terminal">&#x1F441;</span>` : '';
+    const peekBtn = a.kitty_win ? `<span style="cursor:pointer;opacity:0.4;font-size:10px" onclick="peekAgent('${esc(a.id)}')" title="Peek terminal">&#x1F441;</span>` : '';
     const lastMsg = getLastMsgTime(state, a.id);
     const lastMsgAgo = lastMsg ? timeAgo(lastMsg) : null;
     const quietMins = lastMsg ? Math.round((Date.now() - new Date(lastMsg).getTime()) / 60000) : Infinity;
     const quietCls = quietMins > 30 ? ' quiet' : '';
-    const lastMsgHtml = lastMsgAgo ? `<span class="last-msg${quietCls}" title="Last message ${lastMsgAgo} ago">msg ${lastMsgAgo}</span>` : '';
+    const msgText = lastMsgAgo || '-';
     const renameBtn = `<span class="rename-btn" onclick="event.stopPropagation();renameAgent('${esc(a.id)}','${esc(a.friendly_name || a.name || '')}')" title="Rename">&#x270E;</span>`;
-    return `<div class="agent-row">
-      ${agentLink(state, a.id)}${renameBtn}
-      ${badges.join('')}
-      ${spark}
-      ${lastMsgHtml}
-      <span class="agent-id" style="margin-left:auto">${peekBtn} ${seen}</span>
-    </div>`;
+    return `<tr${dimStyle}>
+      <td>${agentLink(state, a.id)}${renameBtn} ${badges.join('')}</td>
+      <td>${spark}</td>
+      <td class="col-msg${quietCls}">${msgText}</td>
+      <td class="col-seen">${seen}</td>
+      <td class="col-peek">${peekBtn}</td>
+    </tr>`;
   }).join('');
+  $('agents').innerHTML = `<table class="agents-table">${header}<tbody>${rows}</tbody></table>`;
 }
 
 function renderTasks(state) {
@@ -1628,6 +1952,49 @@ async function peekAgent(agent) {
   await refreshTerminal();
 }
 
+function ansiToHtml(text) {
+  const colorNames = ['black','red','green','yellow','blue','magenta','cyan','white'];
+  let result = '';
+  let openSpans = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '\x1b' && text[i+1] === '[') {
+      // Parse CSI sequence
+      let j = i + 2;
+      while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
+      if (j < text.length && text[j] === 'm') {
+        const params = text.slice(i+2, j).split(';').map(Number);
+        i = j + 1;
+        const classes = [];
+        for (let p = 0; p < params.length; p++) {
+          const c = params[p];
+          if (c === 0) { // reset
+            while (openSpans > 0) { result += '</span>'; openSpans--; }
+          } else if (c === 1) classes.push('ansi-bold');
+          else if (c === 2) classes.push('ansi-dim');
+          else if (c === 3) classes.push('ansi-italic');
+          else if (c === 4) classes.push('ansi-underline');
+          else if (c >= 30 && c <= 37) classes.push('ansi-' + colorNames[c - 30]);
+          else if (c >= 90 && c <= 97) classes.push('ansi-bright-' + colorNames[c - 90]);
+        }
+        if (classes.length > 0) {
+          result += `<span class="${classes.join(' ')}">`;
+          openSpans++;
+        }
+        continue;
+      }
+    }
+    // Escape HTML chars
+    if (text[i] === '<') result += '&lt;';
+    else if (text[i] === '>') result += '&gt;';
+    else if (text[i] === '&') result += '&amp;';
+    else result += text[i];
+    i++;
+  }
+  while (openSpans > 0) { result += '</span>'; openSpans--; }
+  return result;
+}
+
 async function refreshTerminal() {
   if (!terminalAgent) return;
   const output = $('terminalOutput');
@@ -1639,10 +2006,9 @@ async function refreshTerminal() {
       output.textContent = data.error;
       return;
     }
-    $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(data.label)}</span> <span style="opacity:0.4">win ${data.win}</span>`;
-    // Keep scroll at bottom if already there
+    $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(data.label)}</span> <span class="term-win-id">win ${data.win}</span>`;
     const wasAtBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 20;
-    output.textContent = data.text;
+    output.innerHTML = ansiToHtml(data.text);
     if (wasAtBottom) output.scrollTop = output.scrollHeight;
   } catch (e) {
     output.textContent = 'Failed: ' + e.message;
@@ -1822,6 +2188,7 @@ function switchTab(tab) {
   }
   if (tab === 'terminal' && terminalAgent) startTerminalAuto();
   if (tab !== 'terminal') stopTerminalAuto();
+  if (tab === 'docs') loadDocsProjects();
 }
 
 // --- Log search ---
@@ -1969,6 +2336,10 @@ async function searchLogs() {
   try {
     const params = new URLSearchParams({ q: query, limit: '50' });
     if (project) params.set('project', project);
+    const role = $('logRoleFilter').value;
+    if (role) params.set('role', role);
+    const agent = $('logAgentFilter').value;
+    if (agent) params.set('agent', agent);
     const res = await fetch('/api/logs/search?' + params);
     const data = await res.json();
 
@@ -2017,6 +2388,8 @@ async function searchLogs() {
   }
 }
 
+let currentContext = null; // tracks what's shown in the context modal
+
 async function showContext(project, sessionId, line) {
   const overlay = $('contextOverlay');
   const body = $('contextBody');
@@ -2025,6 +2398,7 @@ async function showContext(project, sessionId, line) {
   title.textContent = projectShort(project) + ' / ' + sessionId.substring(0, 8) + '...';
   body.innerHTML = '<div class="empty">Loading...</div>';
   overlay.classList.add('active');
+  currentContext = { project, sessionId, line };
 
   try {
     const params = new URLSearchParams({ project, session: sessionId, line: String(line), radius: '10' });
@@ -2035,6 +2409,10 @@ async function showContext(project, sessionId, line) {
       body.innerHTML = '<div class="empty">Error: ' + esc(data.error) + '</div>';
       return;
     }
+
+    currentContext.messages = data.messages;
+    currentContext.startLine = data.messages[0]?.line || line - 10;
+    currentContext.endLine = data.messages[data.messages.length - 1]?.line || line + 10;
 
     body.innerHTML = data.messages.map(m => `
       <div class="context-msg${m.isTarget ? ' target' : ''}">
@@ -2054,6 +2432,91 @@ async function showContext(project, sessionId, line) {
 function closeContext() {
   $('contextOverlay').classList.remove('active');
 }
+
+// --- References ---
+let refsData = [];
+
+async function loadRefs() {
+  try {
+    const res = await fetch('/api/refs');
+    refsData = await res.json();
+    renderRefs();
+  } catch {}
+}
+
+function renderRefs() {
+  const el = $('refsList');
+  if (!refsData.length) { el.innerHTML = '<div class="empty">No references pinned</div>'; return; }
+  el.innerHTML = refsData.map(r => {
+    const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
+    const meta = r.type === 'conversation'
+      ? `<span style="font-size:10px;opacity:0.5">${esc(projectShort(r.project))} / ${r.sessionId?.slice(0, 8)} lines ${r.startLine}-${r.endLine}</span>`
+      : `<span style="font-size:10px;opacity:0.5">${esc(r.path)}</span>`;
+    const clickAttr = r.type === 'conversation'
+      ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
+      : '';
+    return `<div class="ref-item" ${clickAttr}>
+      <div style="display:flex;justify-content:space-between;align-items:start;">
+        <div>${icon} <span class="ref-label" contenteditable="true" spellcheck="false" onblur="updateRefLabel('${r.id}',this.textContent)" onclick="event.stopPropagation()">${esc(r.label || 'untitled')}</span></div>
+        <span style="cursor:pointer;opacity:0.4;font-size:14px;padding:0 4px;" onclick="event.stopPropagation();deleteRef('${r.id}')">&times;</span>
+      </div>
+      ${meta}
+    </div>`;
+  }).join('');
+}
+
+async function updateRefLabel(id, newLabel) {
+  const ref = refsData.find(r => r.id === id);
+  if (!ref || ref.label === newLabel.trim()) return;
+  ref.label = newLabel.trim();
+  try {
+    await fetch('/api/refs/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, label: ref.label }) });
+  } catch {}
+}
+
+async function pinContext() {
+  if (!currentContext) return;
+  // Auto-generate label from first user message or target
+  const userMsg = currentContext.messages?.find(m => m.role === 'user');
+  const label = userMsg ? userMsg.text.slice(0, 80).replace(/\n/g, ' ') : projectShort(currentContext.project) + ' / ' + currentContext.sessionId?.slice(0, 8);
+  const ref = {
+    type: 'conversation',
+    label,
+    note: '',
+    project: currentContext.project,
+    sessionId: currentContext.sessionId,
+    line: currentContext.line,
+    startLine: currentContext.startLine,
+    endLine: currentContext.endLine,
+    preview: currentContext.messages?.slice(0, 3).map(m => m.role + ': ' + m.text.slice(0, 100)).join('\n'),
+  };
+  try {
+    const res = await fetch('/api/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ref) });
+    const saved = await res.json();
+    await loadRefs();
+    $('contextPinBtn').textContent = 'pinned';
+    $('contextPinBtn').disabled = true;
+    setTimeout(() => { $('contextPinBtn').textContent = 'pin as reference'; $('contextPinBtn').disabled = false; }, 2000);
+  } catch {}
+}
+
+async function addFileRef() {
+  const path = $('refFileInput').value.trim();
+  if (!path) return;
+  const ref = { type: 'file', label: path.split('/').pop(), note: '', path };
+  try {
+    await fetch('/api/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ref) });
+    $('refFileInput').value = '';
+    await loadRefs();
+  } catch {}
+}
+
+async function deleteRef(id) {
+  await fetch('/api/refs?id=' + encodeURIComponent(id), { method: 'DELETE' });
+  await loadRefs();
+}
+
+loadRefs();
 
 $('logSearchInput').addEventListener('input', () => {
   clearTimeout(logSearchTimer);
@@ -2081,6 +2544,7 @@ document.addEventListener('keydown', e => {
   if (e.key === '2') switchTab('timeline');
   if (e.key === '3') switchTab('logs');
   if (e.key === '4') switchTab('terminal');
+  if (e.key === '5') switchTab('docs');
 });
 
 // --- Agent search ---
@@ -2535,8 +2999,7 @@ async function searchTerminalOutput(ql) {
   const toCheck = agents.slice(0, 5);
   const fetches = toCheck.map(async a => {
     try {
-      const name = a.friendly_name || a.name || a.id;
-      const res = await fetch('/api/peek?' + new URLSearchParams({ agent: name }));
+      const res = await fetch('/api/peek?' + new URLSearchParams({ agent: a.id }));
       const data = await res.json();
       if (data.error || !data.text) return;
       const text = data.text;
@@ -2555,7 +3018,7 @@ async function searchTerminalOutput(ql) {
             html: `<strong>${esc(agentName)}</strong> ${highlighted}`,
             meta: 'terminal',
             action: () => {
-              terminalAgent = a.friendly_name || a.name || a.id;
+              terminalAgent = a.id;
               localStorage.setItem('fleet-terminal-agent', terminalAgent);
               switchTab('terminal');
               refreshTerminal();
@@ -2568,6 +3031,191 @@ async function searchTerminalOutput(ql) {
   });
   await Promise.all(fetches);
   return results;
+}
+
+// --- Docs tab ---
+let docsProjectsLoaded = false;
+let currentDocsProject = null;
+let currentAnnotations = [];
+
+async function loadDocsProjects() {
+  if (docsProjectsLoaded) return;
+  try {
+    const res = await fetch('/api/tlda/projects');
+    const data = await res.json();
+    const sel = $('docsProjectSelect');
+    const projects = (data.projects || data || [])
+      .filter(p => !p.archived && p.format !== 'book')
+      .sort((a, b) => {
+        // Sort by last build, most recent first
+        const ta = a.lastBuild || a.createdAt || '';
+        const tb = b.lastBuild || b.createdAt || '';
+        return tb.localeCompare(ta);
+      });
+    for (const p of projects) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.title || p.name;
+      if (p.pages) opt.textContent += ` (${p.pages}p)`;
+      sel.appendChild(opt);
+    }
+    docsProjectsLoaded = true;
+    // Restore last selection
+    const saved = localStorage.getItem('fleet-docs-project');
+    if (saved && [...sel.options].some(o => o.value === saved)) {
+      sel.value = saved;
+      loadAnnotations();
+    }
+  } catch (e) {
+    $('docsList').innerHTML = `<div class="cmdk-empty">tlda server unreachable</div>`;
+  }
+}
+
+async function loadAnnotations() {
+  const project = $('docsProjectSelect').value;
+  if (!project) {
+    $('docsList').innerHTML = '<div class="cmdk-empty">Select a document to see annotations</div>';
+    return;
+  }
+  currentDocsProject = project;
+  localStorage.setItem('fleet-docs-project', project);
+  $('docsList').innerHTML = '<div class="cmdk-empty">Loading...</div>';
+
+  try {
+    const res = await fetch('/api/tlda/' + encodeURIComponent(project) + '/annotations');
+    const data = await res.json();
+    currentAnnotations = data.annotations || [];
+
+    if (currentAnnotations.length === 0) {
+      $('docsList').innerHTML = '<div class="cmdk-empty">No annotations</div>';
+      return;
+    }
+
+    // Sort by y position (page order)
+    currentAnnotations.sort((a, b) => a.y - b.y);
+
+    $('docsList').innerHTML = currentAnnotations.map((ann, i) => {
+      const colorMap = { red: '#c85050', orange: '#c8956a', yellow: '#c8b060', green: '#7ab8a0', blue: '#7a9ec8', violet: '#9370db', grey: '#6b6b88', black: '#c8c8d8', white: '#f0f0f0', 'light-red': '#d88888', 'light-green': '#a0d8b8', 'light-blue': '#a0c0e0', 'light-violet': '#b8a0d8' };
+      const dotColor = colorMap[ann.color] || 'var(--text-dim)';
+      const anchor = ann.anchor ? `${ann.anchor.file || ''}:${ann.anchor.line || ''}` : '';
+      const doneClass = ann.done ? ' ann-done' : '';
+
+      // Show active tab text, or main text
+      let displayText = ann.text;
+      if (ann.tabs && ann.tabs.length > 1) {
+        displayText = ann.tabs[ann.activeTab || 0] || ann.text;
+      }
+
+      const tabsHtml = ann.tabs && ann.tabs.length > 1
+        ? `<div class="ann-tabs">${ann.tabs.map((t, ti) => `<span class="ann-tab${ti === (ann.activeTab || 0) ? ' active' : ''}" onclick="switchAnnTab(${i},${ti})">${ti + 1}</span>`).join('')}</div>`
+        : '';
+
+      return `<div class="ann-card${doneClass}" data-idx="${i}">
+        <div class="ann-header">
+          <span class="ann-color" style="background:${dotColor}"></span>
+          ${anchor ? `<span class="ann-anchor" onclick="scrollToAnnotation(${i})" title="Jump to location">${esc(anchor)}</span>` : ''}
+          ${ann.createdBy ? `<span style="font-size:10px;color:var(--text-dim)">${esc(ann.createdBy)}</span>` : ''}
+          <span style="margin-left:auto;font-size:10px;color:var(--text-dim)">${ann.createdAt ? timeAgo(ann.createdAt) : ''}</span>
+        </div>
+        <div class="ann-text" contenteditable="true" data-idx="${i}" onblur="saveAnnotation(${i}, this.textContent)">${esc(displayText)}</div>
+        ${tabsHtml}
+        <div class="ann-actions">
+          <button class="ann-action-btn" onclick="shareAnnotation(${i})" title="Share in chat">share</button>
+          <button class="ann-action-btn" onclick="toggleAnnDone(${i})" title="${ann.done ? 'Mark undone' : 'Mark done'}">${ann.done ? 'undone' : 'done'}</button>
+          <button class="ann-action-btn danger" onclick="deleteAnnotation(${i})" title="Delete">delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    $('docsList').innerHTML = `<div class="cmdk-empty">Error: ${e.message}</div>`;
+  }
+}
+
+async function saveAnnotation(idx, newText) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  const oldText = ann.tabs && ann.tabs.length > 1
+    ? ann.tabs[ann.activeTab || 0]
+    : ann.text;
+  if (newText === oldText) return;
+
+  const shapeId = ann.id;
+  const updates = {};
+  if (ann.tabs && ann.tabs.length > 1) {
+    const newTabs = [...ann.tabs];
+    newTabs[ann.activeTab || 0] = newText;
+    updates.tabs = newTabs;
+  } else {
+    updates.text = newText;
+  }
+
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(shapeId), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+  } catch (e) {
+    appendSystemMsg('Failed to save annotation: ' + e.message);
+  }
+}
+
+async function deleteAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(ann.id), {
+      method: 'DELETE',
+    });
+    loadAnnotations();
+  } catch (e) {
+    appendSystemMsg('Failed to delete annotation: ' + e.message);
+  }
+}
+
+async function toggleAnnDone(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(ann.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ done: !ann.done }),
+    });
+    loadAnnotations();
+  } catch (e) {
+    appendSystemMsg('Failed to update annotation: ' + e.message);
+  }
+}
+
+async function scrollToAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/scroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: ann.x, y: ann.y }),
+    });
+  } catch (e) {
+    appendSystemMsg('Failed to scroll: ' + e.message);
+  }
+}
+
+function shareAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann) return;
+  const anchor = ann.anchor ? ` (${ann.anchor.file}:${ann.anchor.line})` : '';
+  const text = `[${currentDocsProject}${anchor}] ${ann.text}`;
+  $('chatInput').value = text;
+  $('chatInput').focus();
+}
+
+function switchAnnTab(annIdx, tabIdx) {
+  const ann = currentAnnotations[annIdx];
+  if (!ann || !ann.tabs) return;
+  ann.activeTab = tabIdx;
+  loadAnnotations(); // re-render
 }
 </script>
 </body>

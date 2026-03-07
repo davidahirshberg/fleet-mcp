@@ -24,6 +24,42 @@ const STATE_FILE = path.join(os.homedir(), '.claude', 'agent-tasks.json');
 const LOG_FILE = path.join(os.homedir(), '.claude', 'agent-messages.jsonl');
 const HTML_FILE = path.join(__dirname, 'index.html');
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
+const REFS_FILE = path.join(os.homedir(), '.claude', 'references.json');
+
+// --- tlda integration ---
+const TLDA_PORT = 5176;
+const TLDA_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json');
+let tldaToken = null;
+try {
+  const cfg = JSON.parse(fs.readFileSync(TLDA_CONFIG, 'utf8'));
+  tldaToken = cfg.tokenRw || cfg.tokenRead || null;
+} catch {}
+
+function tldaFetch(apiPath, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const reqOpts = {
+      hostname: 'localhost',
+      port: TLDA_PORT,
+      path: '/api/projects/' + apiPath,
+      method: opts.method || 'GET',
+      headers: { ...opts.headers },
+    };
+    if (tldaToken) reqOpts.headers['Authorization'] = 'Bearer ' + tldaToken;
+    if (opts.body) reqOpts.headers['Content-Type'] = 'application/json';
+    const req = http.request(reqOpts, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, data }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+    if (opts.body) req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
+    req.end();
+  });
+}
 
 function logEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
@@ -59,11 +95,11 @@ function saveState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
-function kickManager(state) {
-  const mgrId = state.manager;
-  if (!mgrId) return false;
-  const agent = (state.agents || []).find(a => a.id === mgrId);
-  const win = agent?.kitty_win || mgrId;
+function kickAgentById(state, agentId) {
+  if (!agentId || agentId === 'web') return false;
+  const agent = (state.agents || []).find(a => a.id === agentId);
+  const win = agent?.kitty_win;
+  if (!win) return false;
   try {
     execSync(`${BIN}/agent-kick ${win}`, { timeout: 10000 });
     return true;
@@ -104,7 +140,7 @@ try {
 }
 
 // --- HTTP server ---
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   // CORS for local dev
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -154,7 +190,7 @@ const server = http.createServer((req, res) => {
         });
         saveState(state);
         logEvent({ type: 'chat', from: 'web', to: recipient, message });
-        const kicked = kickManager(state);
+        const kicked = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, kicked }));
       } catch (e) {
@@ -198,7 +234,21 @@ const server = http.createServer((req, res) => {
     }
 
     try {
-      const results = searchIndex.search(query, { project: project || undefined, limit });
+      const role = url.searchParams.get('role') || '';
+      const agentParam = url.searchParams.get('agent') || '';
+      let agentIds;
+      if (agentParam) {
+        const state = loadState();
+        const matches = (state.agents || []).filter(a =>
+          a.id === agentParam || a.name === agentParam || a.friendly_name === agentParam ||
+          a.id.startsWith(agentParam)
+        );
+        const ids = new Set();
+        for (const a of matches) { ids.add(a.id); if (a.session_id) ids.add(a.session_id); }
+        if (ids.size === 0) ids.add(agentParam);
+        agentIds = [...ids];
+      }
+      const results = searchIndex.search(query, { project: project || undefined, role: role || undefined, agent: agentIds, limit });
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ results, total: results.length, query }));
     } catch (e) {
@@ -343,6 +393,70 @@ const server = http.createServer((req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+    return;
+  }
+
+  // --- References ---
+
+  function loadRefs() {
+    try { return JSON.parse(fs.readFileSync(REFS_FILE, 'utf8')); } catch { return []; }
+  }
+  function saveRefs(refs) {
+    fs.writeFileSync(REFS_FILE, JSON.stringify(refs, null, 2));
+  }
+
+  if (url.pathname === '/api/refs' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(loadRefs()));
+    return;
+  }
+
+  if (url.pathname === '/api/refs' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const ref = JSON.parse(body);
+        ref.id = 'ref-' + Date.now().toString(36);
+        ref.created = new Date().toISOString();
+        const refs = loadRefs();
+        refs.push(ref);
+        saveRefs(refs);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(ref));
+      } catch (e) {
+        res.writeHead(500); res.end(e.message);
+      }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/refs/update' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { id, label, note } = JSON.parse(body);
+        const refs = loadRefs();
+        const ref = refs.find(r => r.id === id);
+        if (!ref) { res.writeHead(404); res.end('not found'); return; }
+        if (label !== undefined) ref.label = label;
+        if (note !== undefined) ref.note = note;
+        saveRefs(refs);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(ref));
+      } catch (e) { res.writeHead(500); res.end(e.message); }
+    });
+    return;
+  }
+
+  if (url.pathname === '/api/refs' && req.method === 'DELETE') {
+    const id = url.searchParams.get('id');
+    if (!id) { res.writeHead(400); res.end('missing id'); return; }
+    const refs = loadRefs().filter(r => r.id !== id);
+    saveRefs(refs);
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true }));
     return;
   }
 
@@ -629,7 +743,15 @@ const server = http.createServer((req, res) => {
     }
     try {
       const data = fs.readFileSync(resolved);
-      res.writeHead(200, { 'Content-Type': mime, 'Cache-Control': 'no-cache' });
+      // Sniff actual content type — uploaded SVGs may have .png extension
+      let actualMime = mime;
+      if (data[0] === 0x3C) {
+        const head = data.slice(0, 256).toString('utf8');
+        if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) {
+          actualMime = 'image/svg+xml';
+        }
+      }
+      res.writeHead(200, { 'Content-Type': actualMime, 'Cache-Control': 'no-cache' });
       res.end(data);
     } catch (e) {
       res.writeHead(404);
@@ -652,6 +774,10 @@ const server = http.createServer((req, res) => {
         if (buf[0] === 0xFF && buf[1] === 0xD8) ext = 'jpg';
         else if (buf[0] === 0x47 && buf[1] === 0x49) ext = 'gif';
         else if (buf[0] === 0x52 && buf[1] === 0x49) ext = 'webp';
+        else if (buf[0] === 0x3C) {
+          const head = buf.slice(0, 256).toString('utf8');
+          if (head.includes('<svg') || (head.includes('<?xml') && head.includes('svg'))) ext = 'svg';
+        }
         const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
         const filePath = path.join(uploadDir, name);
         fs.writeFileSync(filePath, buf);
@@ -659,6 +785,111 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // --- tlda proxy routes ---
+
+  // List tlda projects
+  if (url.pathname === '/api/tlda/projects' && req.method === 'GET') {
+    try {
+      const r = await tldaFetch('');
+      res.writeHead(r.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.data));
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'tlda server unreachable: ' + e.message }));
+    }
+    return;
+  }
+
+  // List annotations for a project
+  if (url.pathname.startsWith('/api/tlda/') && url.pathname.endsWith('/annotations') && req.method === 'GET') {
+    const project = url.pathname.split('/')[3];
+    try {
+      const r = await tldaFetch(project + '/shapes?type=math-note');
+      const shapes = Array.isArray(r.data) ? r.data : [];
+      const annotations = shapes.filter(s => s.type === 'math-note' && s.typeName === 'shape').map(s => ({
+        id: s.id,
+        text: s.props?.text || '',
+        color: s.props?.color || 'black',
+        x: Math.round(s.x || 0),
+        y: Math.round(s.y || 0),
+        done: s.props?.done || false,
+        anchor: s.meta?.sourceAnchor || null,
+        tabs: s.props?.tabs || null,
+        activeTab: s.props?.activeTab || 0,
+        createdAt: s.meta?.createdAt || null,
+        createdBy: s.meta?.createdBy || null,
+      }));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ project, annotations }));
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // Update an annotation (edit text)
+  if (url.pathname.startsWith('/api/tlda/') && url.pathname.includes('/annotations/') && req.method === 'PUT') {
+    const parts = url.pathname.split('/');
+    const project = parts[3];
+    const shapeId = decodeURIComponent(parts[5]);
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const updates = JSON.parse(body);
+        const r = await tldaFetch(project + '/shapes/' + encodeURIComponent(shapeId), {
+          method: 'PUT',
+          body: { props: updates },
+        });
+        res.writeHead(r.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r.data));
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Delete an annotation
+  if (url.pathname.startsWith('/api/tlda/') && url.pathname.includes('/annotations/') && req.method === 'DELETE') {
+    const parts = url.pathname.split('/');
+    const project = parts[3];
+    const shapeId = decodeURIComponent(parts[5]);
+    try {
+      const r = await tldaFetch(project + '/shapes/' + encodeURIComponent(shapeId), { method: 'DELETE' });
+      res.writeHead(r.status, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(r.data));
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // Scroll to a location in a doc
+  if (url.pathname.startsWith('/api/tlda/') && url.pathname.endsWith('/scroll') && req.method === 'POST') {
+    const project = url.pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', async () => {
+      try {
+        const { x, y } = JSON.parse(body);
+        const r = await tldaFetch(project + '/signal', {
+          method: 'POST',
+          body: { key: 'signal:forward-scroll', x, y, timestamp: Date.now() },
+        });
+        res.writeHead(r.status, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(r.data));
+      } catch (e) {
+        res.writeHead(502, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
       }
     });

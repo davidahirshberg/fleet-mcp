@@ -84,22 +84,7 @@ export class SearchIndex {
       VALUES (?, ?, ?, ?)
       ON CONFLICT(file_path) DO UPDATE SET byte_offset=excluded.byte_offset, line_offset=excluded.line_offset, mtime_ms=excluded.mtime_ms
     `);
-    this._searchStmt = this.db.prepare(`
-      SELECT e.*, snippet(entries_fts, 0, '<<', '>>', '...', 40) as snippet
-      FROM entries_fts f
-      JOIN entries e ON e.id = f.rowid
-      WHERE entries_fts MATCH ?
-      ORDER BY e.timestamp DESC
-      LIMIT ?
-    `);
-    this._searchProjectStmt = this.db.prepare(`
-      SELECT e.*, snippet(entries_fts, 0, '<<', '>>', '...', 40) as snippet
-      FROM entries_fts f
-      JOIN entries e ON e.id = f.rowid
-      WHERE entries_fts MATCH ? AND e.project = ?
-      ORDER BY e.timestamp DESC
-      LIMIT ?
-    `);
+    // Search queries are built dynamically to support optional agent/role/project filters
   }
 
   // --- Indexing ---
@@ -348,27 +333,37 @@ export class SearchIndex {
 
   // --- Search ---
 
-  search(query, { project, limit = 50 } = {}) {
+  search(query, { project, agent, role, limit = 50 } = {}) {
     // FTS5 query syntax: wrap in quotes for phrase, or use as-is for term matching
     // Escape double quotes in the query
     const ftsQuery = query.replace(/"/g, '""');
 
+    const runQuery = (q) => {
+      const clauses = ['entries_fts MATCH ?'];
+      const params = [q];
+      if (project) { clauses.push('e.project = ?'); params.push(project); }
+      if (role) { clauses.push('e.role = ?'); params.push(role); }
+      if (agent && Array.isArray(agent) && agent.length > 0) {
+        const placeholders = agent.map(() => '?').join(',');
+        clauses.push(`(e.session_id IN (${placeholders}) OR e.from_id IN (${placeholders}) OR e.to_id IN (${placeholders}))`);
+        params.push(...agent, ...agent, ...agent);
+      }
+      params.push(limit);
+      const sql = `SELECT e.*, snippet(entries_fts, 0, '<<', '>>', '...', 40) as snippet
+        FROM entries_fts f JOIN entries e ON e.id = f.rowid
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY e.timestamp DESC LIMIT ?`;
+      return this.db.prepare(sql).all(...params);
+    };
+
     let rows;
     try {
-      if (project) {
-        rows = this._searchProjectStmt.all(ftsQuery, project, limit);
-      } else {
-        rows = this._searchStmt.all(ftsQuery, limit);
-      }
+      rows = runQuery(ftsQuery);
     } catch {
       // If FTS query syntax fails, try wrapping each word in quotes
       const safeQuery = query.split(/\s+/).map(w => `"${w.replace(/"/g, '""')}"`).join(' ');
       try {
-        if (project) {
-          rows = this._searchProjectStmt.all(safeQuery, project, limit);
-        } else {
-          rows = this._searchStmt.all(safeQuery, limit);
-        }
+        rows = runQuery(safeQuery);
       } catch {
         return [];
       }
