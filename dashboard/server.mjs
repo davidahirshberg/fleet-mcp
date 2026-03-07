@@ -559,6 +559,33 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Label agent
+  if (url.pathname === '/api/label' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { agent: agentQuery, labels } = JSON.parse(body);
+        if (!agentQuery || !Array.isArray(labels)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent and labels[] required' })); return; }
+        const state = loadState();
+        const agent = (state.agents || []).find(a =>
+          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
+          (a.id && a.id.startsWith(agentQuery))
+        );
+        if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+        agent.labels = labels;
+        saveState(state);
+        logEvent({ type: 'label', agent: agent.id, labels });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, agent: agent.id, labels }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   // Rename agent
   if (url.pathname === '/api/rename' && req.method === 'POST') {
     let body = '';

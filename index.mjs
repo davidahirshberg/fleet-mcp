@@ -514,6 +514,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'label_agent',
+      description: 'Set labels on an agent. Labels are tags for filtering and grouping agents in the dashboard. Manager only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name)' },
+          labels: { type: 'array', items: { type: 'string' }, description: 'Array of label strings to set on the agent (replaces existing labels)' },
+        },
+        required: ['agent', 'labels'],
+      },
+    },
+    {
       name: 'interrupt',
       description: 'Send a kitty ESC interrupt to an agent. Use this to break into an agent that is mid-tool-chain and needs to stop what it\'s doing. NOT for routine notifications — those go through fs.watch automatically. Manager only.',
       inputSchema: {
@@ -546,9 +558,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const id = ME || agentName;
 
-    // Upsert: preserve friendly_name from old entry, then remove
+    // Upsert: preserve friendly_name and labels from old entry, then remove
     const oldEntry = getAgent(state, id);
     const oldFriendlyName = oldEntry?.friendly_name;
+    const oldLabels = oldEntry?.labels;
     removeAgent(state, id);
 
     const entry = {
@@ -567,6 +580,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
+
+    // Labels: preserve old labels, add auto-labels
+    const labels = new Set(oldLabels || []);
+    if (isManager) labels.add('manager');
+    if (entry.cwd) {
+      const project = path.basename(entry.cwd);
+      if (project && project !== '~') labels.add(project);
+    }
+    if (labels.size > 0) entry.labels = [...labels];
 
     state.agents.push(entry);
 
@@ -1316,6 +1338,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     return { content: [{ type: 'text', text: `${filtered.length} messages:\n\n${lines.join('\n\n---\n\n')}` }] };
+  }
+
+  // ---- label_agent ----
+  if (name === 'label_agent') {
+    const guard = requireManager();
+    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
+    const state = loadState();
+    const agent = getAgent(state, args.agent);
+    if (!agent) return { content: [{ type: 'text', text: `Agent "${args.agent}" not registered.` }], isError: true };
+    agent.labels = args.labels || [];
+    saveState(state);
+    const label = agent.friendly_name || agent.name || agent.id.slice(0, 8);
+    return { content: [{ type: 'text', text: `Labels for ${label}: ${agent.labels.join(', ') || '(none)'}` }] };
   }
 
   // ---- interrupt ----

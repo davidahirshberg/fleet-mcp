@@ -415,17 +415,27 @@
   .badge-manager { background: rgba(147,112,219,0.2); color: var(--purple); }
   .badge-top { background: rgba(200,176,96,0.2); color: var(--yellow); }
 
-  .team-filter-bar {
+  .label-filter-bar {
     display: flex; align-items: center; gap: 4px; padding: 6px 10px;
     border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: 0;
   }
-  .team-filter-bar:empty { display: none; }
-  .team-btn {
+  .label-filter-bar:empty { display: none; }
+  .label-btn {
     font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border);
-    background: transparent; color: var(--text-dim); cursor: pointer; font-weight: 600;
+    background: transparent; cursor: pointer; font-weight: 600; transition: all 0.15s;
   }
-  .team-btn:hover { border-color: var(--accent); color: var(--text); }
-  .team-btn.active { background: rgba(147,112,219,0.2); border-color: var(--accent); color: var(--accent); }
+  .label-btn:hover { opacity: 1; }
+  .label-btn.active { border-width: 2px; }
+  .agent-label {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600;
+    display: inline-block; margin-left: 2px; vertical-align: middle;
+  }
+  .add-label-btn {
+    font-size: 9px; padding: 1px 4px; border-radius: 3px; border: 1px dashed var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer; display: inline-block;
+    vertical-align: middle; margin-left: 2px; line-height: 1;
+  }
+  .add-label-btn:hover { border-color: var(--accent); color: var(--accent); }
 
   .task-row { padding: 6px 10px; border-bottom: 1px solid rgba(42,42,74,0.5); }
   .task-row:last-child { border-bottom: none; }
@@ -1058,7 +1068,7 @@
     </div>
 
     <div class="tab-view active" id="tab-dashboard">
-      <div class="team-filter-bar" id="teamFilterBar"></div>
+      <div class="label-filter-bar" id="labelFilterBar"></div>
       <div class="search-bar">
         <input type="text" id="agentSearch" placeholder="Search agents..." autocomplete="off">
       </div>
@@ -1569,43 +1579,102 @@ function renderFilterBar() {
   }
 }
 
-// --- Team filter ---
-let teamFilter = null; // null = all, or manager agent id
+// --- Label filter ---
+const activeLabelFilters = new Set(); // labels currently selected
 
-function renderTeamFilter(state) {
-  const bar = $('teamFilterBar');
-  const managers = (state.agents || []).filter(a => a.is_manager);
-  if (managers.length < 2) { bar.innerHTML = ''; return; }
-  const btns = [`<span class="team-btn${teamFilter === null ? ' active' : ''}" onclick="setTeamFilter(null)">all</span>`];
-  for (const m of managers) {
-    const label = m.friendly_name || m.name || m.id.slice(0, 8);
-    const isTop = m.id === state.manager;
-    const active = teamFilter === m.id ? ' active' : '';
-    btns.push(`<span class="team-btn${active}" onclick="setTeamFilter('${esc(m.id)}')">${esc(label)}${isTop ? ' ★' : ''}</span>`);
+// Stable color for a label name (hash-based)
+const LABEL_COLORS = [
+  '#9370db', '#7ab8a0', '#c8b060', '#7a9ec8', '#c8956a', '#6aafb0', '#b87a95',
+  '#8bc87a', '#c87a7a', '#7ac8c8', '#b8a06a', '#9e7ac8',
+];
+function labelColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+  return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length];
+}
+
+function getAllLabels(state) {
+  const labels = new Set();
+  for (const a of (state.agents || [])) {
+    for (const l of (a.labels || [])) labels.add(l);
+  }
+  return [...labels].sort();
+}
+
+function renderLabelFilter(state) {
+  const bar = $('labelFilterBar');
+  const allLabels = getAllLabels(state);
+  if (allLabels.length === 0) { bar.innerHTML = ''; return; }
+  const btns = [`<span class="label-btn${activeLabelFilters.size === 0 ? ' active' : ''}" style="color:var(--text-dim);border-color:var(--border)" onclick="clearLabelFilter()">all</span>`];
+  for (const l of allLabels) {
+    const color = labelColor(l);
+    const active = activeLabelFilters.has(l);
+    const style = active
+      ? `color:${color};border-color:${color};background:${color}20`
+      : `color:${color}99;border-color:${color}40`;
+    btns.push(`<span class="label-btn${active ? ' active' : ''}" style="${style}" onclick="toggleLabelFilter('${esc(l)}')">${esc(l)}</span>`);
   }
   bar.innerHTML = btns.join('');
 }
 
-function setTeamFilter(managerId) {
-  teamFilter = managerId;
+function toggleLabelFilter(label) {
+  if (activeLabelFilters.has(label)) activeLabelFilters.delete(label);
+  else activeLabelFilters.add(label);
   if (currentState) render(currentState);
 }
 
-function getTeamAgentIds(state) {
-  if (!teamFilter) return null; // no filter
-  const tasks = state.tasks || [];
+function clearLabelFilter() {
+  activeLabelFilters.clear();
+  if (currentState) render(currentState);
+}
+
+function agentMatchesLabelFilter(agent) {
+  if (activeLabelFilters.size === 0) return true;
+  const agentLabels = agent.labels || [];
+  for (const f of activeLabelFilters) {
+    if (!agentLabels.includes(f)) return false;
+  }
+  return true; // AND logic
+}
+
+function getLabelFilteredAgentIds(state) {
+  if (activeLabelFilters.size === 0) return null;
   const ids = new Set();
-  ids.add(teamFilter); // include the manager itself
-  for (const t of tasks) {
-    if (t.delegated_by === teamFilter) ids.add(t.agent);
+  for (const a of (state.agents || [])) {
+    if (agentMatchesLabelFilter(a)) ids.add(a.id);
   }
   return ids;
+}
+
+function renderAgentLabels(agent) {
+  const labels = agent.labels || [];
+  if (labels.length === 0) return '';
+  return labels.map(l => {
+    const color = labelColor(l);
+    return `<span class="agent-label" style="color:${color};background:${color}18">${esc(l)}</span>`;
+  }).join('');
+}
+
+async function addLabelToAgent(agentId) {
+  const label = prompt('Add label:');
+  if (!label || !label.trim()) return;
+  const state = currentState;
+  const agent = (state.agents || []).find(a => a.id === agentId);
+  if (!agent) return;
+  const labels = [...new Set([...(agent.labels || []), label.trim()])];
+  try {
+    await fetch('/api/label', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentId, labels }),
+    });
+  } catch (e) { console.error('label failed', e); }
 }
 
 // --- Render ---
 function render(state) {
   renderFilterBar();
-  renderTeamFilter(state);
+  renderLabelFilter(state);
   renderChat(state);
   renderAgents(state);
   renderTasks(state);
@@ -1705,8 +1774,8 @@ function sortArrow(col) {
 
 function renderAgents(state) {
   let agents = (state.agents || []).slice();
-  const teamIds = getTeamAgentIds(state);
-  if (teamIds) agents = agents.filter(a => teamIds.has(a.id));
+  const labelIds = getLabelFilteredAgentIds(state);
+  if (labelIds) agents = agents.filter(a => labelIds.has(a.id));
   const dir = agentSortAsc ? 1 : -1;
   agents.sort((a, b) => {
     const aa = isActive(a), ab = isActive(b);
@@ -1754,8 +1823,10 @@ function renderAgents(state) {
     const quietCls = quietMins > 30 ? ' quiet' : '';
     const msgText = lastMsgAgo || '-';
     const renameBtn = `<span class="rename-btn" onclick="event.stopPropagation();renameAgent('${esc(a.id)}','${esc(a.friendly_name || a.name || '')}')" title="Rename">&#x270E;</span>`;
+    const labelsHtml = renderAgentLabels(a);
+    const addLabelBtn = `<span class="add-label-btn" onclick="event.stopPropagation();addLabelToAgent('${esc(a.id)}')" title="Add label">+</span>`;
     return `<tr${dimStyle}>
-      <td>${agentLink(state, a.id)}${renameBtn} ${badges.join('')}</td>
+      <td>${agentLink(state, a.id)}${renameBtn} ${badges.join('')} ${labelsHtml}${addLabelBtn}</td>
       <td>${spark}</td>
       <td class="col-msg${quietCls}">${msgText}</td>
       <td class="col-seen">${seen}</td>
@@ -1767,9 +1838,9 @@ function renderAgents(state) {
 
 function renderTasks(state) {
   const tasks = (state.tasks || []);
-  const teamIds = getTeamAgentIds(state);
-  const active = tasks.filter(t => t.status !== 'done' && (!teamIds || teamIds.has(t.agent) || t.delegated_by === teamFilter));
-  const done = tasks.filter(t => t.status === 'done' && (!teamIds || teamIds.has(t.agent) || t.delegated_by === teamFilter));
+  const labelIds = getLabelFilteredAgentIds(state);
+  const active = tasks.filter(t => t.status !== 'done' && (!labelIds || labelIds.has(t.agent)));
+  const done = tasks.filter(t => t.status === 'done' && (!labelIds || labelIds.has(t.agent)));
 
   if (active.length === 0) {
     $('tasks').innerHTML = '<div class="empty">No active tasks</div>';
