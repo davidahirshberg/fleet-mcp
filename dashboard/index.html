@@ -272,6 +272,46 @@
   }
   .chat-input-bar button:active { opacity: 0.7; }
   .chat-input-bar button:disabled { opacity: 0.3; }
+  .chat-attachments {
+    display: none;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 0;
+  }
+  .chat-attachments.active { display: flex; }
+  .chat-attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(122,158,200,0.15);
+    border: 1px solid rgba(122,158,200,0.3);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--blue);
+    max-width: 260px;
+    overflow: hidden;
+  }
+  .chat-attach-chip .chip-type {
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    padding: 0 3px; border-radius: 2px; flex-shrink: 0;
+  }
+  .chip-type-session { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .chip-type-events { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .chip-type-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .chip-type-refs { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .chat-attach-chip .chip-label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text);
+  }
+  .chat-attach-chip .chip-del {
+    cursor: pointer; opacity: 0.5; font-size: 13px; flex-shrink: 0;
+    line-height: 1; padding: 0 2px;
+  }
+  .chat-attach-chip .chip-del:hover { opacity: 1; color: var(--orange); }
+  .chat-input-bar.drag-over { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .log-result[draggable="true"], .pinned-ref-item[draggable="true"] { cursor: grab; }
+  .log-result[draggable="true"]:active, .pinned-ref-item[draggable="true"]:active { cursor: grabbing; }
   #interruptToggle {
     background: none;
     border: 1px solid var(--border);
@@ -1129,6 +1169,7 @@
     <div class="chat-input-bar">
       <div class="chat-input-wrap">
         <div class="cmd-palette" id="cmdPalette"></div>
+        <div class="chat-attachments" id="chatAttachments"></div>
         <textarea id="chatInput" placeholder="Message (to manager)..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" rows="1"></textarea>
       </div>
       <button id="interruptToggle" onclick="toggleInterrupt()" title="Toggle interrupt mode — next message sends ESC">&#x26A1;</button>
@@ -2560,11 +2601,57 @@ async function interruptAgent(agentId) {
   } catch (e) { appendSystemMsg('Interrupt failed: ' + e.message); }
 }
 
+// --- Chat attachments (drag-to-chat) ---
+let chatAttachments = [];
+
+function addChatAttachment(item) {
+  // Deduplicate by source
+  if (chatAttachments.some(a => a.source === item.source)) return;
+  chatAttachments.push(item);
+  renderChatAttachments();
+}
+
+function removeChatAttachment(idx) {
+  chatAttachments.splice(idx, 1);
+  renderChatAttachments();
+}
+
+function renderChatAttachments() {
+  const container = $('chatAttachments');
+  if (!chatAttachments.length) {
+    container.className = 'chat-attachments';
+    container.innerHTML = '';
+    return;
+  }
+  container.className = 'chat-attachments active';
+  container.innerHTML = chatAttachments.map((a, i) => {
+    const typeClass = 'chip-type-' + (a.type || 'session');
+    const label = (a.snippet || '').substring(0, 60) || a.source || 'attachment';
+    return `<span class="chat-attach-chip">
+      <span class="chip-type ${typeClass}">${esc(a.type || '?')}</span>
+      <span class="chip-label" title="${esc(a.snippet || '')}">${esc(label)}</span>
+      <span class="chip-del" onclick="removeChatAttachment(${i})">&times;</span>
+    </span>`;
+  }).join('');
+}
+
+// Delegated dragstart for search results and pinned refs
+document.addEventListener('dragstart', e => {
+  const el = e.target.closest('[data-drag-idx]');
+  if (!el) return;
+  const container = el.closest('#logResults, #pinnedRefsBar');
+  if (!container || !container._dragItems) return;
+  const item = container._dragItems[parseInt(el.dataset.dragIdx)];
+  if (!item) return;
+  e.dataTransfer.setData('application/x-chat-attachment', JSON.stringify(item));
+  e.dataTransfer.effectAllowed = 'copy';
+});
+
 // --- Send ---
 async function sendChat() {
   const input = $('chatInput');
   const msg = input.value.trim();
-  if (!msg) return;
+  if (!msg && !chatAttachments.length) return;
   $('cmdPalette').className = 'cmd-palette';
   if (msg.startsWith('/')) {
     input.value = '';
@@ -2590,14 +2677,20 @@ async function sendChat() {
       if (data.error) appendSystemMsg('Interrupt error: ' + data.error);
       toggleInterrupt(); // auto-disable after sending
     } else {
+      const payload = { message: msg, to: target };
+      if (chatAttachments.length) {
+        payload.attachments = chatAttachments.slice();
+      }
       const res = await fetch('/api/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, to: target }),
+        body: JSON.stringify(payload),
       });
       if (!res.ok) throw new Error(await res.text());
     }
     shouldAutoScroll = true;
+    chatAttachments = [];
+    renderChatAttachments();
   } catch (e) {
     input.value = msg;
     alert('Failed: ' + e.message);
@@ -2643,13 +2736,20 @@ $('chatInput').addEventListener('paste', async e => {
   } catch (err) { appendSystemMsg('Upload failed: ' + err.message); }
 });
 
-// Drop image onto chat
+// Drop image or search result onto chat
 const chatArea = $('chatInput').closest('.chat-input-bar');
-chatArea.addEventListener('dragover', e => { e.preventDefault(); chatArea.style.outline = '2px solid var(--blue)'; });
-chatArea.addEventListener('dragleave', () => { chatArea.style.outline = ''; });
+chatArea.addEventListener('dragover', e => { e.preventDefault(); chatArea.classList.add('drag-over'); });
+chatArea.addEventListener('dragleave', e => { if (!chatArea.contains(e.relatedTarget)) chatArea.classList.remove('drag-over'); });
 chatArea.addEventListener('drop', async e => {
   e.preventDefault();
-  chatArea.style.outline = '';
+  chatArea.classList.remove('drag-over');
+  // Check for search result attachment
+  const jsonData = e.dataTransfer?.getData('application/x-chat-attachment');
+  if (jsonData) {
+    try { addChatAttachment(JSON.parse(jsonData)); } catch {}
+    $('chatInput').focus();
+    return;
+  }
   const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
   if (!file) return;
   appendSystemMsg('Uploading image...');
@@ -2860,12 +2960,13 @@ async function searchLogs() {
     const PROJECTS = HOME + '/.claude/projects/';
     const EVENTS_FILE = HOME + '/.claude/agent-messages.jsonl';
 
+    const dragItems = [];
     resultsEl.innerHTML = results.map(r => {
       let filePath, roleClass, ts;
       const typeBadge = `<span class="type-badge type-${r.source}">${r.source === 'session' ? 'conv' : r.source === 'events' ? 'event' : r.source}</span>`;
 
       if (r.source === 'tlda') {
-        return `<div class="log-result">
+        return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'tlda', snippet:(r.snippet||'').substring(0,200), source:'tlda/' + (r.project||''), timestamp:r.timestamp||''})-1}">
           <div class="log-result-header">
             ${typeBadge}
             <span class="log-role" style="background:rgba(106,175,176,0.2);color:var(--cyan)">${esc(r.role || 'note')}</span>
@@ -2880,7 +2981,7 @@ async function searchLogs() {
         const zedUrl = 'zed://file' + EVENTS_FILE + ':' + r.line;
         roleClass = 'role-' + (r.role || 'chat');
         ts = r.timestamp ? timeShort(r.timestamp) : '';
-        return `<div class="log-result">
+        return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'events', snippet:(r.snippet||'').substring(0,200), source:filePath, timestamp:r.timestamp||''})-1}">
           <div class="log-result-header">
             ${typeBadge}
             <span class="log-role ${roleClass}">${esc(r.role)}</span>
@@ -2894,7 +2995,7 @@ async function searchLogs() {
       const fullPath = PROJECTS + r.project + '/' + r.sessionId + '.jsonl';
       filePath = fullPath + ':' + r.line;
       const zedUrl = 'zed://file' + fullPath + ':' + r.line;
-      return `<div class="log-result" onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})">
+      return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'session', snippet:(r.snippet||'').substring(0,200), source:r.project+'/'+r.sessionId+':'+r.line, timestamp:''})-1}" onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})">
         <div class="log-result-header">
           ${typeBadge}
           <span class="log-role ${r.role === 'user' ? 'role-user' : 'role-assistant'}">${r.role}</span>
@@ -2904,6 +3005,7 @@ async function searchLogs() {
         <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
       </div>`;
     }).join('');
+    resultsEl._dragItems = dragItems;
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
   }
@@ -2925,6 +3027,7 @@ function renderRefsAsResults(query) {
     resultsEl.innerHTML = '<div class="empty">No pinned references' + (query ? ' matching "' + esc(query) + '"' : '') + '</div>';
     return;
   }
+  const dragItems = [];
   resultsEl.innerHTML = refs.map(r => {
     const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
     const label = esc(r.label || 'untitled');
@@ -2935,7 +3038,8 @@ function renderRefsAsResults(query) {
     const clickAttr = r.type === 'conversation'
       ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
       : '';
-    return `<div class="log-result" ${clickAttr}>
+    const dragIdx = dragItems.push({type:'refs', snippet:(r.label||'untitled')+': '+(r.preview||'').substring(0,150), source:r.type==='conversation'?r.project+'/'+r.sessionId+':'+r.line:(r.path||''), timestamp:''}) - 1;
+    return `<div class="log-result" draggable="true" data-drag-idx="${dragIdx}" ${clickAttr}>
       <div class="log-result-header">
         <span class="type-badge type-refs">ref</span>
         <span style="font-size:12px">${icon}</span>
@@ -2946,6 +3050,7 @@ function renderRefsAsResults(query) {
       ${preview}
     </div>`;
   }).join('');
+  resultsEl._dragItems = dragItems;
 }
 
 let currentContext = null; // tracks what's shown in the context modal
@@ -3023,6 +3128,7 @@ function renderPinnedRefsBar() {
     return;
   }
   bar.classList.add('active');
+  const barDragItems = [];
   bar.innerHTML = refsData.map(r => {
     const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
     const label = esc(r.label || 'untitled');
@@ -3032,7 +3138,8 @@ function renderPinnedRefsBar() {
     const clickAttr = r.type === 'conversation'
       ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
       : '';
-    return `<div class="pinned-ref-item" ${clickAttr}>
+    const dragIdx = barDragItems.push({type:'refs', snippet:(r.label||'untitled')+': '+(r.preview||'').substring(0,150), source:r.type==='conversation'?r.project+'/'+r.sessionId+':'+r.line:(r.path||''), timestamp:''}) - 1;
+    return `<div class="pinned-ref-item" draggable="true" data-drag-idx="${dragIdx}" ${clickAttr}>
       <span class="pinned-ref-icon">${icon}</span>
       <div style="min-width:0;flex:1;">
         <span class="pinned-ref-label">${label}</span>
@@ -3041,6 +3148,7 @@ function renderPinnedRefsBar() {
       <span class="pinned-ref-del" onclick="event.stopPropagation();deleteRef('${r.id}')">&times;</span>
     </div>`;
   }).join('');
+  bar._dragItems = barDragItems;
 }
 
 async function updateRefLabel(id, newLabel) {
