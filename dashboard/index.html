@@ -37,11 +37,11 @@
     height: 100%;
   }
   .left-pane {
-    flex: 1;
     display: flex;
     flex-direction: column;
-    border-right: 1px solid var(--border);
     min-width: 0;
+    width: 50%;
+    flex-shrink: 0;
   }
   .right-pane {
     flex: 1;
@@ -57,6 +57,34 @@
     display: flex;
     flex-direction: column;
     overflow: hidden;
+  }
+
+  /* Drag handles */
+  .drag-handle-v {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+    touch-action: none;
+  }
+  .drag-handle-v:hover,
+  .drag-handle-v.dragging {
+    background: var(--accent);
+  }
+  .drag-handle-h {
+    height: 5px;
+    cursor: row-resize;
+    background: transparent;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+    touch-action: none;
+  }
+  .drag-handle-h:hover,
+  .drag-handle-h.dragging {
+    background: var(--accent);
   }
   .agents-panel .section-body {
     flex: 1;
@@ -980,8 +1008,9 @@
   /* Mobile: stack vertically */
   @media (max-width: 700px) {
     .split { flex-direction: column; }
-    .left-pane { border-right: none; border-bottom: 1px solid var(--border); flex: 1; }
+    .left-pane { border-right: none; border-bottom: 1px solid var(--border); flex: 1; width: auto !important; }
     .right-pane { flex: 0 0 40%; }
+    .drag-handle-v { display: none; }
   }
 </style>
 </head>
@@ -1013,6 +1042,9 @@
       <button id="chatSend" onclick="sendChat()">send</button>
     </div>
   </div>
+
+  <!-- Vertical resize handle -->
+  <div class="drag-handle-v" id="dragV"></div>
 
   <!-- Right: Dashboard + Logs -->
   <div class="right-pane">
@@ -1093,6 +1125,9 @@
       <div id="refsList"></div>
     </div>
 
+    <!-- Horizontal resize handle -->
+    <div class="drag-handle-h" id="dragH"></div>
+
     <!-- Active Agents — always visible, fixed height -->
     <div class="agents-panel">
       <div class="section-body" id="agents"></div>
@@ -1130,6 +1165,91 @@
 
 <script>
 const $ = id => document.getElementById(id);
+
+// --- Resizable panels ---
+(function() {
+  const MIN_LEFT = 200;
+  const MIN_RIGHT = 200;
+  const MIN_AGENTS = 80;
+  const MIN_TABS = 100;
+
+  function initResizable() {
+    const dragV = document.getElementById('dragV');
+    const dragH = document.getElementById('dragH');
+    const leftPane = document.querySelector('.left-pane');
+    const rightPane = document.querySelector('.right-pane');
+    const agentsPanel = document.querySelector('.agents-panel');
+
+    // Restore saved sizes
+    const savedLeft = localStorage.getItem('fleet-left-width');
+    if (savedLeft) leftPane.style.width = savedLeft;
+
+    const savedAgents = localStorage.getItem('fleet-agents-height');
+    if (savedAgents) agentsPanel.style.height = savedAgents;
+
+    // Vertical handle: resize left/right panes
+    setupDrag(dragV, {
+      onMove(e) {
+        const container = leftPane.parentElement;
+        const rect = container.getBoundingClientRect();
+        const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+        const clamped = Math.max(MIN_LEFT, Math.min(x, rect.width - MIN_RIGHT));
+        leftPane.style.width = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-left-width', leftPane.style.width);
+      }
+    });
+
+    // Horizontal handle: resize agents panel height
+    setupDrag(dragH, {
+      onMove(e) {
+        const container = rightPane;
+        const rect = container.getBoundingClientRect();
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+        const fromBottom = rect.height - y;
+        const clamped = Math.max(MIN_AGENTS, Math.min(fromBottom, rect.height - MIN_TABS));
+        agentsPanel.style.height = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-agents-height', agentsPanel.style.height);
+      }
+    });
+  }
+
+  function setupDrag(handle, { onMove, onEnd }) {
+    function start(e) {
+      e.preventDefault();
+      handle.classList.add('dragging');
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = handle.classList.contains('drag-handle-v') ? 'col-resize' : 'row-resize';
+
+      function move(e) { onMove(e); }
+      function end() {
+        handle.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', end);
+        document.removeEventListener('touchmove', move);
+        document.removeEventListener('touchend', end);
+        onEnd();
+      }
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', end);
+      document.addEventListener('touchmove', move, { passive: false });
+      document.addEventListener('touchend', end);
+    }
+    handle.addEventListener('mousedown', start);
+    handle.addEventListener('touchstart', start, { passive: false });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initResizable);
+  } else {
+    initResizable();
+  }
+})();
 let currentState = null;
 let shouldAutoScroll = true;
 const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5'];
