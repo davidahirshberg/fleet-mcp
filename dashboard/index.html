@@ -1022,6 +1022,45 @@
     font-size: 10px;
   }
 
+  /* Pinned refs bar in unified search */
+  .pinned-refs-bar {
+    display: none;
+    background: rgba(200,176,96,0.06);
+    border-bottom: 1px solid var(--border);
+    max-height: 160px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pinned-refs-bar.active { display: block; }
+  .pinned-ref-item {
+    padding: 5px 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+    cursor: pointer;
+  }
+  .pinned-ref-item:last-child { border-bottom: none; }
+  .pinned-ref-item:hover { background: rgba(200,176,96,0.08); }
+  .pinned-ref-icon { flex-shrink: 0; font-size: 11px; margin-top: 1px; }
+  .pinned-ref-label { font-weight: 600; color: var(--yellow); }
+  .pinned-ref-meta { font-size: 10px; color: var(--text-dim); }
+  .pinned-ref-del {
+    margin-left: auto; opacity: 0; cursor: pointer; font-size: 14px;
+    color: var(--text-dim); flex-shrink: 0; padding: 0 4px;
+  }
+  .pinned-ref-item:hover .pinned-ref-del { opacity: 0.5; }
+  .pinned-ref-del:hover { opacity: 1 !important; color: var(--orange); }
+  .type-badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    font-weight: 700; text-transform: uppercase; flex-shrink: 0;
+  }
+  .type-session { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .type-events { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .type-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .type-refs { background: rgba(200,176,96,0.2); color: var(--yellow); }
+
   /* Mobile: stack vertically */
   @media (max-width: 700px) {
     .split { flex-direction: column; }
@@ -1068,10 +1107,8 @@
     <div class="tab-bar">
       <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
       <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
-      <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
+      <button class="tab-btn" onclick="switchTab('search')">Search</button>
       <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
-      <button class="tab-btn" onclick="switchTab('docs')">Docs</button>
-      <button class="tab-btn" onclick="switchTab('refs')">Refs</button>
     </div>
 
     <div class="tab-view active" id="tab-dashboard">
@@ -1097,10 +1134,17 @@
       <canvas id="ganttCanvas" style="width:100%;display:block"></canvas>
     </div>
 
-    <div class="tab-view" id="tab-logs">
+    <div class="tab-view" id="tab-search">
       <div class="logs-filter-bar" id="logsFilterBar"></div>
       <div class="log-search-bar">
-        <input type="text" id="logSearchInput" placeholder="Search all logs..." autocomplete="off">
+        <input type="text" id="logSearchInput" placeholder="Search conversations, events, annotations, refs..." autocomplete="off">
+        <select id="logTypeFilter" onchange="searchLogs()">
+          <option value="">all types</option>
+          <option value="session">conversations</option>
+          <option value="events">events</option>
+          <option value="tlda">annotations</option>
+          <option value="refs">pinned refs</option>
+        </select>
         <select id="logRoleFilter" onchange="searchLogs()">
           <option value="">all roles</option>
           <option value="user">user (human)</option>
@@ -1110,7 +1154,9 @@
         </select>
         <select id="logAgentFilter" onchange="searchLogs()"><option value="">all agents</option></select>
         <select id="logProjectFilter"><option value="">all projects</option></select>
+        <label class="pinned-toggle" id="pinnedToggle" style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);cursor:pointer;white-space:nowrap;"><input type="checkbox" id="pinnedOnlyCheck" onchange="searchLogs()" style="margin:0;cursor:pointer;"> pinned only</label>
       </div>
+      <div class="pinned-refs-bar" id="pinnedRefsBar"></div>
       <div class="log-search-status" id="logStatus"></div>
       <div class="log-results" id="logResults"></div>
     </div>
@@ -1123,26 +1169,6 @@
         </div>
       </div>
       <pre class="terminal-output" id="terminalOutput"></pre>
-    </div>
-
-    <div class="tab-view" id="tab-docs">
-      <div class="docs-header">
-        <select id="docsProjectSelect" onchange="loadAnnotations()">
-          <option value="">Select a document...</option>
-        </select>
-        <button class="docs-refresh-btn" onclick="loadAnnotations()" title="Refresh">&#x21bb;</button>
-      </div>
-      <div class="docs-list" id="docsList">
-        <div class="cmdk-empty">Select a document to see annotations</div>
-      </div>
-    </div>
-
-    <div class="tab-view" id="tab-refs" style="overflow-y:auto;-webkit-overflow-scrolling:touch;padding:8px;">
-      <div style="display:flex;gap:6px;margin-bottom:8px;">
-        <input type="text" id="refFileInput" placeholder="Add file path..." style="flex:1;font-size:12px;padding:4px 8px;background:var(--bg);border:1px solid var(--border);color:var(--fg);border-radius:4px;" autocomplete="off">
-        <button onclick="addFileRef()" style="font-size:11px;padding:4px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;">+ file</button>
-      </div>
-      <div id="refsList"></div>
     </div>
 
     <!-- Horizontal resize handle -->
@@ -1377,7 +1403,7 @@ if (new URLSearchParams(location.search).has('reset')) {
 
 // Restore persisted UI state
 try {
-  const validTabs = ['dashboard', 'timeline', 'logs', 'terminal'];
+  const validTabs = ['dashboard', 'timeline', 'search', 'terminal'];
   const savedTab = localStorage.getItem('fleet-tab');
   const savedAgent = localStorage.getItem('fleet-terminal-agent');
   if (savedAgent) terminalAgent = savedAgent;
@@ -2403,13 +2429,13 @@ function switchTab(tab) {
   document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === 'tab-' + tab));
   localStorage.setItem('fleet-tab', tab);
   if (tab === 'timeline' && currentState) drawGantt(currentState);
-  if (tab === 'logs') {
+  if (tab === 'search') {
     if (!projectsLoaded) loadProjects();
+    loadRefs(); // refresh pinned refs
     if (!$('logSearchInput').value.trim()) loadTimeline();
   }
   if (tab === 'terminal' && terminalAgent) startTerminalAuto();
   if (tab !== 'terminal') stopTerminalAuto();
-  if (tab === 'docs') loadDocsProjects();
 }
 
 // --- Log search ---
@@ -2545,6 +2571,14 @@ async function searchLogs() {
   const project = $('logProjectFilter').value;
   const statusEl = $('logStatus');
   const resultsEl = $('logResults');
+  const typeFilter = $('logTypeFilter').value;
+  const pinnedOnly = $('pinnedOnlyCheck').checked;
+
+  // "pinned only" mode — show refs matching the query (or all refs if no query)
+  if (pinnedOnly || typeFilter === 'refs') {
+    renderRefsAsResults(query);
+    return;
+  }
 
   if (query.length < 2) {
     loadTimeline();
@@ -2569,14 +2603,34 @@ async function searchLogs() {
       return;
     }
 
-    statusEl.textContent = data.results.length + ' result' + (data.results.length !== 1 ? 's' : '');
+    // Client-side type filtering
+    let results = data.results;
+    if (typeFilter) {
+      results = results.filter(r => r.source === typeFilter);
+    }
+
+    statusEl.textContent = results.length + ' result' + (results.length !== 1 ? 's' : '') +
+      (typeFilter ? ` (${typeFilter})` : '');
 
     const HOME = '/Users/skip';
     const PROJECTS = HOME + '/.claude/projects/';
     const EVENTS_FILE = HOME + '/.claude/agent-messages.jsonl';
 
-    resultsEl.innerHTML = data.results.map(r => {
+    resultsEl.innerHTML = results.map(r => {
       let filePath, roleClass, ts;
+      const typeBadge = `<span class="type-badge type-${r.source}">${r.source === 'session' ? 'conv' : r.source === 'events' ? 'event' : r.source}</span>`;
+
+      if (r.source === 'tlda') {
+        return `<div class="log-result">
+          <div class="log-result-header">
+            ${typeBadge}
+            <span class="log-role" style="background:rgba(106,175,176,0.2);color:var(--cyan)">${esc(r.role || 'note')}</span>
+            <span class="log-project">${esc(r.project || '')}</span>
+          </div>
+          <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+        </div>`;
+      }
+
       if (r.source === 'events') {
         filePath = EVENTS_FILE + ':' + r.line;
         const zedUrl = 'zed://file' + EVENTS_FILE + ':' + r.line;
@@ -2584,6 +2638,7 @@ async function searchLogs() {
         ts = r.timestamp ? timeShort(r.timestamp) : '';
         return `<div class="log-result">
           <div class="log-result-header">
+            ${typeBadge}
             <span class="log-role ${roleClass}">${esc(r.role)}</span>
             ${ts ? `<span class="log-session">${ts}</span>` : ''}
             <a class="log-src-btn" href="${zedUrl}" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
@@ -2597,6 +2652,7 @@ async function searchLogs() {
       const zedUrl = 'zed://file' + fullPath + ':' + r.line;
       return `<div class="log-result" onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})">
         <div class="log-result-header">
+          ${typeBadge}
           <span class="log-role ${r.role === 'user' ? 'role-user' : 'role-assistant'}">${r.role}</span>
           <span class="log-project">${esc(projectShort(r.project))}</span>
           <a class="log-src-btn" href="${zedUrl}" onclick="event.stopPropagation()" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
@@ -2607,6 +2663,45 @@ async function searchLogs() {
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
   }
+}
+
+function renderRefsAsResults(query) {
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  let refs = refsData || [];
+  if (query && query.length >= 2) {
+    const ql = query.toLowerCase();
+    refs = refs.filter(r => (r.label || '').toLowerCase().includes(ql) ||
+      (r.preview || '').toLowerCase().includes(ql) ||
+      (r.path || '').toLowerCase().includes(ql) ||
+      (r.note || '').toLowerCase().includes(ql));
+  }
+  statusEl.textContent = refs.length + ' pinned ref' + (refs.length !== 1 ? 's' : '');
+  if (refs.length === 0) {
+    resultsEl.innerHTML = '<div class="empty">No pinned references' + (query ? ' matching "' + esc(query) + '"' : '') + '</div>';
+    return;
+  }
+  resultsEl.innerHTML = refs.map(r => {
+    const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
+    const label = esc(r.label || 'untitled');
+    const meta = r.type === 'conversation'
+      ? `${esc(projectShort(r.project))} / ${(r.sessionId || '').slice(0, 8)} lines ${r.startLine}-${r.endLine}`
+      : esc(r.path || '');
+    const preview = r.preview ? `<div class="log-snippet" style="margin-top:2px">${esc(r.preview).substring(0, 200)}</div>` : '';
+    const clickAttr = r.type === 'conversation'
+      ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
+      : '';
+    return `<div class="log-result" ${clickAttr}>
+      <div class="log-result-header">
+        <span class="type-badge type-refs">ref</span>
+        <span style="font-size:12px">${icon}</span>
+        <span style="font-weight:600;color:var(--yellow)">${label}</span>
+        <span class="log-session">${meta}</span>
+        <span style="cursor:pointer;opacity:0.3;font-size:14px;padding:0 4px;margin-left:auto" onclick="event.stopPropagation();deleteRef('${r.id}');searchLogs()">&times;</span>
+      </div>
+      ${preview}
+    </div>`;
+  }).join('');
 }
 
 let currentContext = null; // tracks what's shown in the context modal
@@ -2666,22 +2761,40 @@ async function loadRefs() {
 }
 
 function renderRefs() {
-  const el = $('refsList');
-  if (!refsData.length) { el.innerHTML = '<div class="empty">No references pinned</div>'; return; }
-  el.innerHTML = refsData.map(r => {
+  renderPinnedRefsBar();
+}
+
+function renderPinnedRefsBar() {
+  const bar = $('pinnedRefsBar');
+  if (!bar) return;
+  if (!refsData.length) {
+    bar.classList.remove('active');
+    return;
+  }
+  // Only show the bar when on the search tab and not in "pinned only" mode (those show in main results)
+  const pinnedOnly = $('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked;
+  const typeFilter = $('logTypeFilter') && $('logTypeFilter').value;
+  if (pinnedOnly || typeFilter === 'refs') {
+    bar.classList.remove('active');
+    return;
+  }
+  bar.classList.add('active');
+  bar.innerHTML = refsData.map(r => {
     const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
+    const label = esc(r.label || 'untitled');
     const meta = r.type === 'conversation'
-      ? `<span style="font-size:10px;opacity:0.5">${esc(projectShort(r.project))} / ${r.sessionId?.slice(0, 8)} lines ${r.startLine}-${r.endLine}</span>`
-      : `<span style="font-size:10px;opacity:0.5">${esc(r.path)}</span>`;
+      ? `${esc(projectShort(r.project))} / ${(r.sessionId || '').slice(0, 8)}`
+      : esc(r.path || '');
     const clickAttr = r.type === 'conversation'
       ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
       : '';
-    return `<div class="ref-item" ${clickAttr}>
-      <div style="display:flex;justify-content:space-between;align-items:start;">
-        <div>${icon} <span class="ref-label" contenteditable="true" spellcheck="false" onblur="updateRefLabel('${r.id}',this.textContent)" onclick="event.stopPropagation()">${esc(r.label || 'untitled')}</span></div>
-        <span style="cursor:pointer;opacity:0.4;font-size:14px;padding:0 4px;" onclick="event.stopPropagation();deleteRef('${r.id}')">&times;</span>
+    return `<div class="pinned-ref-item" ${clickAttr}>
+      <span class="pinned-ref-icon">${icon}</span>
+      <div style="min-width:0;flex:1;">
+        <span class="pinned-ref-label">${label}</span>
+        <div class="pinned-ref-meta">${meta}</div>
       </div>
-      ${meta}
+      <span class="pinned-ref-del" onclick="event.stopPropagation();deleteRef('${r.id}')">&times;</span>
     </div>`;
   }).join('');
 }
@@ -2721,20 +2834,23 @@ async function pinContext() {
   } catch {}
 }
 
-async function addFileRef() {
-  const path = $('refFileInput').value.trim();
-  if (!path) return;
-  const ref = { type: 'file', label: path.split('/').pop(), note: '', path };
+async function addFileRef(filePath) {
+  const p = filePath || (prompt('File path to pin:') || '').trim();
+  if (!p) return;
+  const ref = { type: 'file', label: p.split('/').pop(), note: '', path: p };
   try {
     await fetch('/api/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ref) });
-    $('refFileInput').value = '';
     await loadRefs();
+    if ($('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked) searchLogs();
   } catch {}
 }
 
 async function deleteRef(id) {
   await fetch('/api/refs?id=' + encodeURIComponent(id), { method: 'DELETE' });
   await loadRefs();
+  const pinnedOnly = $('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked;
+  const typeFilter = $('logTypeFilter') && $('logTypeFilter').value;
+  if (pinnedOnly || typeFilter === 'refs') searchLogs();
 }
 
 loadRefs();
@@ -2763,9 +2879,8 @@ document.addEventListener('keydown', e => {
   if (e.key === 'c' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); $('chatInput').focus(); }
   if (e.key === '1') switchTab('dashboard');
   if (e.key === '2') switchTab('timeline');
-  if (e.key === '3') switchTab('logs');
+  if (e.key === '3') switchTab('search');
   if (e.key === '4') switchTab('terminal');
-  if (e.key === '5') switchTab('docs');
 });
 
 // --- Agent search ---
@@ -3202,7 +3317,7 @@ async function searchLogEntries(q) {
           if (r.source !== 'events' && r.source !== 'tlda' && r.project && r.sessionId) {
             showContext(r.project, r.sessionId, r.line);
           } else {
-            switchTab('logs');
+            switchTab('search');
             $('logSearchInput').value = q;
             searchLogs();
           }
@@ -3265,6 +3380,7 @@ async function loadDocsProjects() {
     const res = await fetch('/api/tlda/projects');
     const data = await res.json();
     const sel = $('docsProjectSelect');
+    if (!sel) return;
     const projects = (data.projects || data || [])
       .filter(p => !p.archived && p.format !== 'book')
       .sort((a, b) => {
@@ -3293,6 +3409,7 @@ async function loadDocsProjects() {
 }
 
 async function loadAnnotations() {
+  if (!$('docsProjectSelect')) return;
   const project = $('docsProjectSelect').value;
   if (!project) {
     $('docsList').innerHTML = '<div class="cmdk-empty">Select a document to see annotations</div>';
