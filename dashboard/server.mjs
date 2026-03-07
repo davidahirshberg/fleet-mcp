@@ -415,6 +415,63 @@ const server = http.createServer((req, res) => {
     return;
   }
 
+  // Interrupt: send ESC + optional message
+  if (url.pathname === '/api/interrupt' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { agent: agentQuery, message } = JSON.parse(body);
+        const state = loadState();
+        const agent = (state.agents || []).find(a =>
+          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
+          a.id.startsWith(agentQuery)
+        );
+        if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+        if (message) {
+          if (!state.messages) state.messages = [];
+          state.messages.push({ to: agent.id, from: 'web', text: message, timestamp: new Date().toISOString(), read: false });
+          fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+        }
+        if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ result: 'Message delivered (no kitty window — cannot ESC)' })); return; }
+        execSync(`${BIN}/agent-kick ${agent.kitty_win}`, { timeout: 10000 });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ result: `Interrupted ${agent.friendly_name || agent.id.slice(0, 8)}` }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Rename agent
+  if (url.pathname === '/api/rename' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { agent: agentQuery, name: newName } = JSON.parse(body);
+        if (!agentQuery || newName == null) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent and name required' })); return; }
+        const state = loadState();
+        const agent = (state.agents || []).find(a =>
+          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
+          (a.id && a.id.startsWith(agentQuery))
+        );
+        if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+        agent.friendly_name = newName || undefined;
+        saveState(state);
+        logEvent({ type: 'rename', agent: agent.id, name: newName });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, agent: agent.id, name: newName }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   // Reindex: rebuild search index
   if (url.pathname === '/api/reindex' && req.method === 'POST') {
     try {
@@ -578,6 +635,33 @@ const server = http.createServer((req, res) => {
       res.writeHead(404);
       res.end('not found');
     }
+    return;
+  }
+
+  // Upload image (paste/drop from chat)
+  if (url.pathname === '/api/upload' && req.method === 'POST') {
+    const uploadDir = '/tmp/fleet-uploads';
+    try { fs.mkdirSync(uploadDir, { recursive: true }); } catch {}
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => {
+      try {
+        const buf = Buffer.concat(chunks);
+        // Detect format from first bytes
+        let ext = 'png';
+        if (buf[0] === 0xFF && buf[1] === 0xD8) ext = 'jpg';
+        else if (buf[0] === 0x47 && buf[1] === 0x49) ext = 'gif';
+        else if (buf[0] === 0x52 && buf[1] === 0x49) ext = 'webp';
+        const name = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}.${ext}`;
+        const filePath = path.join(uploadDir, name);
+        fs.writeFileSync(filePath, buf);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
 

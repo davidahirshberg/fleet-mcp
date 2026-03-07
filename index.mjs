@@ -78,6 +78,30 @@ const ME = detectSessionId();
 
 // ---- State helpers ----
 
+// Wait for state file to change, or timeout. Replaces blind polling.
+function waitForStateChange(maxMs) {
+  return new Promise(resolve => {
+    const timeout = setTimeout(() => { watcher.close(); resolve(); }, maxMs);
+    let watcher;
+    try {
+      watcher = fs.watch(STATE_FILE, { persistent: false }, () => {
+        clearTimeout(timeout);
+        watcher.close();
+        resolve();
+      });
+      watcher.on('error', () => {
+        clearTimeout(timeout);
+        watcher.close();
+        resolve();
+      });
+    } catch {
+      // fs.watch failed (file doesn't exist yet, etc.) — fall back to timeout
+      clearTimeout(timeout);
+      setTimeout(resolve, Math.min(maxMs, 5000));
+    }
+  });
+}
+
 function loadState() {
   if (fs.existsSync(STATE_FILE)) {
     try { return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8')); }
@@ -153,11 +177,31 @@ function requireManager() {
   return `Only a manager can do this. You are ${ME} (not a manager).`;
 }
 
+// Check if the calling manager can manage a specific agent.
+// Returns null if allowed, error string if not.
+// Rules: top of chain can manage anyone. Otherwise you can manage agents
+// whose active task was delegated_by you, or agents with no active task.
+function requireAuthOver(state, targetId) {
+  if (!ME) return 'Cannot identify caller.';
+  if (state.manager === ME) return null; // top of chain
+  const activeTask = state.tasks?.find(t => t.agent === targetId && t.status !== 'done');
+  if (!activeTask) return null; // unassigned — any manager can claim
+  if (activeTask.delegated_by === ME) return null; // your report
+  const boss = getAgent(state, activeTask.delegated_by);
+  const bossName = boss?.friendly_name || activeTask.delegated_by?.slice(0, 8) || 'unknown';
+  return `Agent ${targetId} reports to ${bossName} (not you). Ask them, or go through top of chain.`;
+}
+
 // ---- Agent registry ----
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  return state.agents.find(a => a.id === id || a.name === id || a.friendly_name === id);
+  // Exact match on id, name, or friendly_name
+  const exact = state.agents.find(a => a.id === id || a.name === id || a.friendly_name === id);
+  if (exact) return exact;
+  // Prefix match on id (must be unambiguous)
+  const prefixMatches = state.agents.filter(a => a.id.startsWith(id));
+  return prefixMatches.length === 1 ? prefixMatches[0] : null;
 }
 
 function removeAgent(state, id) {
@@ -256,8 +300,9 @@ function windowTail(output, n = 40) {
   return output.split('\n').slice(-n).join('\n');
 }
 
-// Kick an agent via kitty if they have a window. Returns whether kick was sent.
-function notifyAgent(state, agentId) {
+// Interrupt an agent via kitty ESC — for breaking into a running tool chain.
+// NOT for routine notifications (fs.watch handles those).
+function interruptAgent(state, agentId) {
   const agent = getAgent(state, agentId);
   if (!agent || !agent.kitty_win) return false;
   const sent = kickAgent(agent.kitty_win);
@@ -272,7 +317,7 @@ function notifyAgent(state, agentId) {
 // ---- MCP server ----
 
 const server = new Server(
-  { name: 'agent-manager', version: '3.0.0' },
+  { name: 'fleet', version: '0.1.0' },
   { capabilities: { tools: {} } }
 );
 
@@ -285,7 +330,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           manager: { type: 'boolean', description: 'Register as manager (default false)' },
-          testing: { type: 'boolean', description: 'Register as a secondary/test manager. Gets manager privileges but does not replace the primary manager or start keepalive. Requires manager=true.' },
+          testing: { type: 'boolean', description: 'Deprecated, ignored. Any manager can register alongside others now.' },
           session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
           name: { type: 'string', description: 'Agent name (for headless agents without kitty window)' },
         },
@@ -293,7 +338,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'delegate',
-      description: 'Assign a task to an agent. Kicks the agent via kitty so they know to check. Manager only.',
+      description: 'Assign a task to an agent. Agent is notified via fs.watch on state file. Manager only.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -308,7 +353,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'chat',
-      description: 'Send a message to another agent (or the manager if "to" is omitted). Writes to state file and kicks recipient via kitty.',
+      description: 'Send a message to another agent (or the manager if "to" is omitted). Writes to state file; recipient is notified via fs.watch.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -439,6 +484,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: 'interrupt',
+      description: 'Send a kitty ESC interrupt to an agent. Use this to break into an agent that is mid-tool-chain and needs to stop what it\'s doing. NOT for routine notifications — those go through fs.watch automatically. Manager only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name)' },
+          message: { type: 'string', description: 'Optional message to send along with the interrupt (delivered via chat)' },
+        },
+        required: ['agent'],
+      },
+    },
   ],
 }));
 
@@ -448,7 +505,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ---- register ----
   if (name === 'register' || name === 'register_manager') {
     const isManager = name === 'register_manager' || args.manager === true;
-    const isTesting = isManager && args.testing === true;
     const agentName = args.name || null;
 
     // Need either a session UUID or a name
@@ -461,15 +517,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const id = ME || agentName;
 
-    // Guard: can't claim primary manager if someone else already is (unless they're dead)
-    // Testing managers skip this — they don't claim the primary slot
-    if (isManager && !isTesting && state.manager && state.manager !== id) {
-      const currentManager = getAgent(state, state.manager);
-      if (agentAlive(currentManager)) {
-        return { content: [{ type: 'text', text: `Manager already registered (${state.manager}). Only the current manager can re-register as manager. Use testing=true to register as a secondary manager.` }], isError: true };
+    // If claiming top-of-chain and it's occupied by a live agent, just register as a subordinate manager
+    // Top-of-chain is only for keepalive and default chat routing
+    if (isManager && state.manager && state.manager !== id) {
+      const currentTop = getAgent(state, state.manager);
+      if (!currentTop || !agentAlive(currentTop)) {
+        // Top manager is dead or gone — clean up and allow takeover
+        if (currentTop) removeAgent(state, state.manager);
+        delete state.manager;
       }
-      // Current manager is dead — allow takeover
-      if (currentManager) removeAgent(state, state.manager);
     }
 
     // Upsert: preserve friendly_name from old entry, then remove
@@ -494,7 +550,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     state.agents.push(entry);
 
-    if (isManager && !isTesting) {
+    // Claim top-of-chain if vacant or if we're re-registering as the current top
+    const claimTop = isManager && (!state.manager || state.manager === id);
+    if (claimTop) {
       state.manager = id;
       // Kill any stale keepalives, start fresh with the correct script
       try { execSync(`pkill -f agent-keepalive`, { timeout: 5000 }); } catch {}
@@ -504,22 +562,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveState(state);
 
     const agentCount = state.agents.length;
-    let msg = `Registered ${id}${isManager ? (isTesting ? ' as test manager' : ' as manager') : ''}. ${agentCount} agent(s) registered.`;
+    const role = isManager ? (claimTop ? 'manager (top of chain)' : 'manager') : 'agent';
+    let msg = `Registered ${id} as ${role}. ${agentCount} agent(s) registered.`;
 
     const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
     const repoRefPath = path.join(__dirname, 'managing-agents.md');
     const refExists = fs.existsSync(refPath);
 
-    if (isManager && !isTesting) {
-      msg += ' Keepalive watcher running.';
+    if (isManager) {
+      if (claimTop) msg += ' Keepalive watcher running.';
       msg += '\n\nWhen you see 📬 as input, call my_task() — it means an agent sent you a message or a task changed.';
+      if (!claimTop) {
+        msg += `\nchat() without a recipient goes to the top of chain (${state.manager}).`;
+      }
       if (refExists) {
         msg += '\nRead ~/.claude/reference/managing-agents.md before proceeding.';
       } else {
         msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
       }
-    } else if (isTesting) {
-      msg += '\n\nTest manager: you have manager privileges (delegate, task_done for others, etc.) but are not the primary manager. Keepalive will not kick you. chat() without a recipient still goes to the primary manager.';
     } else {
       msg += '\n\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
       if (refExists) {
@@ -543,21 +603,21 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const to = args.to != null ? args.to : null;
     if (to) {
-      if (!wasPrimary) return { content: [{ type: 'text', text: `Only the primary manager can hand off. You are a test manager — just unregister.` }], isError: true };
+      if (!wasPrimary) return { content: [{ type: 'text', text: `Only the top of chain can hand off the top slot. Use unregister_manager() without 'to' to just step down.` }], isError: true };
       const newManager = getAgent(state, to);
       if (!newManager) return { content: [{ type: 'text', text: `Agent ${to} not registered.` }], isError: true };
       newManager.is_manager = true;
       state.manager = to;
       saveState(state);
-      notifyAgent(state, to);
-      return { content: [{ type: 'text', text: `Passed manager to ${to}.` }] };
+      interruptAgent(state, to);
+      return { content: [{ type: 'text', text: `Passed top of chain to ${to}. (interrupted)` }] };
     }
 
     if (wasPrimary) {
       delete state.manager;
     }
     saveState(state);
-    const roleMsg = wasPrimary ? 'Stepped down as manager. Manager slot is now open.' : 'Stepped down as test manager.';
+    const roleMsg = wasPrimary ? 'Stepped down. Top of chain is now open.' : 'Stepped down as manager.';
     return { content: [{ type: 'text', text: roleMsg }] };
   }
 
@@ -576,6 +636,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agentEntry = getAgent(state, agent);
     if (!agentEntry) return { content: [{ type: 'text', text: `Agent "${agent}" not registered.` }], isError: true };
     agent = agentEntry.id;
+
+    // Chain of command: can only delegate to agents you manage
+    const authGuard = requireAuthOver(state, agent);
+    if (authGuard) return { content: [{ type: 'text', text: authGuard }], isError: true };
 
     // Set friendly name if provided
     if (args.friendly_name) {
@@ -607,12 +671,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveState(state);
     logEvent({ type: 'delegate', from: ME, to: agent, task_id: taskId, description, message });
 
-    // Kick agent via kitty if not blocked
-    let kicked = false;
-    if (!blocked) {
-      kicked = notifyAgent(state, agent);
-    }
-
     const pendingCount = state.tasks.filter(t => t.status === 'pending').length;
     const blockedCount = state.tasks.filter(t => t.status === 'blocked').length;
     let nudge = `${pendingCount} pending`;
@@ -620,11 +678,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     nudge += '.';
     const statusMsg = blocked ? `Queued (blocked by ${blockedBy.join(', ')})` : 'Delegated';
     const agentRegistered = !!getAgent(state, agent);
-    const kickMsg = kicked ? ' (kicked)' : !blocked && !agentRegistered ? ' ⚠ agent not registered — task created but no way to notify' : (!blocked && agentRegistered ? ' (no kitty window — agent must poll)' : '');
+    const notifyMsg = !blocked && !agentRegistered ? ' ⚠ agent not registered — task created but no way to notify' : '';
     return {
       content: [{
         type: 'text',
-        text: `${statusMsg} to ${agent} [${taskId}]: ${description}${kickMsg}\n${nudge}`,
+        text: `${statusMsg} to ${agent} [${taskId}]: ${description}${notifyMsg}\n${nudge}`,
       }],
     };
   }
@@ -651,17 +709,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveState(state);
     logEvent({ type: 'chat', from, to, message });
 
-    // Kick recipient
-    const kicked = notifyAgent(state, to);
-
     let warning = '';
     if (ME && state.manager === ME && message.length > 200) {
       warning = '\n\n⚠ Long message (>200 chars). If assigning work, use delegate() instead.';
     }
 
     const toRegistered = !!getAgent(state, to);
-    const kickMsg = kicked ? ' (kicked)' : !toRegistered ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
-    return { content: [{ type: 'text', text: `Message queued for ${to}${kickMsg}.${warning}` }] };
+    const notifyMsg = !toRegistered ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
+    return { content: [{ type: 'text', text: `Message queued for ${to}${notifyMsg}.${warning}` }] };
   }
 
   // ---- wait_for_task ----
@@ -705,7 +760,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         };
       }
 
-      await new Promise(r => setTimeout(r, intervalMs));
+      // Wait for state file change (fs.watch) instead of blind polling
+      await waitForStateChange(Math.min(intervalMs, deadline - Date.now()));
     }
 
     return { content: [{ type: 'text', text: 'No task or message received (timeout). Call wait_for_task() again to keep waiting.' }] };
@@ -725,8 +781,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id.slice(0, 8));
         if (a.friendly_name && a.name) label += ` (${a.name})`;
         if (a.friendly_name) label += ` [${a.id.slice(0, 8)}]`;
-        if (a.is_manager && a.id === state.manager) label += ' [manager]';
-        else if (a.is_manager) label += ' [test-manager]';
+        if (a.is_manager && a.id === state.manager) label += ' [top]';
+        else if (a.is_manager) label += ' [manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
       });
@@ -789,6 +845,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     const state = loadState();
+
+    if (agent !== ME) {
+      const authGuard = requireAuthOver(state, agent);
+      if (authGuard) return { content: [{ type: 'text', text: authGuard }], isError: true };
+    }
+
     const task = getTask(state, agent);
     if (!task) {
       return { content: [{ type: 'text', text: `No active task for ${agent}.` }] };
@@ -799,10 +861,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveState(state);
     logEvent({ type: 'task_done', agent, task_id: task.id, description: task.description });
 
-    // Kick newly unblocked agents
-    for (const u of unblocked) {
-      notifyAgent(state, u.agent);
-    }
+    // Unblocked agents get notified via fs.watch on state file
 
     const remaining = state.tasks.filter(t => t.status !== 'done').length;
     let msg = `Marked ${agent} task done: ${task.description}.`;
@@ -1179,6 +1238,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
 
     return { content: [{ type: 'text', text: `${filtered.length} messages:\n\n${lines.join('\n\n---\n\n')}` }] };
+  }
+
+  // ---- interrupt ----
+  if (name === 'interrupt') {
+    const guard = requireManager();
+    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
+    const state = loadState();
+    const { agent, message } = args;
+    const entry = getAgent(state, agent);
+    if (!entry) {
+      return { content: [{ type: 'text', text: `Agent "${agent}" not registered.` }], isError: true };
+    }
+    const authGuard = requireAuthOver(state, entry.id);
+    if (authGuard) return { content: [{ type: 'text', text: authGuard }], isError: true };
+
+    // Optionally send a message first so the agent knows why they were interrupted
+    if (message) {
+      postMessage(state, entry.id, ME || 'manager', message);
+      saveState(state);
+      logEvent({ type: 'chat', from: ME || 'manager', to: entry.id, message });
+    }
+
+    const sent = interruptAgent(state, entry.id);
+    if (!sent) {
+      return { content: [{ type: 'text', text: `Agent "${agent}" has no kitty window (headless). Message delivered via state file.` }] };
+    }
+    return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id.slice(0, 8)}${message ? ' (with message)' : ''}.` }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

@@ -22,6 +22,7 @@ import { createInterface } from 'readline';
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const LOG_FILE = path.join(os.homedir(), '.claude', 'agent-messages.jsonl');
 const DB_PATH = path.join(os.homedir(), '.claude', 'search-index.sqlite');
+const TLDA_PROJECTS_DIR = path.join(os.homedir(), 'work', 'claude-tldraw', 'server', 'projects');
 
 export class SearchIndex {
   constructor(dbPath = DB_PATH) {
@@ -135,6 +136,11 @@ export class SearchIndex {
       }
     }
 
+    // Index tlda changelogs
+    const tldaCount = await this._indexTldaChangelogs();
+    filesIndexed += tldaCount.files;
+    entriesAdded += tldaCount.entries;
+
     const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
     return { filesIndexed, entriesAdded, elapsed };
   }
@@ -232,6 +238,112 @@ export class SearchIndex {
     if (entries.length > 0) insertMany(entries);
     this._setOffset.run(filePath, stat.size, lineNum, stat.mtimeMs);
     return count;
+  }
+
+  async _indexTldaChangelogs() {
+    let files = 0, entries = 0;
+    let projDirs;
+    try {
+      projDirs = fs.readdirSync(TLDA_PROJECTS_DIR).filter(d => {
+        try { return fs.statSync(path.join(TLDA_PROJECTS_DIR, d)).isDirectory(); } catch { return false; }
+      });
+    } catch { return { files: 0, entries: 0 }; }
+
+    for (const projDir of projDirs) {
+      const filePath = path.join(TLDA_PROJECTS_DIR, projDir, 'changelog.jsonl');
+      if (!fs.existsSync(filePath)) continue;
+
+      let stat;
+      try { stat = fs.statSync(filePath); } catch { continue; }
+      const offset = this._getOffset.get(filePath);
+      if (offset && offset.byte_offset >= stat.size) continue;
+
+      const startByte = offset?.byte_offset || 0;
+      let lineNum = offset?.line_offset || 0;
+
+      const fd = fs.openSync(filePath, 'r');
+      const buf = Buffer.alloc(stat.size - startByte);
+      fs.readSync(fd, buf, 0, buf.length, startByte);
+      fs.closeSync(fd);
+
+      const chunk = buf.toString('utf8');
+      const lines = chunk.split('\n');
+      const batch = [];
+
+      for (const line of lines) {
+        lineNum++;
+        if (!line.trim()) continue;
+        let parsed;
+        try { parsed = JSON.parse(line); } catch { continue; }
+
+        if (parsed.action !== 'create' && parsed.action !== 'update') continue;
+
+        const text = this._extractTldaText(parsed);
+        if (!text) continue;
+
+        const ts = parsed.ts ? new Date(parsed.ts).toISOString() : null;
+        const role = parsed.shapeType || 'shape';
+        // source='tlda', project=projDir, session_id=shapeId
+        batch.push(['tlda', projDir, parsed.id || null, lineNum, role, ts, parsed.state?.meta?.createdBy || null, null, text]);
+      }
+
+      if (batch.length > 0) {
+        const insertMany = this.db.transaction((rows) => {
+          for (const r of rows) this._insertEntry.run(...r);
+        });
+        insertMany(batch);
+        files++;
+        entries += batch.length;
+      }
+      this._setOffset.run(filePath, stat.size, lineNum, stat.mtimeMs);
+    }
+
+    return { files, entries };
+  }
+
+  _extractTldaText(entry) {
+    const parts = [];
+    const state = entry.state || {};
+    const props = state.props || {};
+    const meta = state.meta || {};
+    const diff = entry.diff || {};
+
+    // math-note text
+    if (props.text) parts.push(props.text);
+    // Updated text from diff
+    if (diff.props?.to?.text) parts.push(diff.props.to.text);
+
+    // Arrow/shape richText (prosemirror doc)
+    const richText = props.richText || diff.props?.to?.richText;
+    if (richText) {
+      const extracted = this._extractRichText(richText);
+      if (extracted) parts.push(extracted);
+    }
+
+    // Source anchor content (the TeX line the annotation targets)
+    const anchor = meta.sourceAnchor || diff.meta?.to?.sourceAnchor;
+    if (anchor?.content) parts.push(anchor.content);
+    if (anchor?.file && anchor?.line) parts.push(`${anchor.file}:${anchor.line}`);
+
+    // Tabs (threaded replies on math-notes)
+    if (props.tabs && Array.isArray(props.tabs)) {
+      for (const tab of props.tabs) {
+        if (typeof tab === 'string' && tab.trim()) parts.push(tab);
+      }
+    }
+
+    return parts.length > 0 ? parts.join(' | ') : null;
+  }
+
+  _extractRichText(doc) {
+    if (!doc || !doc.content) return null;
+    const texts = [];
+    const walk = (node) => {
+      if (node.text) texts.push(node.text);
+      if (node.content) for (const child of node.content) walk(child);
+    };
+    walk(doc);
+    return texts.length > 0 ? texts.join(' ') : null;
   }
 
   // --- Search ---

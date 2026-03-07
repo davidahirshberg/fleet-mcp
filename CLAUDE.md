@@ -36,7 +36,7 @@ Send a message to another agent's inbox. Writes to state and kicks the recipient
 
 ### wait_for_task(timeout?)
 
-Block until a task or message arrives for this agent. Polls the state file every 5s. Returns the task message or chat messages.
+Block until a task or message arrives for this agent. Uses `fs.watch` on the state file — resolves instantly when the file changes (no polling delay). Returns the task message or chat messages.
 
 ### task_list()
 
@@ -89,35 +89,56 @@ Launch a fresh claude agent in a new kitty tab. Manager only. The new agent will
 
 Returns the kitty window ID. Once the agent registers, find its UUID via `task_list()` and use that for `delegate()`.
 
+### interrupt(agent, message?)
+
+Send a kitty ESC interrupt to break into an agent that is mid-tool-chain. Manager only. NOT for routine notifications — those go through `fs.watch` automatically.
+
+- `agent`: Session UUID, agent name, or friendly name
+- `message`: Optional message delivered via chat before the interrupt
+
 ## delegate vs chat
 
-- **delegate**: "Do this work." Creates a tracked task, kicks the agent.
-- **chat**: "Quick question" / "Here's context." Goes to inbox, kicks the agent.
+- **delegate**: "Do this work." Creates a tracked task. Agent is notified via fs.watch.
+- **chat**: "Quick question" / "Here's context." Goes to inbox. Agent is notified via fs.watch.
+- **interrupt**: "Stop what you're doing." Sends kitty ESC to break into a running agent.
 
 If you'd want to know when it's done, use `delegate`.
+
+## Chain of Command
+
+Multiple managers can coexist. One is **top of chain** (`state.manager`) — gets keepalive, is the default `chat()` recipient.
+
+Manager tools that target a specific agent (`delegate`, `task_done` for others, `interrupt`) enforce chain of command:
+- **Top of chain** can manage anyone.
+- **Other managers** can manage agents whose active task they delegated, or unassigned agents.
+- Attempting to manage someone else's report returns an error naming the responsible manager.
+
+`name_agent`, `respawn`, `spawn` are unrestricted for any manager (cosmetic/operational).
 
 ## Agent Lifecycle
 
 1. Agent starts, calls `register()` — added to agent registry with session UUID
-2. Manager calls `delegate(agent, ...)` — task written to state, agent kicked via kitty
-3. Agent sees the kick, calls `wait_for_task()` or `my_task()` — gets the task
+2. Manager calls `delegate(agent, ...)` — task written to state file
+3. Agent's `wait_for_task()` wakes via `fs.watch` — gets the task
 4. Agent works, uses `chat()` to report progress
 5. Agent finishes, calls `task_done()`
-6. Agent waits for next kick or calls `wait_for_task()` to poll
+6. Agent calls `wait_for_task()` — wakes instantly on next state change
 
 ## Notification Model
 
-The state file (`~/.claude/agent-tasks.json`) is the source of truth. Kitty is the doorbell:
+Two separate mechanisms for two separate concerns:
 
-- `delegate()` writes task → kicks agent via kitty
-- `chat()` writes message → kicks recipient via kitty
-- `task_done()` with unblocked deps → kicks each unblocked agent
+**Notification** — `fs.watch` on the state file (`~/.claude/agent-tasks.json`). Every `saveState()` triggers all watching agents instantly. No kitty dependency, works for headless agents.
 
-**Kicks are 📬.** Every kick sends `ESC` (interrupts blocking calls like `wait_for_task`) then `📬` + Enter to the agent's kitty window. The 📬 appears as input text. No message content is sent through the terminal — the actual task or message lives in the state file.
+- `delegate()` writes task → `saveState()` → watching agents wake up
+- `chat()` writes message → `saveState()` → watching agents wake up
+- `task_done()` with unblocked deps → `saveState()` → unblocked agents wake up
+
+**Interruption** — kitty ESC via `interrupt()`. For breaking into an agent that is mid-tool-chain and needs to stop. Sends `ESC` then `📬` + Enter to the agent's kitty window.
 
 **When you see 📬 as input, call `my_task()`.** This is the universal response. `my_task()` returns your current task and any unread messages.
 
-Headless agents (no kitty window) must poll via `wait_for_task()`.
+Headless agents (no kitty window) get the same instant notifications via `fs.watch` — no polling, no kitty dependency.
 
 ## Agent Registry
 
@@ -183,33 +204,14 @@ Status flow: `blocked` → `pending` → `working` (acknowledged) → `idle`/`do
 
 ## Keepalive Watcher
 
-Auto-started by `register(manager=true)`. Polls every 45s, nudges the manager via kitty when agents need attention and the manager is idle. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1h). Resets when something changes. Doesn't write messages — just sends 📬. Manager should call `task_list()` when nudged.
+Auto-started for the top-of-chain manager only. Polls every 45s, nudges the manager via kitty when agents need attention and the manager is idle. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1h). Resets when something changes. Doesn't write messages — just sends 📬. Manager should call `task_list()` when nudged.
 
 Log: `~/.claude/keepalive.log`
 
-## Multi-Manager (Testing)
+## Multiple Managers
 
-For development and testing of the agent-manager system itself, you can register secondary managers that coexist with the primary manager.
+Any agent can register as a manager with `register(manager=true)`. Multiple managers coexist. The first to register (or the one handed the role via `unregister_manager(to=...)`) is **top of chain** — they get keepalive and are the default `chat()` recipient.
 
-### Usage
+Chain of command is enforced: you can only `delegate`/`task_done`/`interrupt` agents you manage (agents whose active task you delegated, or unassigned agents). Top of chain can manage everyone.
 
-```
-register(manager=true, testing=true)
-```
-
-### What test managers get
-
-- Full manager API: `delegate`, `task_done` (for other agents), `name_agent`, `respawn`, `spawn`
-- Tasks they create are tagged with `delegated_by` so ownership is trackable
-- `task_list()` shows which manager created each task (only when multiple managers exist)
-
-### What test managers don't get
-
-- They don't replace `state.manager` (the primary manager slot)
-- No keepalive watcher — test managers are expected to be actively working, not passively monitoring
-- `chat()` without a recipient still goes to the primary manager, not to test managers
-- `unregister_manager(to=...)` handoff is primary-manager-only
-
-### Invariant
-
-A production session with one manager works exactly as before. Multi-manager is opt-in via the `testing` flag.
+`task_list()` shows `[top]` for the top-of-chain manager and `[manager]` for others. When multiple managers exist, task ownership is always visible via `delegated_by`.

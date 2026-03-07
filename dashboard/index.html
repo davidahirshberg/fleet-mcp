@@ -50,6 +50,19 @@
     min-width: 0;
     overflow: hidden;
   }
+  .agents-panel {
+    flex-shrink: 0;
+    height: 180px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .agents-panel .section-body {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
 
   /* Chat header with selector */
   .chat-header {
@@ -71,9 +84,9 @@
   .chat-filter { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; min-height: 20px; }
   .chat-filter-all { color: var(--text-dim); font-size: 12px; cursor: pointer; }
   .chat-filter-all:hover { color: var(--text); }
-  .chat-tag { display: inline-flex; align-items: center; gap: 2px; background: rgba(59,130,246,0.15); color: var(--blue); font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 3px; cursor: pointer; }
-  .chat-tag:hover { background: rgba(59,130,246,0.3); }
-  .chat-tag .tag-x { opacity: 0.5; margin-left: 2px; }
+  .chat-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; cursor: pointer; border: 1px solid; line-height: 1.3; transition: filter 0.1s; }
+  .chat-tag:hover { filter: brightness(1.3); }
+  .chat-tag .tag-x { opacity: 0.5; margin-left: 1px; font-size: 13px; line-height: 1; }
   .chat-tag:hover .tag-x { opacity: 1; }
   .chat-send-to { color: var(--text-dim); font-size: 11px; margin-left: auto; flex-shrink: 0; }
 
@@ -168,7 +181,7 @@
     flex: 1;
     position: relative;
   }
-  .chat-input-bar input {
+  .chat-input-bar textarea {
     width: 100%;
     background: var(--bg);
     border: 1px solid var(--border);
@@ -178,6 +191,10 @@
     font-size: 13px;
     font-family: inherit;
     outline: none;
+    resize: none;
+    overflow-y: hidden;
+    max-height: 120px;
+    line-height: 1.4;
   }
   .cmd-palette {
     display: none;
@@ -205,8 +222,8 @@
   .cmd-item:hover, .cmd-item.selected { background: rgba(108,155,255,0.1); }
   .cmd-item .cmd-name { color: var(--blue); font-weight: 700; font-family: 'SF Mono','Menlo',monospace; font-size: 11px; }
   .cmd-item .cmd-desc { color: var(--text-dim); }
-  .chat-input-bar input:focus { border-color: var(--blue); }
-  .chat-input-bar input::placeholder { color: var(--text-dim); }
+  .chat-input-bar textarea:focus { border-color: var(--blue); }
+  .chat-input-bar textarea::placeholder { color: var(--text-dim); }
   .chat-input-bar button {
     background: rgba(122,158,200,0.25);
     color: var(--blue);
@@ -220,6 +237,28 @@
   }
   .chat-input-bar button:active { opacity: 0.7; }
   .chat-input-bar button:disabled { opacity: 0.3; }
+  #interruptToggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #interruptToggle:hover { border-color: var(--orange); color: var(--orange); }
+  #interruptToggle.active {
+    background: rgba(200,149,106,0.2);
+    border-color: var(--orange);
+    color: var(--orange);
+  }
+  .chat-input-bar.interrupt-mode textarea {
+    border-color: var(--orange);
+  }
+  .chat-input-bar.interrupt-mode #chatSend {
+    background: rgba(200,149,106,0.25);
+    color: var(--orange);
+  }
 
   /* Right pane sections */
   .search-bar {
@@ -266,6 +305,11 @@
   }
   .section {
     border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
   }
   .section-header {
     padding: 8px 10px;
@@ -277,9 +321,10 @@
     background: var(--surface);
     cursor: pointer;
     user-select: none;
+    flex-shrink: 0;
   }
   .section-header:hover { color: var(--text); }
-  .section-body { padding: 0; }
+  .section-body { padding: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; min-height: 0; }
   .section-body.collapsed { display: none; }
 
   .agent-row {
@@ -306,6 +351,19 @@
     border-radius: 3px; font-weight: 700;
   }
   .badge-manager { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .badge-top { background: rgba(200,176,96,0.2); color: var(--yellow); }
+
+  .team-filter-bar {
+    display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: 0;
+  }
+  .team-filter-bar:empty { display: none; }
+  .team-btn {
+    font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer; font-weight: 600;
+  }
+  .team-btn:hover { border-color: var(--accent); color: var(--text); }
+  .team-btn.active { background: rgba(147,112,219,0.2); border-color: var(--accent); color: var(--accent); }
 
   .task-row { padding: 6px 10px; border-bottom: 1px solid rgba(42,42,74,0.5); }
   .task-row:last-child { border-bottom: none; }
@@ -323,6 +381,15 @@
   .task-meta { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
   .task-agent { color: var(--blue); }
   .task-id { font-family: inherit; }
+  .task-desc { cursor: pointer; }
+  .task-desc:hover { color: var(--blue); }
+  .last-msg { color: var(--text-dim); font-size: 10px; }
+  .last-msg.quiet { color: var(--orange); }
+  .rename-btn { opacity: 0; cursor: pointer; font-size: 10px; color: var(--text-dim); margin-left: 2px; }
+  .agent-row:hover .rename-btn { opacity: 0.5; }
+  .rename-btn:hover { opacity: 1 !important; color: var(--blue); }
+  .logs-filter-bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: 0; background: var(--surface); }
+  .logs-filter-bar:empty { display: none; }
 
   .empty { padding: 10px; color: var(--text-dim); font-size: 12px; }
 
@@ -351,6 +418,57 @@
   .tab-view { display: none; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
   .tab-view.active { display: flex; }
   #tab-dashboard { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Terminal tab */
+  .terminal-header {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .terminal-label {
+    font-size: 12px;
+    color: var(--text-dim);
+  }
+  .terminal-label .term-agent-name {
+    color: var(--blue);
+    font-weight: 400;
+  }
+  .terminal-controls {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .terminal-freeze-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--green);
+    cursor: pointer;
+    padding: 2px 8px;
+    font-size: 11px;
+  }
+  .terminal-freeze-btn:hover { border-color: var(--text-dim); }
+  .terminal-freeze-btn.frozen {
+    color: var(--yellow);
+  }
+  .terminal-output {
+    flex: 1;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 8px 10px;
+    margin: 0;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+    font-size: 11px;
+    line-height: 1.35;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: var(--bg);
+  }
 
   /* Log search */
   .log-search-bar {
@@ -547,6 +665,122 @@
     line-height: 1.4;
   }
 
+  /* Cmd+K unified search */
+  .cmdk-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 15vh;
+  }
+  .cmdk-overlay.active { display: flex; }
+  .cmdk-modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 90%;
+    max-width: 560px;
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .cmdk-input-wrap {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .cmdk-input-wrap input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+  }
+  .cmdk-input-wrap input::placeholder { color: var(--text-dim); }
+  .cmdk-results {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 0;
+  }
+  .cmdk-group-label {
+    padding: 6px 12px 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+  .cmdk-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .cmdk-item:hover, .cmdk-item.selected { background: rgba(108,155,255,0.1); }
+  .cmdk-item .cmdk-source {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 700;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .cmdk-item .cmdk-source.src-chat { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .cmdk-item .cmdk-source.src-logs { background: rgba(122,184,160,0.2); color: var(--green); }
+  .cmdk-item .cmdk-source.src-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .cmdk-item .cmdk-source.src-term { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .cmdk-item .cmdk-text {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-width: 0;
+  }
+  .cmdk-item .cmdk-text mark {
+    background: rgba(200,176,96,0.3);
+    color: var(--yellow);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+  .cmdk-item .cmdk-meta {
+    color: var(--text-dim);
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .cmdk-empty {
+    padding: 20px 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+    text-align: center;
+  }
+  .cmdk-hint {
+    padding: 6px 12px;
+    font-size: 10px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    gap: 12px;
+  }
+  .cmdk-hint kbd {
+    background: rgba(255,255,255,0.08);
+    padding: 0 4px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+  }
+
   /* Mobile: stack vertically */
   @media (max-width: 700px) {
     .split { flex-direction: column; }
@@ -577,8 +811,9 @@
     <div class="chat-input-bar">
       <div class="chat-input-wrap">
         <div class="cmd-palette" id="cmdPalette"></div>
-        <input type="text" id="chatInput" placeholder="Message (to manager)..." autocomplete="off">
+        <textarea id="chatInput" placeholder="Message (to manager)..." autocomplete="off" rows="1"></textarea>
       </div>
+      <button id="interruptToggle" onclick="toggleInterrupt()" title="Toggle interrupt mode — next message sends ESC">&#x26A1;</button>
       <button id="chatSend" onclick="sendChat()">send</button>
     </div>
   </div>
@@ -589,9 +824,11 @@
       <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
       <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
       <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
+      <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
     </div>
 
     <div class="tab-view active" id="tab-dashboard">
+      <div class="team-filter-bar" id="teamFilterBar"></div>
       <div class="search-bar">
         <input type="text" id="agentSearch" placeholder="Search agents..." autocomplete="off">
       </div>
@@ -599,10 +836,6 @@
       <div class="section">
         <div class="section-header" onclick="toggle('tasks')">Tasks</div>
         <div class="section-body" id="tasks"></div>
-      </div>
-      <div class="section">
-        <div class="section-header" onclick="toggle('agents')">Active Agents</div>
-        <div class="section-body" id="agents"></div>
       </div>
       <div class="section">
         <div class="section-header" onclick="toggle('done')">Completed</div>
@@ -615,12 +848,29 @@
     </div>
 
     <div class="tab-view" id="tab-logs">
+      <div class="logs-filter-bar" id="logsFilterBar"></div>
       <div class="log-search-bar">
         <input type="text" id="logSearchInput" placeholder="Search all logs..." autocomplete="off">
         <select id="logProjectFilter"><option value="">all projects</option></select>
       </div>
       <div class="log-search-status" id="logStatus"></div>
       <div class="log-results" id="logResults"></div>
+    </div>
+
+    <div class="tab-view" id="tab-terminal">
+      <div class="terminal-header" id="terminalHeader">
+        <span class="terminal-label" id="terminalLabel">Select an agent to view terminal</span>
+        <div class="terminal-controls">
+          <button class="terminal-freeze-btn" id="terminalFreeze" onclick="toggleTerminalFreeze()" title="Freeze/unfreeze">&#x23f8; freeze</button>
+        </div>
+      </div>
+      <pre class="terminal-output" id="terminalOutput"></pre>
+    </div>
+
+    <!-- Active Agents — always visible, fixed height -->
+    <div class="agents-panel">
+      <div class="section-header" onclick="toggle('agents')">Active Agents</div>
+      <div class="section-body" id="agents"></div>
     </div>
   </div>
 
@@ -632,6 +882,22 @@
         <button class="close-btn" onclick="closeContext()">&times;</button>
       </div>
       <div class="context-body" id="contextBody"></div>
+    </div>
+  </div>
+
+  <!-- Cmd+K unified search -->
+  <div class="cmdk-overlay" id="cmdkOverlay" onclick="if(event.target===this)closeCmdK()">
+    <div class="cmdk-modal">
+      <div class="cmdk-input-wrap">
+        <input type="text" id="cmdkInput" placeholder="Search chat, logs, terminal..." autocomplete="off">
+      </div>
+      <div class="cmdk-results" id="cmdkResults">
+        <div class="cmdk-empty">Type to search across all sources</div>
+      </div>
+      <div class="cmdk-hint">
+        <span><kbd>Esc</kbd> close</span>
+        <span><kbd>Enter</kbd> go to result</span>
+      </div>
     </div>
   </div>
 </div>
@@ -653,6 +919,15 @@ function getNickClass(id, state) {
     nickIdx++;
   }
   return nickMap.get(id);
+}
+
+const nickColorMap = {
+  'nick-web': '#9370db', 'nick-manager': '#7ab8a0', 'nick-keepalive': '#6b6b88',
+  'nick-agent-0': '#7a9ec8', 'nick-agent-1': '#9370db', 'nick-agent-2': '#c8956a',
+  'nick-agent-3': '#6aafb0', 'nick-agent-4': '#b87a95', 'nick-agent-5': '#c8b060',
+};
+function getNickColor(id, state) {
+  return nickColorMap[getNickClass(id, state)] || '#7a9ec8';
 }
 
 // --- Notifications ---
@@ -708,13 +983,32 @@ function connect() {
 }
 connect();
 
+// Reset state if requested
+if (new URLSearchParams(location.search).has('reset')) {
+  localStorage.clear();
+  history.replaceState(null, '', '/');
+}
+
+// Restore persisted UI state
+try {
+  const validTabs = ['dashboard', 'timeline', 'logs', 'terminal'];
+  const savedTab = localStorage.getItem('fleet-tab');
+  const savedAgent = localStorage.getItem('fleet-terminal-agent');
+  if (savedAgent) terminalAgent = savedAgent;
+  if (savedTab && validTabs.includes(savedTab)) switchTab(savedTab);
+} catch (e) { console.warn('restore failed:', e); }
+
+// Prevent accidental file drops from navigating away
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => e.preventDefault());
+
 // --- Auto-scroll ---
 const chatLog = $('chatLog');
 chatLog.addEventListener('scroll', () => {
   shouldAutoScroll = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 30;
 });
 function scrollToBottom() {
-  requestAnimationFrame(() => { chatLog.scrollTop = chatLog.scrollHeight; });
+  requestAnimationFrame(() => requestAnimationFrame(() => { chatLog.scrollTop = chatLog.scrollHeight; }));
 }
 
 // --- Helpers ---
@@ -772,6 +1066,11 @@ function renderMarkdown(html) {
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
   // Italic: *...*
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Images: ![alt](url) — unescape &amp; in src since text was HTML-escaped before markdown
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const src = url.replace(/&amp;/g, '&');
+    return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+  });
   // Bullet lists: lines starting with - or *
   html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>');
   return html;
@@ -841,12 +1140,15 @@ let chatSendTarget = null; // last-clicked agent, used for outgoing messages
 function toggleChatFilter(id) {
   if (chatFilterSet.has(id)) {
     chatFilterSet.delete(id);
+    const remaining = [...chatFilterSet];
+    chatSendTarget = remaining.length > 0 ? remaining[remaining.length - 1] : null;
   } else {
     chatFilterSet.add(id);
+    chatSendTarget = id;
   }
-  chatSendTarget = chatFilterSet.size > 0 ? id : null;
   renderFilterBar();
   renderChat(currentState);
+  renderTimelineEvents();
 }
 
 function clearChatFilter() {
@@ -854,21 +1156,31 @@ function clearChatFilter() {
   chatSendTarget = null;
   renderFilterBar();
   renderChat(currentState);
+  renderTimelineEvents();
+}
+
+function renderFilterChips() {
+  return [...chatFilterSet].map(id => {
+    const label = currentState ? agentLabel(currentState, id) : id.slice(0, 8);
+    const color = getNickColor(id, currentState);
+    return `<span class="chat-tag" style="color:${color};background:${color}18;border-color:${color}40" onclick="toggleChatFilter('${esc(id)}')">${esc(label)}<span class="tag-x">&times;</span></span>`;
+  }).join('');
 }
 
 function renderFilterBar() {
   const bar = $('chatFilterBar');
   const sendTo = $('chatSendTo');
+  const logsBar = $('logsFilterBar');
   if (chatFilterSet.size === 0) {
     bar.innerHTML = '<span class="chat-filter-all">all messages</span>';
     sendTo.textContent = '';
     $('chatInput').placeholder = 'Message (to manager)...';
+    if (logsBar) logsBar.innerHTML = '';
   } else {
-    const tags = [...chatFilterSet].map(id => {
-      const label = currentState ? agentLabel(currentState, id) : id.slice(0, 8);
-      return `<span class="chat-tag" onclick="toggleChatFilter('${esc(id)}')">${esc(label)}<span class="tag-x">&times;</span></span>`;
-    }).join('');
-    bar.innerHTML = tags + `<span class="chat-filter-all" onclick="clearChatFilter()">&times; clear</span>`;
+    const chips = renderFilterChips();
+    const clearBtn = `<span class="chat-filter-all" onclick="clearChatFilter()">&times; clear</span>`;
+    bar.innerHTML = chips + clearBtn;
+    if (logsBar) logsBar.innerHTML = chips + clearBtn;
     if (chatSendTarget) {
       const targetLabel = currentState ? agentLabel(currentState, chatSendTarget) : chatSendTarget.slice(0, 8);
       sendTo.textContent = 'to: ' + targetLabel;
@@ -877,9 +1189,43 @@ function renderFilterBar() {
   }
 }
 
+// --- Team filter ---
+let teamFilter = null; // null = all, or manager agent id
+
+function renderTeamFilter(state) {
+  const bar = $('teamFilterBar');
+  const managers = (state.agents || []).filter(a => a.is_manager);
+  if (managers.length < 2) { bar.innerHTML = ''; return; }
+  const btns = [`<span class="team-btn${teamFilter === null ? ' active' : ''}" onclick="setTeamFilter(null)">all</span>`];
+  for (const m of managers) {
+    const label = m.friendly_name || m.name || m.id.slice(0, 8);
+    const isTop = m.id === state.manager;
+    const active = teamFilter === m.id ? ' active' : '';
+    btns.push(`<span class="team-btn${active}" onclick="setTeamFilter('${esc(m.id)}')">${esc(label)}${isTop ? ' ★' : ''}</span>`);
+  }
+  bar.innerHTML = btns.join('');
+}
+
+function setTeamFilter(managerId) {
+  teamFilter = managerId;
+  if (currentState) render(currentState);
+}
+
+function getTeamAgentIds(state) {
+  if (!teamFilter) return null; // no filter
+  const tasks = state.tasks || [];
+  const ids = new Set();
+  ids.add(teamFilter); // include the manager itself
+  for (const t of tasks) {
+    if (t.delegated_by === teamFilter) ids.add(t.agent);
+  }
+  return ids;
+}
+
 // --- Render ---
 function render(state) {
   renderFilterBar();
+  renderTeamFilter(state);
   renderChat(state);
   renderAgents(state);
   renderTasks(state);
@@ -893,13 +1239,16 @@ function renderChat(state) {
 
   const lines = filtered.map(m => {
     const nick = m.from === 'web' ? 'skip' : agentLabel(state, m.from);
-    const nickCls = getNickClass(m.from, state);
+    const toNick = m.to === 'web' ? 'skip' : agentLabel(state, m.to);
+    const fromCls = getNickClass(m.from, state);
+    const toCls = getNickClass(m.to, state);
     const ts = timeShort(m.timestamp);
     const text = renderMarkdown(linkifyAgents(m.text, state, m.from));
-    const uuid = (m.from !== 'web' && typeof m.from === 'string' && m.from.length > 8) ? m.from : '';
-    const clickAttr = uuid ? ` onclick="selectAgent('${esc(m.from)}')" title="${uuid}" style="cursor:pointer"` : '';
-    const pinData = esc(JSON.stringify({ ts, nick, text: m.text }).replace(/'/g, '&#39;'));
-    return `<div class="chat-line"><span class="chat-ts">${ts}</span> <span class="chat-nick ${nickCls}"${clickAttr}>&lt;${esc(nick)}&gt;</span> ${text}<span class="pin-btn" onclick="(function(d){pinMsg(d.ts,d.nick,d.text)})(JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({ts, nick, text: m.text}))}')))">&#x1F4CC;</span></div>`;
+    const fromId = (m.from !== 'web' && typeof m.from === 'string' && m.from.length > 8) ? m.from : '';
+    const toId = (m.to !== 'web' && typeof m.to === 'string' && m.to.length > 8) ? m.to : '';
+    const fromClick = fromId ? ` onclick="selectAgent('${esc(m.from)}')" title="${fromId}" style="cursor:pointer"` : '';
+    const toClick = toId ? ` onclick="selectAgent('${esc(m.to)}')" title="${toId}" style="cursor:pointer"` : '';
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}"${fromClick}>${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}"${toClick}>${esc(toNick)}</span>:</span> ${text}<span class="pin-btn" onclick="(function(d){pinMsg(d.ts,d.nick,d.text)})(JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({ts, nick, text: m.text}))}')))">&#x1F4CC;</span></div>`;
   }).join('');
 
   chatLog.innerHTML = lines;
@@ -933,23 +1282,40 @@ function sparklineSvg(agentId) {
   return `<svg class="sparkline" width="${data.length * barW}" height="${h}" viewBox="0 0 ${data.length * barW} ${h}">${bars}</svg>`;
 }
 
+function getLastMsgTime(state, agentId) {
+  const msgs = state.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].from === agentId || msgs[i].to === agentId) return msgs[i].timestamp;
+  }
+  return null;
+}
+
 function renderAgents(state) {
-  const agents = (state.agents || []).filter(isActive);
+  let agents = (state.agents || []).filter(isActive);
+  const teamIds = getTeamAgentIds(state);
+  if (teamIds) agents = agents.filter(a => teamIds.has(a.id));
   if (agents.length === 0) {
     $('agents').innerHTML = '<div class="empty">No active agents</div>';
     return;
   }
   $('agents').innerHTML = agents.map(a => {
     const badges = [];
-    if (a.is_manager && a.id === state.manager) badges.push('<span class="agent-badge badge-manager">mgr</span>');
-    else if (a.is_manager) badges.push('<span class="agent-badge badge-manager">test</span>');
+    if (a.is_manager && a.id === state.manager) badges.push('<span class="agent-badge badge-top">top</span>');
+    else if (a.is_manager) badges.push('<span class="agent-badge badge-manager">mgr</span>');
     const seen = a.last_seen ? timeAgo(a.last_seen) : '-';
     const spark = sparklineSvg(a.id);
     const peekBtn = a.kitty_win ? `<span style="cursor:pointer;opacity:0.4;font-size:10px" onclick="peekAgent('${esc(a.friendly_name || a.name || a.id)}')" title="Peek terminal">&#x1F441;</span>` : '';
+    const lastMsg = getLastMsgTime(state, a.id);
+    const lastMsgAgo = lastMsg ? timeAgo(lastMsg) : null;
+    const quietMins = lastMsg ? Math.round((Date.now() - new Date(lastMsg).getTime()) / 60000) : Infinity;
+    const quietCls = quietMins > 30 ? ' quiet' : '';
+    const lastMsgHtml = lastMsgAgo ? `<span class="last-msg${quietCls}" title="Last message ${lastMsgAgo} ago">msg ${lastMsgAgo}</span>` : '';
+    const renameBtn = `<span class="rename-btn" onclick="event.stopPropagation();renameAgent('${esc(a.id)}','${esc(a.friendly_name || a.name || '')}')" title="Rename">&#x270E;</span>`;
     return `<div class="agent-row">
-      ${agentLink(state, a.id)}
+      ${agentLink(state, a.id)}${renameBtn}
       ${badges.join('')}
       ${spark}
+      ${lastMsgHtml}
       <span class="agent-id" style="margin-left:auto">${peekBtn} ${seen}</span>
     </div>`;
   }).join('');
@@ -957,8 +1323,9 @@ function renderAgents(state) {
 
 function renderTasks(state) {
   const tasks = (state.tasks || []);
-  const active = tasks.filter(t => t.status !== 'done');
-  const done = tasks.filter(t => t.status === 'done');
+  const teamIds = getTeamAgentIds(state);
+  const active = tasks.filter(t => t.status !== 'done' && (!teamIds || teamIds.has(t.agent) || t.delegated_by === teamFilter));
+  const done = tasks.filter(t => t.status === 'done' && (!teamIds || teamIds.has(t.agent) || t.delegated_by === teamFilter));
 
   if (active.length === 0) {
     $('tasks').innerHTML = '<div class="empty">No active tasks</div>';
@@ -969,7 +1336,7 @@ function renderTasks(state) {
       return `<div class="task-row">
         <div class="task-header">
           <span class="task-status status-${t.status}">${t.status}${blocked}</span>
-          <span class="task-desc">${esc(t.description)}</span>
+          <span class="task-desc" onclick="selectAgent('${esc(t.agent)}')" title="Filter to this agent">${esc(t.description)}</span>
         </div>
         <div class="task-meta">
           ${agentLink(state, t.agent)}
@@ -1103,6 +1470,7 @@ const COMMANDS = [
   { name: '/delegate', args: '<agent> <task>', desc: 'Assign a task to agent' },
   { name: '/done', args: '<agent>', desc: 'Mark agent task done' },
   { name: '/kick', args: '<agent>', desc: 'Send notification kick' },
+  { name: '/interrupt', args: '<agent> [message]', desc: 'Interrupt agent (kitty ESC)' },
   { name: '/export', args: '<agent>', desc: 'Download agent thread as markdown' },
   { name: '/reindex', args: '', desc: 'Rebuild search index' },
   { name: '/stats', args: '', desc: 'Show search index stats' },
@@ -1197,6 +1565,19 @@ async function executeCommand(text) {
       } catch (e) { appendSystemMsg('Failed: ' + e.message); }
       return true;
     }
+    case '/interrupt': {
+      if (!args) { appendSystemMsg('Usage: /interrupt <agent> [message]'); return true; }
+      const iparts = args.split(/\s+/);
+      const iagent = iparts[0];
+      const imsg = iparts.slice(1).join(' ') || undefined;
+      try {
+        const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: iagent, message: imsg }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg(data.result || 'Interrupted ' + iagent);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
     case '/export': {
       if (!args) { appendSystemMsg('Usage: /export <agent name or id>'); return true; }
       window.open('/api/export?agent=' + encodeURIComponent(args) + '&format=markdown', '_blank');
@@ -1236,16 +1617,90 @@ function appendSystemMsg(text) {
   scrollToBottom();
 }
 
-// --- Peek from agent row ---
+// --- Terminal tab ---
+let terminalAgent = null;
+let terminalAutoTimer = null;
+
 async function peekAgent(agent) {
+  terminalAgent = agent;
+  localStorage.setItem('fleet-terminal-agent', agent);
+  switchTab('terminal');
+  await refreshTerminal();
+}
+
+async function refreshTerminal() {
+  if (!terminalAgent) return;
+  const output = $('terminalOutput');
   try {
-    const res = await fetch('/api/peek?' + new URLSearchParams({ agent }));
+    const res = await fetch('/api/peek?' + new URLSearchParams({ agent: terminalAgent }));
     const data = await res.json();
-    if (data.error) { appendSystemMsg('Peek error: ' + data.error); return; }
-    appendSystemMsg(`--- ${data.label} (win ${data.win}) ---\n${data.text}\n---`);
-    shouldAutoScroll = true;
-    scrollToBottom();
-  } catch (e) { appendSystemMsg('Peek failed: ' + e.message); }
+    if (data.error) {
+      $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(terminalAgent)}</span> — error`;
+      output.textContent = data.error;
+      return;
+    }
+    $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(data.label)}</span> <span style="opacity:0.4">win ${data.win}</span>`;
+    // Keep scroll at bottom if already there
+    const wasAtBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 20;
+    output.textContent = data.text;
+    if (wasAtBottom) output.scrollTop = output.scrollHeight;
+  } catch (e) {
+    output.textContent = 'Failed: ' + e.message;
+  }
+}
+
+function startTerminalAuto() {
+  if (terminalAutoTimer) return;
+  terminalAutoTimer = setInterval(refreshTerminal, 3000);
+  const btn = $('terminalFreeze');
+  btn.innerHTML = '&#x23f8; freeze';
+  btn.classList.remove('frozen');
+}
+
+function stopTerminalAuto() {
+  clearInterval(terminalAutoTimer);
+  terminalAutoTimer = null;
+  const btn = $('terminalFreeze');
+  btn.innerHTML = '&#x25b6; resume';
+  btn.classList.add('frozen');
+}
+
+function toggleTerminalFreeze() {
+  if (terminalAutoTimer) stopTerminalAuto();
+  else startTerminalAuto();
+}
+
+let interruptMode = false;
+
+function toggleInterrupt() {
+  interruptMode = !interruptMode;
+  $('interruptToggle').classList.toggle('active', interruptMode);
+  const bar = $('interruptToggle').closest('.chat-input-bar');
+  bar.classList.toggle('interrupt-mode', interruptMode);
+  const input = $('chatInput');
+  if (interruptMode) {
+    const target = chatSendTarget || (currentState && currentState.manager);
+    const label = target && currentState ? agentLabel(currentState, target) : '';
+    input.placeholder = label ? 'Interrupt ' + label + '...' : 'Interrupt (select an agent)...';
+  } else {
+    if (chatSendTarget) {
+      const label = currentState ? agentLabel(currentState, chatSendTarget) : chatSendTarget.slice(0, 8);
+      input.placeholder = 'Message to ' + label + '...';
+    } else {
+      input.placeholder = 'Message (to manager)...';
+    }
+  }
+  input.focus();
+}
+
+async function interruptAgent(agentId) {
+  const label = currentState ? agentLabel(currentState, agentId) : agentId.slice(0, 8);
+  try {
+    const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId }) });
+    const data = await res.json();
+    if (data.error) appendSystemMsg('Interrupt error: ' + data.error);
+    else appendSystemMsg('Interrupted ' + label);
+  } catch (e) { appendSystemMsg('Interrupt failed: ' + e.message); }
 }
 
 // --- Send ---
@@ -1264,14 +1719,27 @@ async function sendChat() {
   const btn = $('chatSend');
   btn.disabled = true;
   input.value = '';
+  input.style.height = 'auto';
   const target = chatSendTarget || (currentState && currentState.manager) || undefined;
   try {
-    const res = await fetch('/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, to: target }),
-    });
-    if (!res.ok) throw new Error(await res.text());
+    if (interruptMode && target) {
+      const res = await fetch('/api/interrupt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: target, message: msg }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.error) appendSystemMsg('Interrupt error: ' + data.error);
+      toggleInterrupt(); // auto-disable after sending
+    } else {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg, to: target }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
     shouldAutoScroll = true;
   } catch (e) {
     input.value = msg;
@@ -1281,7 +1749,11 @@ async function sendChat() {
   input.focus();
 }
 
-$('chatInput').addEventListener('input', updatePalette);
+$('chatInput').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  updatePalette();
+});
 $('chatInput').addEventListener('keydown', e => {
   const palette = $('cmdPalette');
   if (palette.classList.contains('active')) {
@@ -1293,6 +1765,48 @@ $('chatInput').addEventListener('keydown', e => {
   }
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
 });
+$('chatInput').addEventListener('paste', async e => {
+  const items = [...(e.clipboardData?.items || [])];
+  const imgItem = items.find(i => i.type.startsWith('image/'));
+  if (!imgItem) return;
+  e.preventDefault();
+  const blob = imgItem.getAsFile();
+  if (!blob) return;
+  appendSystemMsg('Uploading image...');
+  try {
+    const buf = await blob.arrayBuffer();
+    const res = await fetch('/api/upload', { method: 'POST', body: buf });
+    const data = await res.json();
+    if (data.error) { appendSystemMsg('Upload failed: ' + data.error); return; }
+    // Insert image markdown into input and send
+    const input = $('chatInput');
+    const caption = input.value.trim();
+    input.value = (caption ? caption + ' ' : '') + `![img](${data.url})`;
+    sendChat();
+  } catch (err) { appendSystemMsg('Upload failed: ' + err.message); }
+});
+
+// Drop image onto chat
+const chatArea = $('chatInput').closest('.chat-input-bar');
+chatArea.addEventListener('dragover', e => { e.preventDefault(); chatArea.style.outline = '2px solid var(--blue)'; });
+chatArea.addEventListener('dragleave', () => { chatArea.style.outline = ''; });
+chatArea.addEventListener('drop', async e => {
+  e.preventDefault();
+  chatArea.style.outline = '';
+  const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
+  if (!file) return;
+  appendSystemMsg('Uploading image...');
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/upload', { method: 'POST', body: buf });
+    const data = await res.json();
+    if (data.error) { appendSystemMsg('Upload failed: ' + data.error); return; }
+    const input = $('chatInput');
+    const caption = input.value.trim();
+    input.value = (caption ? caption + ' ' : '') + `![img](${data.url})`;
+    sendChat();
+  } catch (err) { appendSystemMsg('Upload failed: ' + err.message); }
+});
 
 function toggle(id) { $(id).classList.toggle('collapsed'); }
 
@@ -1300,16 +1814,20 @@ function toggle(id) { $(id).classList.toggle('collapsed'); }
 function switchTab(tab) {
   document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === tab));
   document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === 'tab-' + tab));
+  localStorage.setItem('fleet-tab', tab);
   if (tab === 'timeline' && currentState) drawGantt(currentState);
   if (tab === 'logs') {
     if (!projectsLoaded) loadProjects();
     if (!$('logSearchInput').value.trim()) loadTimeline();
   }
+  if (tab === 'terminal' && terminalAgent) startTerminalAuto();
+  if (tab !== 'terminal') stopTerminalAuto();
 }
 
 // --- Log search ---
 let projectsLoaded = false;
 let logSearchTimer = null;
+let timelineEvents = []; // stored globally for filtering
 
 async function loadProjects() {
   try {
@@ -1330,17 +1848,33 @@ async function loadProjects() {
 
 async function loadTimeline() {
   const statusEl = $('logStatus');
-  const resultsEl = $('logResults');
   statusEl.textContent = 'Loading timeline...';
   try {
     const res = await fetch('/api/logs/timeline?limit=200');
     const data = await res.json();
     if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
-    statusEl.textContent = data.events.length + ' events';
-    resultsEl.innerHTML = data.events.map(renderTimelineEvent).join('');
+    timelineEvents = data.events;
+    renderTimelineEvents();
   } catch (e) {
     statusEl.textContent = 'Error: ' + e.message;
   }
+}
+
+function renderTimelineEvents() {
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  // Don't overwrite search results
+  if ($('logSearchInput') && $('logSearchInput').value.trim().length >= 2) return;
+  let events = timelineEvents;
+  if (chatFilterSet.size > 0) {
+    events = events.filter(e =>
+      chatFilterSet.has(e.from) || chatFilterSet.has(e.to) || chatFilterSet.has(e.agent)
+    );
+    statusEl.textContent = events.length + ' of ' + timelineEvents.length + ' events (filtered)';
+  } else {
+    statusEl.textContent = events.length + ' events';
+  }
+  resultsEl.innerHTML = events.map(renderTimelineEvent).join('');
 }
 
 // Make a clickable agent span for timeline events — uses raw ID for hover, label for display
@@ -1535,7 +2069,9 @@ $('logProjectFilter').addEventListener('change', () => {
 });
 
 document.addEventListener('keydown', e => {
-  if (e.key === 'Escape') { closeContext(); $('cmdPalette').className = 'cmd-palette'; }
+  if (e.key === 'Escape') { closeContext(); closeCmdK(); $('cmdPalette').className = 'cmd-palette'; }
+  // Cmd+K — unified search (works from anywhere)
+  if (e.key === 'k' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openCmdK(); return; }
   // Keyboard shortcuts (only when not typing in an input)
   if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
   if (e.key === 'f' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openChatSearch(); return; }
@@ -1544,6 +2080,7 @@ document.addEventListener('keydown', e => {
   if (e.key === '1') switchTab('dashboard');
   if (e.key === '2') switchTab('timeline');
   if (e.key === '3') switchTab('logs');
+  if (e.key === '4') switchTab('terminal');
 });
 
 // --- Agent search ---
@@ -1590,14 +2127,14 @@ searchInput.addEventListener('keydown', e => {
 });
 
 function selectAgent(id) {
-  // Always add, never toggle — search results add to filter
   const sid = String(id);
   if (!chatFilterSet.has(sid)) {
     chatFilterSet.add(sid);
-    chatSendTarget = sid;
-    renderFilterBar();
     renderChat(currentState);
   }
+  chatSendTarget = sid;
+  renderFilterBar();
+  renderTimelineEvents();
   searchInput.value = '';
   searchResults.className = 'search-results';
   searchResults.innerHTML = '';
@@ -1764,6 +2301,273 @@ function drawGantt(state) {
   ctx.font = '10px Helvetica Neue, sans-serif';
   ctx.textAlign = 'center';
   ctx.fillText('now', nowX, PAD_TOP - 10);
+}
+
+// --- Rename agent ---
+async function renameAgent(agentId, currentName) {
+  const newName = prompt('Rename agent:', currentName);
+  if (newName === null || newName === currentName) return;
+  try {
+    const res = await fetch('/api/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentId, name: newName }),
+    });
+    const data = await res.json();
+    if (data.error) appendSystemMsg('Rename error: ' + data.error);
+  } catch (e) { appendSystemMsg('Rename failed: ' + e.message); }
+}
+
+// --- Cmd+K unified search ---
+let cmdkTimer = null;
+let cmdkSelected = -1;
+let cmdkItems = [];
+
+function openCmdK() {
+  const overlay = $('cmdkOverlay');
+  overlay.classList.add('active');
+  const input = $('cmdkInput');
+  input.value = '';
+  input.focus();
+  $('cmdkResults').innerHTML = '<div class="cmdk-empty">Type to search across all sources</div>';
+  cmdkSelected = -1;
+  cmdkItems = [];
+}
+
+function closeCmdK() {
+  $('cmdkOverlay').classList.remove('active');
+  cmdkItems = [];
+  cmdkSelected = -1;
+}
+
+$('cmdkInput').addEventListener('input', () => {
+  clearTimeout(cmdkTimer);
+  cmdkTimer = setTimeout(doCmdKSearch, 300);
+});
+
+$('cmdkInput').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); closeCmdK(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); cmdkNav(1); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); cmdkNav(-1); return; }
+  if (e.key === 'Enter') { e.preventDefault(); cmdkActivate(); return; }
+});
+
+function cmdkNav(dir) {
+  if (cmdkItems.length === 0) return;
+  const els = $('cmdkResults').querySelectorAll('.cmdk-item');
+  if (cmdkSelected >= 0 && els[cmdkSelected]) els[cmdkSelected].classList.remove('selected');
+  cmdkSelected = Math.max(0, Math.min(cmdkItems.length - 1, cmdkSelected + dir));
+  if (els[cmdkSelected]) {
+    els[cmdkSelected].classList.add('selected');
+    els[cmdkSelected].scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function cmdkActivate() {
+  if (cmdkSelected >= 0 && cmdkSelected < cmdkItems.length) {
+    const item = cmdkItems[cmdkSelected];
+    closeCmdK();
+    if (item.action) item.action();
+  }
+}
+
+async function doCmdKSearch() {
+  const q = $('cmdkInput').value.trim();
+  const results = $('cmdkResults');
+  if (q.length < 2) {
+    results.innerHTML = '<div class="cmdk-empty">Type to search across all sources</div>';
+    cmdkItems = [];
+    cmdkSelected = -1;
+    return;
+  }
+
+  results.innerHTML = '<div class="cmdk-empty">Searching...</div>';
+  const ql = q.toLowerCase();
+
+  // Search all three sources in parallel
+  const [chatResults, logResults, termResults] = await Promise.all([
+    searchChatMessages(ql),
+    searchLogEntries(q),
+    searchTerminalOutput(ql),
+  ]);
+
+  cmdkItems = [];
+  let html = '';
+
+  if (chatResults.length > 0) {
+    html += '<div class="cmdk-group-label">Chat Messages</div>';
+    for (const r of chatResults.slice(0, 8)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-chat">chat</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  const tldaResults = logResults.filter(r => r.source === 'tlda');
+  const pureLogResults = logResults.filter(r => r.source !== 'tlda');
+
+  if (tldaResults.length > 0) {
+    html += '<div class="cmdk-group-label">Annotations</div>';
+    for (const r of tldaResults.slice(0, 6)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-tlda">${esc(r.role || 'note')}</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (pureLogResults.length > 0) {
+    html += '<div class="cmdk-group-label">Event Logs</div>';
+    for (const r of pureLogResults.slice(0, 8)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-logs">log</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (termResults.length > 0) {
+    html += '<div class="cmdk-group-label">Terminal Output</div>';
+    for (const r of termResults.slice(0, 5)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-term">term</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (cmdkItems.length === 0) {
+    html = '<div class="cmdk-empty">No results</div>';
+  }
+
+  results.innerHTML = html;
+  cmdkSelected = cmdkItems.length > 0 ? 0 : -1;
+  if (cmdkSelected >= 0) {
+    const els = results.querySelectorAll('.cmdk-item');
+    if (els[0]) els[0].classList.add('selected');
+  }
+}
+
+function cmdkHover(idx) {
+  const els = $('cmdkResults').querySelectorAll('.cmdk-item');
+  if (cmdkSelected >= 0 && els[cmdkSelected]) els[cmdkSelected].classList.remove('selected');
+  cmdkSelected = idx;
+  if (els[idx]) els[idx].classList.add('selected');
+}
+
+function searchChatMessages(ql) {
+  if (!currentState) return [];
+  const msgs = currentState.messages || [];
+  const results = [];
+  for (let i = msgs.length - 1; i >= 0 && results.length < 10; i--) {
+    const m = msgs[i];
+    const text = m.text || '';
+    if (!text.toLowerCase().includes(ql)) continue;
+    const nick = m.from === 'web' ? 'skip' : agentLabel(currentState, m.from);
+    const toNick = m.to === 'web' ? 'skip' : agentLabel(currentState, m.to);
+    // Highlight match in snippet
+    const pos = text.toLowerCase().indexOf(ql);
+    const start = Math.max(0, pos - 40);
+    const end = Math.min(text.length, pos + ql.length + 60);
+    const snippet = (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
+    const highlighted = esc(snippet).replace(new RegExp(ql.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<mark>$&</mark>');
+    const fromId = m.from;
+    results.push({
+      html: `<strong>${esc(nick)}</strong> ${highlighted}`,
+      meta: timeShort(m.timestamp),
+      action: () => {
+        // Filter chat to show this agent's messages and scroll
+        if (fromId !== 'web') selectAgent(fromId);
+      }
+    });
+  }
+  return results;
+}
+
+async function searchLogEntries(q) {
+  try {
+    const params = new URLSearchParams({ q, limit: '20' });
+    const res = await fetch('/api/logs/search?' + params);
+    const data = await res.json();
+    if (data.error || !data.results) return [];
+    return data.results.map(r => {
+      const snippet = r.snippet || '';
+      const highlighted = highlightSnippet(snippet, q);
+      const isTlda = r.source === 'tlda';
+      return {
+        source: r.source,
+        role: isTlda ? (r.role || 'note') : (r.role || ''),
+        html: isTlda ? `<strong>${esc(r.project || '')}</strong> ${highlighted}` : highlighted,
+        meta: isTlda ? (r.project || '') : (r.role || ''),
+        action: () => {
+          closeCmdK();
+          if (r.source !== 'events' && r.source !== 'tlda' && r.project && r.sessionId) {
+            showContext(r.project, r.sessionId, r.line);
+          } else {
+            switchTab('logs');
+            $('logSearchInput').value = q;
+            searchLogs();
+          }
+        }
+      };
+    });
+  } catch { return []; }
+}
+
+async function searchTerminalOutput(ql) {
+  if (!currentState) return [];
+  const agents = (currentState.agents || []).filter(a => isActive(a) && a.kitty_win);
+  const results = [];
+  // Fetch terminal output for active agents (limit to 5 agents to avoid overload)
+  const toCheck = agents.slice(0, 5);
+  const fetches = toCheck.map(async a => {
+    try {
+      const name = a.friendly_name || a.name || a.id;
+      const res = await fetch('/api/peek?' + new URLSearchParams({ agent: name }));
+      const data = await res.json();
+      if (data.error || !data.text) return;
+      const text = data.text;
+      const lines = text.split('\n');
+      for (let li = lines.length - 1; li >= 0 && results.length < 10; li--) {
+        const line = lines[li];
+        if (line.toLowerCase().includes(ql)) {
+          const pos = line.toLowerCase().indexOf(ql);
+          const start = Math.max(0, pos - 30);
+          const end = Math.min(line.length, pos + ql.length + 50);
+          const snippet = (start > 0 ? '...' : '') + line.slice(start, end) + (end < line.length ? '...' : '');
+          const highlighted = esc(snippet).replace(new RegExp(ql.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<mark>$&</mark>');
+          const agentName = data.label || name;
+          const agentId = a.id;
+          results.push({
+            html: `<strong>${esc(agentName)}</strong> ${highlighted}`,
+            meta: 'terminal',
+            action: () => {
+              terminalAgent = a.friendly_name || a.name || a.id;
+              localStorage.setItem('fleet-terminal-agent', terminalAgent);
+              switchTab('terminal');
+              refreshTerminal();
+            }
+          });
+          break; // one match per agent
+        }
+      }
+    } catch {}
+  });
+  await Promise.all(fetches);
+  return results;
 }
 </script>
 </body>
