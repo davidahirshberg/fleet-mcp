@@ -96,15 +96,15 @@ function saveState(state) {
 }
 
 function kickAgentById(state, agentId) {
-  if (!agentId || agentId === 'web') return false;
+  if (!agentId || agentId === 'web') return { ok: false, error: 'invalid target' };
   const agent = (state.agents || []).find(a => a.id === agentId);
   const win = agent?.kitty_win;
-  if (!win) return false;
+  if (!win) return { ok: false, error: 'no kitty window' };
   try {
-    execSync(`${BIN}/agent-kick ${win}`, { timeout: 10000 });
-    return true;
-  } catch {
-    return false;
+    const result = execSync(`${BIN}/agent-kick ${win}`, { encoding: 'utf8', timeout: 10000 }).trim();
+    return { ok: true, result };
+  } catch (e) {
+    return { ok: false, error: e.stderr?.toString().trim() || e.message };
   }
 }
 
@@ -190,9 +190,9 @@ const server = http.createServer(async (req, res) => {
         });
         saveState(state);
         logEvent({ type: 'chat', from: 'web', to: recipient, message });
-        const kicked = kickAgentById(state, recipient);
+        const kick = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true, kicked }));
+        res.end(JSON.stringify({ ok: true, kick }));
       } catch (e) {
         res.writeHead(500);
         res.end(e.message);
@@ -518,9 +518,9 @@ const server = http.createServer(async (req, res) => {
           a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery
         );
         if (!agent?.kitty_win) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found or no window' })); return; }
-        execSync(`${BIN}/agent-kick ${agent.kitty_win}`, { timeout: 10000 });
-        res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ok: true }));
+        const kick = kickAgentById(state, agent.id);
+        res.writeHead(kick.ok ? 200 : 500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(kick));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -547,10 +547,10 @@ const server = http.createServer(async (req, res) => {
           state.messages.push({ to: agent.id, from: 'web', text: message, timestamp: new Date().toISOString(), read: false });
           fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         }
-        if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ result: 'Message delivered (no kitty window — cannot ESC)' })); return; }
-        execSync(`${BIN}/agent-kick ${agent.kitty_win}`, { timeout: 10000 });
+        if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no kitty window — message delivered via state file only' })); return; }
+        const kick = kickAgentById(state, agent.id);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ result: `Interrupted ${agent.friendly_name || agent.id.slice(0, 8)}` }));
+        res.end(JSON.stringify({ ...kick, agent: agent.friendly_name || agent.id.slice(0, 8) }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));

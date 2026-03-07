@@ -274,12 +274,12 @@ function markRead(state, agent) {
 
 function kickAgent(kittyWin) {
   try {
-    execSync(`${BIN}/agent-kick ${kittyWin}`, {
+    const result = execSync(`${BIN}/agent-kick ${kittyWin}`, {
       encoding: 'utf8', timeout: 10000,
-    });
-    return true;
-  } catch {
-    return false;
+    }).trim();
+    return { ok: true, result };
+  } catch (e) {
+    return { ok: false, error: e.stderr?.toString().trim() || e.message };
   }
 }
 
@@ -309,14 +309,14 @@ function windowTail(output, n = 40) {
 // NOT for routine notifications (fs.watch handles those).
 function interruptAgent(state, agentId) {
   const agent = getAgent(state, agentId);
-  if (!agent || !agent.kitty_win) return false;
-  const sent = kickAgent(agent.kitty_win);
-  if (!sent) {
+  if (!agent || !agent.kitty_win) return { ok: false, error: 'no kitty window' };
+  const kick = kickAgent(agent.kitty_win);
+  if (!kick.ok) {
     // Window gone — clean up
     removeAgent(state, agentId);
     saveState(state);
   }
-  return sent;
+  return kick;
 }
 
 // ---- MCP server ----
@@ -1338,11 +1338,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       logEvent({ type: 'chat', from: ME || 'manager', to: entry.id, message });
     }
 
-    const sent = interruptAgent(state, entry.id);
-    if (!sent) {
-      return { content: [{ type: 'text', text: `Agent "${agent}" has no kitty window (headless). Message delivered via state file.` }] };
+    const kick = interruptAgent(state, entry.id);
+    if (!kick.ok) {
+      return { content: [{ type: 'text', text: `Agent "${agent}" — kick failed: ${kick.error}. Message delivered via state file.` }] };
     }
-    return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id.slice(0, 8)}${message ? ' (with message)' : ''}.` }] };
+    return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id.slice(0, 8)} (${kick.result})${message ? ' (with message)' : ''}.` }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

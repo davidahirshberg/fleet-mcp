@@ -3,11 +3,14 @@
 # Notifies a kitty window: ESC (interrupts blocking calls) + 📬.
 # If idle, sends Enter too so the agent processes it immediately.
 # Message content lives in the state file — recipients read via my_task().
+#
+# Tries all kitty sockets to find the window. Retries once on failure.
+# Logs every attempt to ~/.claude/kick.log.
 BIN="$(cd "$(dirname "$0")" && pwd)"
-SOCK=$(ls -t /tmp/kitty-sock-* 2>/dev/null | head -1)
-[ -z "$SOCK" ] && { echo "no kitty socket found" >&2; exit 1; }
-
+LOG="$HOME/.claude/kick.log"
 pattern="$1"
+[ -z "$pattern" ] && { echo "usage: agent-kick <window-id|pattern>" >&2; exit 1; }
+
 match=""
 if [[ "$pattern" =~ ^[0-9]+$ ]]; then
     match="id:$pattern"
@@ -15,14 +18,74 @@ else
     match="title:$pattern"
 fi
 
-# ESC interrupts blocking tool calls (wait_for_task)
-kitty @ --to "unix:$SOCK" send-key --match "$match" escape 2>/dev/null || { echo "no window found matching: $pattern" >&2; exit 1; }
-sleep 0.1
+log() {
+    echo "$(date '+%Y-%m-%d %H:%M:%S') kick[$pattern] $1" >> "$LOG"
+}
 
-if "$BIN/agent-idle" "$pattern" 2>/dev/null; then
-    kitty @ --to "unix:$SOCK" send-text --match "$match" '📬\r' 2>/dev/null
-    echo "kicked $match"
-else
-    kitty @ --to "unix:$SOCK" send-text --match "$match" '📬' 2>/dev/null
-    echo "nudged $match"
+# Find the socket that has this window.
+# Try all sockets, not just the newest — stale sockets can have newer timestamps.
+find_socket() {
+    for sock in /tmp/kitty-sock-*; do
+        [ -S "$sock" ] || continue
+        if kitty @ --to "unix:$sock" get-text --match "$match" >/dev/null 2>&1; then
+            echo "$sock"
+            return 0
+        fi
+    done
+    return 1
+}
+
+do_kick() {
+    local sock="$1"
+
+    # ESC interrupts blocking tool calls (wait_for_task)
+    kitty @ --to "unix:$sock" send-key --match "$match" escape 2>/dev/null || {
+        log "FAIL send-key escape via $sock"
+        return 1
+    }
+    sleep 0.1
+
+    if "$BIN/agent-idle" "$pattern" 2>/dev/null; then
+        # Idle: send 📬 + Enter so agent processes immediately
+        kitty @ --to "unix:$sock" send-text --match "$match" '📬' 2>/dev/null
+        kitty @ --to "unix:$sock" send-key --match "$match" enter 2>/dev/null
+        log "OK kicked (idle) via $sock"
+        echo "kicked $match"
+    else
+        # Busy: just send 📬, don't press Enter (agent will see it when ready)
+        kitty @ --to "unix:$sock" send-text --match "$match" '📬' 2>/dev/null
+        log "OK nudged (busy) via $sock"
+        echo "nudged $match"
+    fi
+    return 0
+}
+
+# Attempt 1
+SOCK=$(find_socket)
+if [ -z "$SOCK" ]; then
+    log "FAIL no socket has window matching: $match"
+    # Retry once after a short delay (socket might be initializing)
+    sleep 0.3
+    SOCK=$(find_socket)
+    if [ -z "$SOCK" ]; then
+        log "FAIL retry: still no socket for $match — window gone"
+        echo "no window found matching: $pattern" >&2
+        exit 1
+    fi
 fi
+
+if do_kick "$SOCK"; then
+    exit 0
+fi
+
+# Retry once
+log "RETRY after first kick failure"
+sleep 0.3
+SOCK=$(find_socket)
+if [ -n "$SOCK" ] && do_kick "$SOCK"; then
+    exit 0
+fi
+
+log "FAIL all attempts exhausted for $match"
+echo "kick failed for: $pattern" >&2
+exit 1
