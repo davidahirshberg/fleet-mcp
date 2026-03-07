@@ -1575,8 +1575,9 @@ function checkForNewMessages(state) {
   lastMsgCount = msgs.length;
 
   for (const m of newMsgs) {
-    if (m.from === 'web') continue; // our own messages
+    if (m.from === 'web') { lastConversationPartner = m.to; continue; }
     if (m.to === 'web' || m.text?.toLowerCase().includes('@skip') || m.text?.toLowerCase().includes('@human')) {
+      lastConversationPartner = m.from;
       const nick = agentLabel(state, m.from);
       if (notificationsEnabled) {
         new Notification(`${nick}`, { body: m.text?.substring(0, 200), tag: m.timestamp });
@@ -1868,6 +1869,7 @@ function linkifyAgents(text, state, fromId) {
 // --- Chat filter (tag-based) ---
 const chatFilterSet = new Set();
 let chatSendTarget = null; // last-clicked agent, used for outgoing messages
+let lastConversationPartner = null; // most recent agent who messaged web or web messaged
 
 function toggleChatFilter(id) {
   if (chatFilterSet.has(id)) {
@@ -1913,7 +1915,9 @@ function renderFilterBar() {
   if (chatFilterSet.size === 0) {
     bar.innerHTML = '<span class="chat-filter-all">all messages</span>';
     sendTo.textContent = '';
-    $('chatInput').placeholder = 'Message (to manager)...';
+    const defaultTarget = lastConversationPartner || (currentState && currentState.manager);
+    const targetName = defaultTarget && currentState ? agentLabel(currentState, defaultTarget) : 'manager';
+    $('chatInput').placeholder = `Message (to ${targetName})...`;
     if (logsBar) logsBar.innerHTML = '';
   } else {
     const chips = renderFilterChips();
@@ -2879,7 +2883,7 @@ async function sendChat() {
   btn.disabled = true;
   input.value = '';
   input.style.height = 'auto';
-  const target = chatSendTarget || (currentState && currentState.manager) || undefined;
+  const target = chatSendTarget || lastConversationPartner || undefined;
   try {
     if (interruptMode && target) {
       const res = await fetch('/api/interrupt', {
