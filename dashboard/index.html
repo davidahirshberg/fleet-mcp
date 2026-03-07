@@ -3163,6 +3163,13 @@ document.addEventListener('dragstart', e => {
   const item = container._dragItems[parseInt(el.dataset.dragIdx)];
   if (!item) return;
   e.dataTransfer.setData('application/x-chat-attachment', JSON.stringify(item));
+  // Also set tlda format so items can be dropped into tlda
+  e.dataTransfer.setData('application/x-tlda-note', JSON.stringify({
+    text: item.snippet || '',
+    color: 'yellow',
+    sourceDoc: 'fleet',
+    sourceShapeId: item.source || ''
+  }));
   e.dataTransfer.effectAllowed = 'copy';
 });
 
@@ -3266,6 +3273,21 @@ chatArea.addEventListener('drop', async e => {
   const jsonData = e.dataTransfer?.getData('application/x-chat-attachment');
   if (jsonData) {
     try { addChatAttachment(JSON.parse(jsonData)); } catch {}
+    $('chatInput').focus();
+    return;
+  }
+  // Check for tlda annotation drop
+  const tldaData = e.dataTransfer?.getData('application/x-tlda-note');
+  if (tldaData) {
+    try {
+      const note = JSON.parse(tldaData);
+      addChatAttachment({
+        type: 'tlda',
+        snippet: (note.tabs ? note.tabs[note.activeTab || 0] : note.text || '').substring(0, 200),
+        source: note.sourceDoc ? `tlda:${note.sourceDoc}/${note.sourceShapeId || ''}` : 'tlda',
+        timestamp: ''
+      });
+    } catch {}
     $('chatInput').focus();
     return;
   }
