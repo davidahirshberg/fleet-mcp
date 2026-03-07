@@ -91,6 +91,13 @@
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
   }
+  .tasks-completed-split {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
 
   /* Chat header with selector */
   .chat-header {
@@ -1073,13 +1080,16 @@
         <input type="text" id="agentSearch" placeholder="Search agents..." autocomplete="off">
       </div>
       <div class="search-results" id="searchResults"></div>
-      <div class="section">
-        <div class="section-header" onclick="toggle('tasks')">Tasks</div>
-        <div class="section-body" id="tasks"></div>
-      </div>
-      <div class="section">
-        <div class="section-header" onclick="toggle('done')">Completed</div>
-        <div class="section-body collapsed" id="done"></div>
+      <div class="tasks-completed-split" id="tasksCompletedSplit">
+        <div class="section" style="flex:1;min-height:60px;overflow-y:auto;">
+          <div class="section-header" onclick="toggle('tasks')">Tasks</div>
+          <div class="section-body" id="tasks"></div>
+        </div>
+        <div class="drag-handle-h" id="dragTasksH"></div>
+        <div class="section" id="completedSection" style="height:180px;min-height:60px;overflow-y:auto;">
+          <div class="section-header" onclick="toggle('done')">Completed</div>
+          <div class="section-body collapsed" id="done"></div>
+        </div>
       </div>
     </div>
 
@@ -1208,6 +1218,26 @@ const $ = id => document.getElementById(id);
       },
       onEnd() {
         localStorage.setItem('fleet-left-width', leftPane.style.width);
+      }
+    });
+
+    // Tasks/Completed drag handle
+    const dragTasksH = document.getElementById('dragTasksH');
+    const completedSection = document.getElementById('completedSection');
+    const savedCompleted = localStorage.getItem('fleet-completed-height');
+    if (savedCompleted) completedSection.style.height = savedCompleted;
+
+    setupDrag(dragTasksH, {
+      onMove(e) {
+        const container = document.getElementById('tasksCompletedSplit');
+        const rect = container.getBoundingClientRect();
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+        const fromBottom = rect.height - y;
+        const clamped = Math.max(60, Math.min(fromBottom, rect.height - 60));
+        completedSection.style.height = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-completed-height', completedSection.style.height);
       }
     });
 
