@@ -3164,12 +3164,10 @@ document.addEventListener('dragstart', e => {
   if (!item) return;
   e.dataTransfer.setData('application/x-chat-attachment', JSON.stringify(item));
   // Also set tlda format so items can be dropped into tlda
-  e.dataTransfer.setData('application/x-tlda-note', JSON.stringify({
-    text: item.snippet || '',
-    color: 'yellow',
-    sourceDoc: 'fleet',
-    sourceShapeId: item.source || ''
-  }));
+  const tldaPayload = { _tlda: true, text: item.snippet || '', color: 'yellow', sourceDoc: 'fleet', sourceShapeId: item.source || '' };
+  e.dataTransfer.setData('application/x-tlda-note', JSON.stringify(tldaPayload));
+  // text/plain with JSON for cross-window Safari compatibility
+  e.dataTransfer.setData('text/plain', JSON.stringify({ _fleet: true, ...item, _tlda: true, text: item.snippet || '', color: 'yellow', sourceDoc: 'fleet' }));
   e.dataTransfer.effectAllowed = 'copy';
 });
 
@@ -3276,20 +3274,26 @@ chatArea.addEventListener('drop', async e => {
     $('chatInput').focus();
     return;
   }
-  // Check for tlda annotation drop
-  const tldaData = e.dataTransfer?.getData('application/x-tlda-note');
+  // Check for tlda annotation drop (custom MIME or text/plain with marker)
+  let tldaData = e.dataTransfer?.getData('application/x-tlda-note');
+  if (!tldaData) {
+    const plain = e.dataTransfer?.getData('text/plain');
+    if (plain) try { const p = JSON.parse(plain); if (p._tlda) tldaData = plain; } catch {}
+  }
   if (tldaData) {
     try {
       const note = JSON.parse(tldaData);
-      addChatAttachment({
-        type: 'tlda',
-        snippet: (note.tabs ? note.tabs[note.activeTab || 0] : note.text || '').substring(0, 200),
-        source: note.sourceDoc ? `tlda:${note.sourceDoc}/${note.sourceShapeId || ''}` : 'tlda',
-        timestamp: ''
-      });
+      if (!note._fleet) { // don't re-attach our own items via text/plain round-trip
+        addChatAttachment({
+          type: 'tlda',
+          snippet: (note.tabs ? note.tabs[note.activeTab || 0] : note.text || '').substring(0, 200),
+          source: note.sourceDoc ? `tlda:${note.sourceDoc}/${note.sourceShapeId || ''}` : 'tlda',
+          timestamp: ''
+        });
+        $('chatInput').focus();
+        return;
+      }
     } catch {}
-    $('chatInput').focus();
-    return;
   }
   const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
   if (!file) return;
