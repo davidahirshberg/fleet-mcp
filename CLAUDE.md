@@ -2,23 +2,24 @@
 
 Coordinates agents via shared state file + kitty kicks for notifications. All agents register at startup. Communication goes through the state file; kitty rings the doorbell so agents know to check.
 
-Agents can be terminal Claude Code sessions (identified by kitty window ID) or headless processes like Todd (identified by name string).
+Agent identity = session UUID (auto-detected from most recent JSONL). Kitty window IDs are metadata for notifications only.
 
 ## Tools
 
-### register(manager?, session_id?, name?)
+### register(manager?, testing?, session_id?, name?)
 
-All agents call this at session start. Stores the agent in the registry with kitty window ID (from `$KITTY_WINDOW_ID`), optional session ID / name, and working directory (`$PWD`). Preserves any friendly name assigned by the manager across re-registrations.
+All agents call this at session start. Auto-detects the session UUID from the most recent JSONL in the project directory. Stores the agent in the registry with UUID as identity, kitty window ID (from `$KITTY_WINDOW_ID`) as notification address, and working directory (`$PWD`). Preserves any friendly name assigned by the manager across re-registrations.
 
 - `manager`: set true to register as manager (starts keepalive watcher)
-- `session_id`: Claude session ID (for JSONL lookup)
-- `name`: agent name (for headless agents without a kitty window)
+- `testing`: set true (with `manager=true`) to register as a secondary/test manager. Gets full manager privileges but does not replace the primary manager or start keepalive. See [Multi-Manager (Testing)](#multi-manager-testing).
+- `session_id`: Claude session ID (override auto-detection)
+- `name`: agent name (for headless agents without a session)
 
 ### delegate(agent, description, message, after?, friendly_name?)
 
-Assign a task to an agent. Writes task to state and kicks the agent via kitty so they know to check. Manager only.
+Assign a task to an agent. Writes task to state and kicks the agent via kitty so they know to check. Manager only. Agent must be registered — rejects unknown identifiers.
 
-- `agent`: Kitty window ID (number), agent name, or friendly name
+- `agent`: Session UUID, agent name, or friendly name
 - `description`: Short human-readable label (5-10 words)
 - `message`: Full task message
 - `after`: Optional. Task ID or array of IDs — task is blocked until all complete.
@@ -28,10 +29,10 @@ Returns task ID. Use in `after` for dependent tasks.
 
 ### chat(message, to?)
 
-Send a message to another agent's inbox. Writes to state and kicks the recipient via kitty.
+Send a message to another agent's inbox. Writes to state and kicks the recipient via kitty. Recipient must be registered — rejects unknown identifiers.
 
 - `message`: Message to send
-- `to`: Optional. Agent ID or name. Omit to send to the manager.
+- `to`: Optional. Session UUID, agent name, or friendly name. Omit to send to the manager.
 
 ### wait_for_task(timeout?)
 
@@ -47,11 +48,11 @@ Mark a task done. No args = mark own task. Marking another agent's task requires
 
 ### task_check(win)
 
-**Escape hatch.** Read an agent's kitty terminal window directly. For when an agent is stuck or unresponsive. If the window is gone, removes the agent from the registry.
+**Escape hatch.** Read an agent's kitty terminal window directly. For when an agent is stuck or unresponsive. Takes a kitty window ID (this is the one place kitty IDs are used directly). If the window is gone, removes the agent from the registry.
 
 ### my_task()
 
-Show own task, unread messages (reads them inline). Uses `$KITTY_WINDOW_ID`.
+Show own task, unread messages (reads them inline).
 
 ### register_manager()
 
@@ -65,7 +66,7 @@ Step down as manager. Manager only. Pass `to` to hand the role to a specific reg
 
 Set or change a friendly name for an agent. Manager only. Names are for manager/human communication — agents don't need to know their names.
 
-- `agent`: Agent identifier (kitty win, session ID, or current name)
+- `agent`: Session UUID, agent name, or friendly name
 - `friendly_name`: Human-readable name (e.g. "sims guy", "survival paper")
 
 Names persist across agent re-registrations. All tools that accept an agent identifier also accept friendly names.
@@ -74,7 +75,7 @@ Names persist across agent re-registrations. All tools that accept an agent iden
 
 Resume a dead agent session. Manager only. Looks up the agent's session ID and working directory from the registry, finds an idle kitty tab, and runs `cd <cwd> && claude --resume <session_id>`.
 
-- `agent`: Agent identifier or friendly name
+- `agent`: Session UUID, agent name, or friendly name
 - `win`: Optional. Kitty window to use. Omit to auto-find an idle tab (prefers the agent's old window if alive, then any idle tab not assigned to another agent).
 
 Updates the agent's registry entry with the new kitty window.
@@ -86,7 +87,7 @@ Launch a fresh claude agent in a new kitty tab. Manager only. The new agent will
 - `cwd`: Working directory. Defaults to home directory.
 - `win`: Optional. Kitty window to use instead of creating a new tab.
 
-Returns the window ID. Use `delegate(win, ...)` once the agent has registered.
+Returns the kitty window ID. Once the agent registers, find its UUID via `task_list()` and use that for `delegate()`.
 
 ## delegate vs chat
 
@@ -97,7 +98,7 @@ If you'd want to know when it's done, use `delegate`.
 
 ## Agent Lifecycle
 
-1. Agent starts, calls `register()` — added to agent registry
+1. Agent starts, calls `register()` — added to agent registry with session UUID
 2. Manager calls `delegate(agent, ...)` — task written to state, agent kicked via kitty
 3. Agent sees the kick, calls `wait_for_task()` or `my_task()` — gets the task
 4. Agent works, uses `chat()` to report progress
@@ -124,18 +125,23 @@ Headless agents (no kitty window) must poll via `wait_for_task()`.
 
 ```json
 {
-  "id": 7,
+  "id": "a0ff6112-3b4c-4e5d-8f6a-7b8c9d0e1f2a",
   "kitty_win": 7,
-  "session_id": "a0ff6112-...",
+  "session_id": "a0ff6112-3b4c-4e5d-8f6a-7b8c9d0e1f2a",
   "friendly_name": "sims guy",
   "cwd": "/Users/skip/work/bregman-lower-bound",
   "registered_at": "ISO timestamp",
+  "last_seen": "ISO timestamp",
   "is_manager": false
 }
 ```
 
+- `id`: Session UUID — the canonical agent identifier. All tasks, messages, and log events use this.
+- `kitty_win`: Kitty window ID — used only for sending notification kicks. Not identity.
+- `session_id`: Same as `id` for session-based agents. Kept for explicit reference.
 - `friendly_name`: Set by manager via `name_agent()` or `delegate(friendly_name=...)`. Persists across re-registrations.
 - `cwd`: Captured automatically from `$PWD` at registration. Used by `respawn()` to cd before resuming.
+- `last_seen`: Updated on every MCP tool call. Used for liveness detection (10-minute threshold) — works for both kitty and headless agents. Falls back to kitty window check if no heartbeat.
 
 Lazy cleanup: when any tool tries to interact with an agent's kitty window and it's gone, the agent is removed from the registry.
 
@@ -143,16 +149,17 @@ Lazy cleanup: when any tool tries to interact with an agent's kitty window and i
 
 ```json
 {
-  "id": "w5-mmb2df6x",
-  "agent": 5,
+  "id": "a0ff6112-mmb2df6x",
+  "agent": "a0ff6112-3b4c-4e5d-8f6a-7b8c9d0e1f2a",
   "description": "Build survival paper",
   "message": "Full task text...",
+  "delegated_by": "c719a67f-9798-44b5-82fa-d07c0d5c4b1a",
   "status": "pending|blocked|working|idle|done",
   "acknowledged": true,
   "delegated_at": "ISO timestamp",
   "last_checked": "ISO timestamp",
   "completed_at": "ISO timestamp (only if done)",
-  "blockedBy": ["w3-mmb2hblm"]
+  "blockedBy": ["b3c4d5e6-mmb2hblm"]
 }
 ```
 
@@ -162,8 +169,8 @@ Status flow: `blocked` → `pending` → `working` (acknowledged) → `idle`/`do
 
 ```json
 {
-  "to": 2,
-  "from": 5,
+  "to": "a0ff6112-3b4c-4e5d-8f6a-7b8c9d0e1f2a",
+  "from": "c719a67f-9798-44b5-82fa-d07c0d5c4b1a",
   "text": "Found the bug, it's in dispersion.R",
   "timestamp": "ISO timestamp",
   "read": false
@@ -176,6 +183,33 @@ Status flow: `blocked` → `pending` → `working` (acknowledged) → `idle`/`do
 
 ## Keepalive Watcher
 
-Auto-started by `register(manager=true)`. Polls every 45s, kicks the manager via kitty when agents need attention.
+Auto-started by `register(manager=true)`. Polls every 45s, nudges the manager via kitty when agents need attention and the manager is idle. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1h). Resets when something changes. Doesn't write messages — just sends 📬. Manager should call `task_list()` when nudged.
 
 Log: `~/.claude/keepalive.log`
+
+## Multi-Manager (Testing)
+
+For development and testing of the agent-manager system itself, you can register secondary managers that coexist with the primary manager.
+
+### Usage
+
+```
+register(manager=true, testing=true)
+```
+
+### What test managers get
+
+- Full manager API: `delegate`, `task_done` (for other agents), `name_agent`, `respawn`, `spawn`
+- Tasks they create are tagged with `delegated_by` so ownership is trackable
+- `task_list()` shows which manager created each task (only when multiple managers exist)
+
+### What test managers don't get
+
+- They don't replace `state.manager` (the primary manager slot)
+- No keepalive watcher — test managers are expected to be actively working, not passively monitoring
+- `chat()` without a recipient still goes to the primary manager, not to test managers
+- `unregister_manager(to=...)` handoff is primary-manager-only
+
+### Invariant
+
+A production session with one manager works exactly as before. Multi-manager is opt-in via the `testing` flag.

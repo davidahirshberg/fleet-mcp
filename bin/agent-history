@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""
+agent-history — Query the persistent agent communication log.
+
+Usage:
+  agent-history                     # last 20 events
+  agent-history -n 50               # last 50 events
+  agent-history --agent synth-rand  # filter by agent (from or to)
+  agent-history --from web          # filter by sender
+  agent-history --to 1              # filter by recipient
+  agent-history --type chat         # filter by event type (chat/delegate/task_done)
+  agent-history --since 2h          # events from last 2 hours (s/m/h/d)
+  agent-history --all               # show everything
+  agent-history --json              # raw JSONL output
+
+Reads ~/.claude/agent-messages.jsonl (append-only log written by the MCP server).
+"""
+
+import json
+import sys
+import os
+import re
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+LOG_FILE = Path.home() / '.claude' / 'agent-messages.jsonl'
+STATE_FILE = Path.home() / '.claude' / 'agent-tasks.json'
+
+# Colors
+C_RESET = '\033[0m'
+C_DIM = '\033[90m'
+C_BLUE = '\033[94m'
+C_GREEN = '\033[92m'
+C_RED = '\033[91m'
+C_PURPLE = '\033[95m'
+C_YELLOW = '\033[93m'
+C_BOLD = '\033[1m'
+
+def parse_duration(s):
+    """Parse '2h', '30m', '1d', '90s' into timedelta."""
+    m = re.match(r'^(\d+)([smhd])$', s)
+    if not m:
+        print(f"Invalid duration: {s} (use e.g. 2h, 30m, 1d)", file=sys.stderr)
+        sys.exit(1)
+    val, unit = int(m.group(1)), m.group(2)
+    if unit == 's': return timedelta(seconds=val)
+    if unit == 'm': return timedelta(minutes=val)
+    if unit == 'h': return timedelta(hours=val)
+    if unit == 'd': return timedelta(days=val)
+
+def load_agent_names():
+    """Load friendly names from state file for display."""
+    try:
+        state = json.loads(STATE_FILE.read_text())
+        names = {}
+        for a in state.get('agents', []):
+            aid = a.get('id')
+            name = a.get('friendly_name') or a.get('name')
+            if aid and name:
+                names[str(aid)] = name
+                names[aid] = name
+        return names
+    except:
+        return {}
+
+def resolve_name(names, id_val):
+    """Get display name for an agent ID."""
+    return names.get(str(id_val), str(id_val))
+
+def matches_agent(entry, agent, names):
+    """Check if entry involves the given agent (by ID, name, or friendly name)."""
+    agent_lower = str(agent).lower()
+    for field in ('from', 'to', 'agent'):
+        val = entry.get(field)
+        if val is None:
+            continue
+        if str(val).lower() == agent_lower:
+            return True
+        name = names.get(str(val), '').lower()
+        if name == agent_lower:
+            return True
+    return False
+
+def format_event(entry, names):
+    """Format a log entry for terminal display."""
+    ts = entry.get('timestamp', '')
+    try:
+        dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+        time_str = dt.astimezone().strftime('%H:%M')
+    except:
+        time_str = ts[:16]
+
+    etype = entry.get('type', '?')
+    frm = resolve_name(names, entry.get('from', '?'))
+    to = resolve_name(names, entry.get('to', '?'))
+
+    if etype == 'chat':
+        msg = entry.get('message', '')
+        # Truncate long messages for display
+        lines = msg.split('\n')
+        preview = lines[0][:120]
+        if len(lines) > 1 or len(lines[0]) > 120:
+            preview += ' ...'
+        return f"{C_DIM}{time_str}{C_RESET}  {C_BLUE}{frm}{C_RESET} {C_DIM}->{C_RESET} {C_GREEN}{to}{C_RESET}  {preview}"
+
+    elif etype == 'delegate':
+        desc = entry.get('description', '')
+        agent = resolve_name(names, entry.get('to', '?'))
+        return f"{C_DIM}{time_str}{C_RESET}  {C_YELLOW}delegate{C_RESET} {C_BLUE}{frm}{C_RESET} {C_DIM}->{C_RESET} {C_GREEN}{agent}{C_RESET}  {C_BOLD}{desc}{C_RESET}"
+
+    elif etype == 'task_done':
+        agent = resolve_name(names, entry.get('agent', '?'))
+        desc = entry.get('description', '')
+        return f"{C_DIM}{time_str}{C_RESET}  {C_GREEN}done{C_RESET} {C_BLUE}{agent}{C_RESET}  {desc}"
+
+    else:
+        return f"{C_DIM}{time_str}{C_RESET}  {C_PURPLE}{etype}{C_RESET}  {json.dumps(entry)}"
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Query agent communication log')
+    parser.add_argument('-n', type=int, default=20, help='Number of events (default 20)')
+    parser.add_argument('--agent', help='Filter by agent (from or to)')
+    parser.add_argument('--from', dest='from_', help='Filter by sender')
+    parser.add_argument('--to', help='Filter by recipient')
+    parser.add_argument('--type', help='Filter by event type (chat/delegate/task_done)')
+    parser.add_argument('--since', help='Time window (e.g. 2h, 30m, 1d)')
+    parser.add_argument('--all', action='store_true', help='Show all events')
+    parser.add_argument('--json', action='store_true', help='Raw JSONL output')
+    parser.add_argument('--full', action='store_true', help='Show full message text (no truncation)')
+    args = parser.parse_args()
+
+    if not LOG_FILE.exists():
+        print("No log file yet. Communication will be logged after the next MCP server restart.", file=sys.stderr)
+        sys.exit(0)
+
+    names = load_agent_names()
+
+    # Parse time filter
+    since_dt = None
+    if args.since:
+        since_dt = datetime.now(timezone.utc) - parse_duration(args.since)
+
+    # Read and filter
+    events = []
+    with open(LOG_FILE) as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except:
+                continue
+
+            # Time filter
+            if since_dt:
+                ts = entry.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                    if dt < since_dt:
+                        continue
+                except:
+                    continue
+
+            # Type filter
+            if args.type and entry.get('type') != args.type:
+                continue
+
+            # Agent filter
+            if args.agent and not matches_agent(entry, args.agent, names):
+                continue
+
+            # From filter
+            if args.from_:
+                frm = str(entry.get('from', ''))
+                frm_name = names.get(frm, '').lower()
+                if frm.lower() != args.from_.lower() and frm_name != args.from_.lower():
+                    continue
+
+            # To filter
+            if args.to:
+                to = str(entry.get('to', ''))
+                to_name = names.get(to, '').lower()
+                if to.lower() != args.to.lower() and to_name != args.to.lower():
+                    continue
+
+            events.append(entry)
+
+    # Limit
+    if not args.all:
+        events = events[-args.n:]
+
+    if not events:
+        print("No matching events.", file=sys.stderr)
+        sys.exit(0)
+
+    # Output
+    if args.json:
+        for e in events:
+            print(json.dumps(e))
+    else:
+        for e in events:
+            if args.full and e.get('type') == 'chat':
+                # Full mode: print header then full message
+                ts = e.get('timestamp', '')
+                try:
+                    dt = datetime.fromisoformat(ts.replace('Z', '+00:00'))
+                    time_str = dt.astimezone().strftime('%H:%M')
+                except:
+                    time_str = ts[:16]
+                frm = resolve_name(names, e.get('from', '?'))
+                to = resolve_name(names, e.get('to', '?'))
+                print(f"{C_DIM}{time_str}{C_RESET}  {C_BLUE}{frm}{C_RESET} {C_DIM}->{C_RESET} {C_GREEN}{to}{C_RESET}")
+                print(e.get('message', ''))
+                print()
+            else:
+                print(format_event(e, names))
+
+if __name__ == '__main__':
+    main()

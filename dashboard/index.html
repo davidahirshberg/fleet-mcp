@@ -1,0 +1,1770 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --surface: #161625;
+    --text: #c8c8d8;
+    --text-dim: #6b6b88;
+    --accent: #9370db;
+    --green: #7ab8a0;
+    --yellow: #c8b060;
+    --blue: #7a9ec8;
+    --purple: #9370db;
+    --orange: #c8956a;
+    --cyan: #6aafb0;
+    --pink: #b87a95;
+    --border: #1e1e32;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-weight: 300;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  /* Split layout */
+  .split {
+    display: flex;
+    height: 100%;
+  }
+  .left-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    border-right: 1px solid var(--border);
+    min-width: 0;
+  }
+  .right-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  /* Chat header with selector */
+  .chat-header {
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .chat-header .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+  }
+  .chat-header .dot.disconnected { background: var(--accent); }
+  .chat-filter { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; min-height: 20px; }
+  .chat-filter-all { color: var(--text-dim); font-size: 12px; cursor: pointer; }
+  .chat-filter-all:hover { color: var(--text); }
+  .chat-tag { display: inline-flex; align-items: center; gap: 2px; background: rgba(59,130,246,0.15); color: var(--blue); font-size: 11px; font-weight: 700; padding: 1px 6px; border-radius: 3px; cursor: pointer; }
+  .chat-tag:hover { background: rgba(59,130,246,0.3); }
+  .chat-tag .tag-x { opacity: 0.5; margin-left: 2px; }
+  .chat-tag:hover .tag-x { opacity: 1; }
+  .chat-send-to { color: var(--text-dim); font-size: 11px; margin-left: auto; flex-shrink: 0; }
+
+  /* Chat log — IRC style */
+  .chat-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chat-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 1px 0;
+  }
+  .chat-line:hover { background: rgba(255,255,255,0.03); }
+  .chat-line .pin-btn { opacity: 0; cursor: pointer; color: var(--text-dim); font-size: 10px; margin-left: 4px; }
+  .chat-line:hover .pin-btn { opacity: 0.5; }
+  .chat-line .pin-btn:hover { opacity: 1; color: var(--yellow); }
+  .chat-search-bar {
+    display: none;
+    padding: 4px 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .chat-search-bar.active { display: flex; }
+  .chat-search-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .chat-search-bar input:focus { border-color: var(--yellow); }
+  .chat-search-bar .search-count { color: var(--text-dim); font-size: 11px; min-width: 50px; }
+  .chat-search-bar button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    font-family: inherit;
+  }
+  .chat-search-bar button:hover { color: var(--text); }
+  .chat-line.search-hit { background: rgba(200,176,96,0.12); }
+  .chat-line.search-current { background: rgba(200,176,96,0.25); outline: 1px solid rgba(200,176,96,0.4); }
+  .pinned-bar { background: rgba(200,176,96,0.08); border-bottom: 1px solid var(--border); max-height: 120px; overflow-y: auto; font-size: 12px; }
+  .pinned-msg { padding: 3px 8px; display: flex; align-items: flex-start; gap: 4px; }
+  .pinned-msg .pin-icon { color: var(--yellow); font-size: 10px; flex-shrink: 0; margin-top: 2px; }
+  .pinned-msg .unpin { opacity: 0; cursor: pointer; color: var(--text-dim); font-size: 10px; margin-left: auto; flex-shrink: 0; }
+  .pinned-msg:hover .unpin { opacity: 0.7; }
+  .pinned-msg:hover .unpin:hover { opacity: 1; color: var(--accent); }
+  .chat-ts { color: var(--text-dim); }
+  .chat-nick { font-weight: 700; }
+  .chat-line a.agent-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .chat-line a.agent-link:hover { text-decoration: underline; }
+
+  /* Nick colors */
+  .nick-web { color: #9370db; }
+  .nick-manager { color: var(--green); }
+  .nick-keepalive { color: var(--text-dim); }
+  .nick-agent-0 { color: var(--blue); }
+  .nick-agent-1 { color: var(--purple); }
+  .nick-agent-2 { color: var(--orange); }
+  .nick-agent-3 { color: var(--cyan); }
+  .nick-agent-4 { color: var(--pink); }
+  .nick-agent-5 { color: var(--yellow); }
+
+  /* Input bar */
+  .chat-input-bar {
+    padding: 6px 8px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .chat-input-wrap {
+    flex: 1;
+    position: relative;
+  }
+  .chat-input-bar input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+  }
+  .cmd-palette {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 0; right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 20;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+  }
+  .cmd-palette.active { display: block; }
+  .cmd-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .cmd-item:hover, .cmd-item.selected { background: rgba(108,155,255,0.1); }
+  .cmd-item .cmd-name { color: var(--blue); font-weight: 700; font-family: 'SF Mono','Menlo',monospace; font-size: 11px; }
+  .cmd-item .cmd-desc { color: var(--text-dim); }
+  .chat-input-bar input:focus { border-color: var(--blue); }
+  .chat-input-bar input::placeholder { color: var(--text-dim); }
+  .chat-input-bar button {
+    background: rgba(122,158,200,0.25);
+    color: var(--blue);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .chat-input-bar button:active { opacity: 0.7; }
+  .chat-input-bar button:disabled { opacity: 0.3; }
+
+  /* Right pane sections */
+  .search-bar {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .search-bar input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .search-bar input:focus { border-color: var(--blue); }
+  .search-bar input::placeholder { color: var(--text-dim); }
+  .search-results {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: none;
+  }
+  .search-results.active { display: block; }
+  .search-result {
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .search-result:hover { background: rgba(108,155,255,0.1); }
+  .search-result .agent-name { font-weight: 700; color: var(--blue); }
+  .search-result .agent-id { color: var(--text-dim); font-size: 11px; }
+  .search-result .chat-btn {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--green);
+    font-weight: 700;
+  }
+  .section {
+    border-bottom: 1px solid var(--border);
+  }
+  .section-header {
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    background: var(--surface);
+    cursor: pointer;
+    user-select: none;
+  }
+  .section-header:hover { color: var(--text); }
+  .section-body { padding: 0; }
+  .section-body.collapsed { display: none; }
+
+  .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+    font-size: 12px;
+  }
+  .agent-row:last-child { border-bottom: none; }
+  .agent-name { font-weight: 700; color: var(--blue); cursor: pointer; position: relative; }
+  .agent-name:hover { text-decoration: underline; }
+  .agent-name.agent-dead { color: var(--text-dim); cursor: default; opacity: 0.5; }
+  .agent-name.agent-dead:hover { text-decoration: none; }
+  .agent-name .agent-tip { display: none; position: absolute; left: 0; bottom: 120%; background: var(--surface); border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; font-size: 10px; color: var(--text-dim); font-weight: 400; white-space: nowrap; pointer-events: none; z-index: 10; }
+  .agent-name:hover .agent-tip { display: block; }
+  .agent-id { color: var(--text-dim); font-size: 11px; }
+  .sparkline { display: inline-block; vertical-align: middle; margin: 0 4px; }
+  .sparkline rect { fill: var(--blue); opacity: 0.6; }
+  .sparkline rect:last-of-type { opacity: 1; }
+  .agent-badge {
+    font-size: 9px; padding: 1px 5px;
+    border-radius: 3px; font-weight: 700;
+  }
+  .badge-manager { background: rgba(147,112,219,0.2); color: var(--purple); }
+
+  .task-row { padding: 6px 10px; border-bottom: 1px solid rgba(42,42,74,0.5); }
+  .task-row:last-child { border-bottom: none; }
+  .task-header { display: flex; align-items: center; gap: 6px; }
+  .task-status {
+    font-size: 9px; padding: 1px 6px; border-radius: 3px;
+    font-weight: 700; text-transform: uppercase;
+  }
+  .status-pending { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .status-working { background: rgba(122,184,160,0.2); color: var(--green); }
+  .status-blocked { background: rgba(147,112,219,0.2); color: var(--accent); }
+  .status-idle { background: rgba(147,112,219,0.15); color: var(--purple); }
+  .status-done { background: rgba(107,107,136,0.15); color: var(--text-dim); }
+  .task-desc { font-size: 12px; font-weight: 600; }
+  .task-meta { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+  .task-agent { color: var(--blue); }
+  .task-id { font-family: inherit; }
+
+  .empty { padding: 10px; color: var(--text-dim); font-size: 12px; }
+
+  /* Tab switcher */
+  .tab-bar {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-view { display: none; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
+  .tab-view.active { display: flex; }
+  #tab-dashboard { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Log search */
+  .log-search-bar {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .log-search-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .log-search-bar input:focus { border-color: var(--blue); }
+  .log-search-bar input::placeholder { color: var(--text-dim); }
+  .log-search-bar select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 11px;
+    font-family: inherit;
+    outline: none;
+    max-width: 140px;
+  }
+  .log-search-bar select:focus { border-color: var(--blue); }
+  .log-search-status {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .log-results {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .log-result {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+    cursor: pointer;
+  }
+  .log-result:hover { background: rgba(108,155,255,0.06); }
+  .log-result-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+  }
+  .log-role {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .role-user { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .role-assistant { background: rgba(122,184,160,0.2); color: var(--green); }
+  .role-chat { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .role-delegate { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .role-task_done, .role-task-done { background: rgba(122,184,160,0.2); color: var(--green); }
+  .log-project { color: var(--purple); font-size: 11px; font-weight: 600; }
+  .log-session { color: var(--text-dim); font-size: 10px; font-family: monospace; }
+  .log-src-btn {
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.4;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .log-src-btn:hover { opacity: 1; color: var(--blue); }
+  .log-src-btn .src-tip {
+    display: none;
+    position: absolute;
+    right: 0;
+    bottom: 120%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text);
+    white-space: nowrap;
+    z-index: 10;
+  }
+  .log-src-btn:hover .src-tip { display: block; }
+  .log-snippet {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log-snippet mark {
+    background: rgba(200,176,96,0.3);
+    color: var(--yellow);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  /* Timeline event */
+  .timeline-event {
+    padding: 4px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+    font-size: 12px;
+  }
+  .timeline-event .chat-ts { color: var(--text-dim); font-size: 11px; }
+  .timeline-event .evt-from { font-weight: 700; }
+  .timeline-event .evt-arrow { color: var(--text-dim); margin: 0 2px; }
+  .timeline-event .evt-to { font-weight: 600; color: var(--blue); }
+  .timeline-event .evt-text { color: var(--text); margin-top: 1px; }
+  .timeline-event.evt-delegate { border-left: 2px solid var(--yellow); }
+  .timeline-event.evt-task_done { border-left: 2px solid var(--green); }
+  .timeline-event.evt-chat { border-left: 2px solid var(--purple); }
+
+  /* Context modal */
+  .context-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+  }
+  .context-overlay.active { display: flex; align-items: center; justify-content: center; }
+  .context-modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .context-header {
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .context-header .close-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    font-family: inherit;
+  }
+  .context-header .close-btn:hover { color: var(--text); }
+  .context-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    -webkit-overflow-scrolling: touch;
+  }
+  .context-msg {
+    padding: 6px 12px;
+  }
+  .context-msg.target { background: rgba(200,176,96,0.1); }
+  .context-msg-role {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .context-msg-role.user { color: var(--blue); }
+  .context-msg-role.assistant { color: var(--green); }
+  .context-msg-text {
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  /* Mobile: stack vertically */
+  @media (max-width: 700px) {
+    .split { flex-direction: column; }
+    .left-pane { border-right: none; border-bottom: 1px solid var(--border); flex: 1; }
+    .right-pane { flex: 0 0 40%; }
+  }
+</style>
+</head>
+<body>
+
+<div class="split">
+  <!-- Left: Chat -->
+  <div class="left-pane">
+    <div class="chat-header">
+      <span class="dot" id="connDot"></span>
+      <div class="chat-filter" id="chatFilterBar"></div>
+      <span class="chat-send-to" id="chatSendTo"></span>
+    </div>
+    <div class="chat-search-bar" id="chatSearchBar">
+      <input type="text" id="chatSearchInput" placeholder="Search chat..." autocomplete="off">
+      <span class="search-count" id="chatSearchCount"></span>
+      <button onclick="chatSearchNav(-1)" title="Previous">&#x25B2;</button>
+      <button onclick="chatSearchNav(1)" title="Next">&#x25BC;</button>
+      <button onclick="closeChatSearch()" title="Close">&times;</button>
+    </div>
+    <div class="pinned-bar" id="pinnedBar"></div>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-input-bar">
+      <div class="chat-input-wrap">
+        <div class="cmd-palette" id="cmdPalette"></div>
+        <input type="text" id="chatInput" placeholder="Message (to manager)..." autocomplete="off">
+      </div>
+      <button id="chatSend" onclick="sendChat()">send</button>
+    </div>
+  </div>
+
+  <!-- Right: Dashboard + Logs -->
+  <div class="right-pane">
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
+      <button class="tab-btn" onclick="switchTab('logs')">Logs</button>
+    </div>
+
+    <div class="tab-view active" id="tab-dashboard">
+      <div class="search-bar">
+        <input type="text" id="agentSearch" placeholder="Search agents..." autocomplete="off">
+      </div>
+      <div class="search-results" id="searchResults"></div>
+      <div class="section">
+        <div class="section-header" onclick="toggle('tasks')">Tasks</div>
+        <div class="section-body" id="tasks"></div>
+      </div>
+      <div class="section">
+        <div class="section-header" onclick="toggle('agents')">Active Agents</div>
+        <div class="section-body" id="agents"></div>
+      </div>
+      <div class="section">
+        <div class="section-header" onclick="toggle('done')">Completed</div>
+        <div class="section-body collapsed" id="done"></div>
+      </div>
+    </div>
+
+    <div class="tab-view" id="tab-timeline" style="overflow-y:auto;-webkit-overflow-scrolling:touch;">
+      <canvas id="ganttCanvas" style="width:100%;display:block"></canvas>
+    </div>
+
+    <div class="tab-view" id="tab-logs">
+      <div class="log-search-bar">
+        <input type="text" id="logSearchInput" placeholder="Search all logs..." autocomplete="off">
+        <select id="logProjectFilter"><option value="">all projects</option></select>
+      </div>
+      <div class="log-search-status" id="logStatus"></div>
+      <div class="log-results" id="logResults"></div>
+    </div>
+  </div>
+
+  <!-- Context modal -->
+  <div class="context-overlay" id="contextOverlay" onclick="if(event.target===this)closeContext()">
+    <div class="context-modal">
+      <div class="context-header">
+        <span id="contextTitle">Context</span>
+        <button class="close-btn" onclick="closeContext()">&times;</button>
+      </div>
+      <div class="context-body" id="contextBody"></div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let currentState = null;
+let shouldAutoScroll = true;
+const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5'];
+const nickMap = new Map(); // agent id -> color class
+let nickIdx = 0;
+
+function getNickClass(id, state) {
+  if (id === 'web') return 'nick-web';
+  if (id === 'keepalive') return 'nick-keepalive';
+  if (state && id === state.manager) return 'nick-manager';
+  if (!nickMap.has(id)) {
+    nickMap.set(id, nickColors[nickIdx % nickColors.length]);
+    nickIdx++;
+  }
+  return nickMap.get(id);
+}
+
+// --- Notifications ---
+let lastMsgCount = 0;
+let notificationsEnabled = false;
+
+function requestNotifications() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().then(p => { notificationsEnabled = p === 'granted'; });
+  } else if (Notification.permission === 'granted') {
+    notificationsEnabled = true;
+  }
+}
+requestNotifications();
+
+function checkForNewMessages(state) {
+  const msgs = state.messages || [];
+  if (lastMsgCount === 0) { lastMsgCount = msgs.length; return; }
+  if (msgs.length <= lastMsgCount) { lastMsgCount = msgs.length; return; }
+
+  // Check new messages — notify if addressed to 'web' or from an agent to manager
+  const newMsgs = msgs.slice(lastMsgCount);
+  lastMsgCount = msgs.length;
+
+  for (const m of newMsgs) {
+    if (m.from === 'web') continue; // our own messages
+    if (m.to === 'web' || m.text?.toLowerCase().includes('@skip') || m.text?.toLowerCase().includes('@human')) {
+      const nick = agentLabel(state, m.from);
+      if (notificationsEnabled) {
+        new Notification(`${nick}`, { body: m.text?.substring(0, 200), tag: m.timestamp });
+      }
+      // Also flash the title
+      document.title = `* ${nick}: ${(m.text || '').substring(0, 40)}`;
+      setTimeout(() => { document.title = 'Agent Dashboard'; }, 10000);
+    }
+  }
+}
+
+// --- SSE ---
+function connect() {
+  const evtSource = new EventSource('/events');
+  evtSource.onmessage = e => {
+    $('connDot').className = 'dot';
+    currentState = JSON.parse(e.data);
+    checkForNewMessages(currentState);
+    render(currentState);
+  };
+  evtSource.onerror = () => {
+    $('connDot').className = 'dot disconnected';
+    evtSource.close();
+    setTimeout(connect, 3000);
+  };
+}
+connect();
+
+// --- Auto-scroll ---
+const chatLog = $('chatLog');
+chatLog.addEventListener('scroll', () => {
+  shouldAutoScroll = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 30;
+});
+function scrollToBottom() {
+  requestAnimationFrame(() => { chatLog.scrollTop = chatLog.scrollHeight; });
+}
+
+// --- Helpers ---
+function agentLabel(state, id) {
+  const agents = state.agents || [];
+  const a = agents.find(x => x.id === id || x.name === id);
+  if (a?.friendly_name) return a.friendly_name;
+  if (a?.name) return a.name;
+  if (typeof id === 'string' && id.length > 8) return id.slice(0, 8);
+  return String(id);
+}
+
+// Clickable agent name: hover shows UUID, click sets as chat target. Grey if dead.
+function agentLink(state, id) {
+  const label = agentLabel(state, id);
+  const uuid = typeof id === 'string' && id.length > 8 ? id : '';
+  const tip = uuid ? `<span class="agent-tip">${uuid}</span>` : '';
+  const agent = (state.agents || []).find(a => a.id === id || a.name === id);
+  const alive = agent && isActive(agent);
+  const cls = alive ? 'agent-name' : 'agent-name agent-dead';
+  const click = alive ? ` onclick="selectAgent('${esc(String(id))}')"` : '';
+  return `<span class="${cls}"${click}>${esc(label)}${tip}</span>`;
+}
+
+function timeAgo(ts) {
+  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return m + 'm';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h';
+  return Math.round(h / 24) + 'd';
+}
+
+function timeShort(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// --- Minimal markdown renderer for chat ---
+function renderMarkdown(html) {
+  // Already HTML-escaped. Apply markdown transforms.
+  // Code blocks: ```...```
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre style="background:rgba(255,255,255,0.05);padding:6px 8px;border-radius:4px;margin:4px 0;overflow-x:auto;font-size:12px;font-family:'SF Mono','Menlo',monospace"><code>${code.replace(/^\n|\n$/g, '')}</code></pre>`;
+  });
+  // Inline code: `...`
+  html = html.replace(/`([^`\n]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:12px;font-family:\'SF Mono\',\'Menlo\',monospace">$1</code>');
+  // Bold: **...**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Italic: *...*
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Bullet lists: lines starting with - or *
+  html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>');
+  return html;
+}
+
+const IMG_EXTS = /\.(svg|png|jpe?g|gif|webp)$/i;
+
+function resolveFilePath(match, cwd) {
+  if (match.startsWith('~/')) return '/Users/skip/' + match.slice(2);
+  if (match.startsWith('/')) return match;
+  if (cwd) return cwd.replace(/\/$/, '') + '/' + match;
+  return match;
+}
+
+function linkifyFiles(html, cwd) {
+  // Match absolute paths, ~/paths, and relative paths with known extensions
+  // Runs on already-escaped HTML, so paths won't contain < > & etc.
+  const absRe = /(?:~\/|\/(?:Users|tmp|var|home)\/)[^\s&<>"',;)}\]]+/g;
+  // Relative paths with file extensions (word/word.ext pattern, at least one directory)
+  const relRe = /(?<![\/\w])(?:\w[\w.-]*\/)+\w[\w.-]*\.\w{1,5}(?=[)\s&<>"',;}\]"]|$)/g;
+
+  function makeLink(match) {
+    const abs = resolveFilePath(match, cwd);
+    const isImg = IMG_EXTS.test(abs);
+    const link = `<a href="zed://file${abs}" style="color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--cyan)">${match}</a>`;
+    if (isImg) {
+      const cacheBust = Math.floor(Date.now() / 10000); // refreshes every 10s
+      return link + `<br><a href="zed://file${abs}"><img src="/api/file?path=${encodeURIComponent(abs)}&t=${cacheBust}" style="max-width:240px;max-height:160px;border-radius:4px;margin:4px 0;border:1px solid var(--border);display:block" onerror="this.style.display='none'"></a>`;
+    }
+    return link;
+  }
+
+  html = html.replace(absRe, makeLink);
+  html = html.replace(relRe, match => {
+    // Skip things that look like URLs, CSS selectors, or code tokens
+    if (/^https?:/.test(match) || /^[.#]/.test(match)) return match;
+    return makeLink(match);
+  });
+  return html;
+}
+
+function linkifyAgents(text, state, fromId) {
+  let html = esc(text);
+  const agents = state.agents || [];
+  // Resolve sender's cwd for relative paths
+  const sender = agents.find(a => a.id === fromId);
+  const cwd = sender?.cwd || null;
+  const names = [];
+  for (const a of agents) {
+    if (a.friendly_name) names.push({ name: a.friendly_name, id: a.id });
+    if (a.name && a.name !== a.friendly_name) names.push({ name: a.name, id: a.id });
+  }
+  names.sort((a, b) => b.name.length - a.name.length);
+  for (const { name } of names) {
+    const escaped = esc(name);
+    const re = new RegExp('\\b' + escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\b', 'gi');
+    html = html.replace(re, `<strong style="color:var(--blue)">${escaped}</strong>`);
+  }
+  html = linkifyFiles(html, cwd);
+  return html;
+}
+
+// --- Chat filter (tag-based) ---
+const chatFilterSet = new Set();
+let chatSendTarget = null; // last-clicked agent, used for outgoing messages
+
+function toggleChatFilter(id) {
+  if (chatFilterSet.has(id)) {
+    chatFilterSet.delete(id);
+  } else {
+    chatFilterSet.add(id);
+  }
+  chatSendTarget = chatFilterSet.size > 0 ? id : null;
+  renderFilterBar();
+  renderChat(currentState);
+}
+
+function clearChatFilter() {
+  chatFilterSet.clear();
+  chatSendTarget = null;
+  renderFilterBar();
+  renderChat(currentState);
+}
+
+function renderFilterBar() {
+  const bar = $('chatFilterBar');
+  const sendTo = $('chatSendTo');
+  if (chatFilterSet.size === 0) {
+    bar.innerHTML = '<span class="chat-filter-all">all messages</span>';
+    sendTo.textContent = '';
+    $('chatInput').placeholder = 'Message (to manager)...';
+  } else {
+    const tags = [...chatFilterSet].map(id => {
+      const label = currentState ? agentLabel(currentState, id) : id.slice(0, 8);
+      return `<span class="chat-tag" onclick="toggleChatFilter('${esc(id)}')">${esc(label)}<span class="tag-x">&times;</span></span>`;
+    }).join('');
+    bar.innerHTML = tags + `<span class="chat-filter-all" onclick="clearChatFilter()">&times; clear</span>`;
+    if (chatSendTarget) {
+      const targetLabel = currentState ? agentLabel(currentState, chatSendTarget) : chatSendTarget.slice(0, 8);
+      sendTo.textContent = 'to: ' + targetLabel;
+      $('chatInput').placeholder = 'Message to ' + targetLabel + '...';
+    }
+  }
+}
+
+// --- Render ---
+function render(state) {
+  renderFilterBar();
+  renderChat(state);
+  renderAgents(state);
+  renderTasks(state);
+}
+
+function renderChat(state) {
+  const msgs = state.messages || [];
+  const filtered = chatFilterSet.size > 0
+    ? msgs.filter(m => chatFilterSet.has(m.from) || chatFilterSet.has(m.to))
+    : msgs;
+
+  const lines = filtered.map(m => {
+    const nick = m.from === 'web' ? 'skip' : agentLabel(state, m.from);
+    const nickCls = getNickClass(m.from, state);
+    const ts = timeShort(m.timestamp);
+    const text = renderMarkdown(linkifyAgents(m.text, state, m.from));
+    const uuid = (m.from !== 'web' && typeof m.from === 'string' && m.from.length > 8) ? m.from : '';
+    const clickAttr = uuid ? ` onclick="selectAgent('${esc(m.from)}')" title="${uuid}" style="cursor:pointer"` : '';
+    const pinData = esc(JSON.stringify({ ts, nick, text: m.text }).replace(/'/g, '&#39;'));
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span> <span class="chat-nick ${nickCls}"${clickAttr}>&lt;${esc(nick)}&gt;</span> ${text}<span class="pin-btn" onclick="(function(d){pinMsg(d.ts,d.nick,d.text)})(JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({ts, nick, text: m.text}))}')))">&#x1F4CC;</span></div>`;
+  }).join('');
+
+  chatLog.innerHTML = lines;
+  if (shouldAutoScroll) scrollToBottom();
+}
+
+function isActive(a) {
+  return a.last_seen && (Date.now() - new Date(a.last_seen).getTime()) < 600000;
+}
+
+// --- Sparklines ---
+let activityData = {};
+async function fetchActivity() {
+  try {
+    const res = await fetch('/api/activity');
+    activityData = await res.json();
+  } catch {}
+}
+fetchActivity();
+setInterval(fetchActivity, 60000);
+
+function sparklineSvg(agentId) {
+  const data = activityData[agentId];
+  if (!data || data.every(v => v === 0)) return '';
+  const w = 60, h = 14, barW = Math.max(1, Math.floor(w / data.length));
+  const max = Math.max(...data, 1);
+  const bars = data.map((v, i) => {
+    const bh = Math.max(0, (v / max) * h);
+    return `<rect x="${i * barW}" y="${h - bh}" width="${Math.max(1, barW - 1)}" height="${bh}" rx="0.5"/>`;
+  }).join('');
+  return `<svg class="sparkline" width="${data.length * barW}" height="${h}" viewBox="0 0 ${data.length * barW} ${h}">${bars}</svg>`;
+}
+
+function renderAgents(state) {
+  const agents = (state.agents || []).filter(isActive);
+  if (agents.length === 0) {
+    $('agents').innerHTML = '<div class="empty">No active agents</div>';
+    return;
+  }
+  $('agents').innerHTML = agents.map(a => {
+    const badges = [];
+    if (a.is_manager && a.id === state.manager) badges.push('<span class="agent-badge badge-manager">mgr</span>');
+    else if (a.is_manager) badges.push('<span class="agent-badge badge-manager">test</span>');
+    const seen = a.last_seen ? timeAgo(a.last_seen) : '-';
+    const spark = sparklineSvg(a.id);
+    const peekBtn = a.kitty_win ? `<span style="cursor:pointer;opacity:0.4;font-size:10px" onclick="peekAgent('${esc(a.friendly_name || a.name || a.id)}')" title="Peek terminal">&#x1F441;</span>` : '';
+    return `<div class="agent-row">
+      ${agentLink(state, a.id)}
+      ${badges.join('')}
+      ${spark}
+      <span class="agent-id" style="margin-left:auto">${peekBtn} ${seen}</span>
+    </div>`;
+  }).join('');
+}
+
+function renderTasks(state) {
+  const tasks = (state.tasks || []);
+  const active = tasks.filter(t => t.status !== 'done');
+  const done = tasks.filter(t => t.status === 'done');
+
+  if (active.length === 0) {
+    $('tasks').innerHTML = '<div class="empty">No active tasks</div>';
+  } else {
+    $('tasks').innerHTML = active.map(t => {
+      const blocked = t.status === 'blocked' && t.blockedBy
+        ? ' (' + t.blockedBy.join(', ') + ')' : '';
+      return `<div class="task-row">
+        <div class="task-header">
+          <span class="task-status status-${t.status}">${t.status}${blocked}</span>
+          <span class="task-desc">${esc(t.description)}</span>
+        </div>
+        <div class="task-meta">
+          ${agentLink(state, t.agent)}
+          &middot; <span class="task-id">${t.id}</span>
+          &middot; ${timeAgo(t.delegated_at)}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  if (done.length === 0) {
+    $('done').innerHTML = '<div class="empty">None</div>';
+  } else {
+    $('done').innerHTML = done.slice().reverse().map(t => `<div class="task-row">
+      <div class="task-header">
+        <span class="task-status status-done">done</span>
+        <span class="task-desc">${esc(t.description)}</span>
+      </div>
+      <div class="task-meta">
+        ${agentLink(state, t.agent)}
+        &middot; ${t.completed_at ? timeAgo(t.completed_at) : ''}
+      </div>
+    </div>`).join('');
+  }
+}
+
+// --- Pinned messages ---
+function getPins() {
+  try { return JSON.parse(localStorage.getItem('dashboard-pins') || '[]'); } catch { return []; }
+}
+function savePins(pins) { localStorage.setItem('dashboard-pins', JSON.stringify(pins)); }
+
+function pinMsg(ts, nick, text) {
+  const pins = getPins();
+  if (pins.find(p => p.ts === ts && p.nick === nick)) return; // already pinned
+  pins.push({ ts, nick, text: text.substring(0, 500), pinned_at: Date.now() });
+  savePins(pins);
+  renderPins();
+}
+
+function unpinMsg(idx) {
+  const pins = getPins();
+  pins.splice(idx, 1);
+  savePins(pins);
+  renderPins();
+}
+
+function renderPins() {
+  const pins = getPins();
+  const bar = $('pinnedBar');
+  if (pins.length === 0) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  bar.innerHTML = pins.map((p, i) => `
+    <div class="pinned-msg">
+      <span class="pin-icon">\u{1F4CC}</span>
+      <span><span class="chat-ts">${esc(p.ts)}</span> <strong>${esc(p.nick)}</strong> ${esc(p.text).substring(0, 200)}</span>
+      <span class="unpin" onclick="unpinMsg(${i})">&times;</span>
+    </div>
+  `).join('');
+}
+renderPins(); // on load
+
+// --- Chat search ---
+let chatSearchQuery = '';
+let chatSearchHits = [];
+let chatSearchIdx = -1;
+
+function openChatSearch() {
+  $('chatSearchBar').className = 'chat-search-bar active';
+  $('chatSearchInput').focus();
+}
+
+function closeChatSearch() {
+  $('chatSearchBar').className = 'chat-search-bar';
+  chatSearchQuery = '';
+  chatSearchHits = [];
+  chatSearchIdx = -1;
+  $('chatSearchCount').textContent = '';
+  // Remove highlights
+  chatLog.querySelectorAll('.search-hit, .search-current').forEach(el => {
+    el.classList.remove('search-hit', 'search-current');
+  });
+}
+
+function doChatSearch() {
+  const q = $('chatSearchInput').value.trim().toLowerCase();
+  if (q === chatSearchQuery) return;
+  chatSearchQuery = q;
+  chatSearchHits = [];
+  chatSearchIdx = -1;
+
+  const lines = chatLog.querySelectorAll('.chat-line');
+  lines.forEach(el => {
+    el.classList.remove('search-hit', 'search-current');
+    if (q && el.textContent.toLowerCase().includes(q)) {
+      el.classList.add('search-hit');
+      chatSearchHits.push(el);
+    }
+  });
+
+  if (chatSearchHits.length > 0) {
+    chatSearchIdx = chatSearchHits.length - 1; // start at most recent
+    chatSearchHits[chatSearchIdx].classList.add('search-current');
+    chatSearchHits[chatSearchIdx].scrollIntoView({ block: 'center' });
+    shouldAutoScroll = false;
+  }
+  $('chatSearchCount').textContent = chatSearchHits.length > 0
+    ? `${chatSearchIdx + 1}/${chatSearchHits.length}`
+    : q ? 'no matches' : '';
+}
+
+function chatSearchNav(dir) {
+  if (chatSearchHits.length === 0) return;
+  chatSearchHits[chatSearchIdx]?.classList.remove('search-current');
+  chatSearchIdx = (chatSearchIdx + dir + chatSearchHits.length) % chatSearchHits.length;
+  chatSearchHits[chatSearchIdx].classList.add('search-current');
+  chatSearchHits[chatSearchIdx].scrollIntoView({ block: 'center' });
+  $('chatSearchCount').textContent = `${chatSearchIdx + 1}/${chatSearchHits.length}`;
+}
+
+$('chatSearchInput').addEventListener('input', doChatSearch);
+$('chatSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); chatSearchNav(e.shiftKey ? -1 : 1); }
+  if (e.key === 'Escape') closeChatSearch();
+});
+
+// --- Command palette ---
+const COMMANDS = [
+  { name: '/peek', args: '<agent>', desc: 'View agent terminal snapshot' },
+  { name: '/spawn', args: '[cwd]', desc: 'Launch a new agent' },
+  { name: '/delegate', args: '<agent> <task>', desc: 'Assign a task to agent' },
+  { name: '/done', args: '<agent>', desc: 'Mark agent task done' },
+  { name: '/kick', args: '<agent>', desc: 'Send notification kick' },
+  { name: '/export', args: '<agent>', desc: 'Download agent thread as markdown' },
+  { name: '/reindex', args: '', desc: 'Rebuild search index' },
+  { name: '/stats', args: '', desc: 'Show search index stats' },
+];
+let cmdSelected = -1;
+
+function updatePalette() {
+  const input = $('chatInput');
+  const palette = $('cmdPalette');
+  const val = input.value;
+  if (!val.startsWith('/')) { palette.className = 'cmd-palette'; return; }
+  const query = val.split(' ')[0].toLowerCase();
+  const matches = COMMANDS.filter(c => c.name.startsWith(query));
+  if (matches.length === 0 || (matches.length === 1 && matches[0].name === query && val.includes(' '))) {
+    palette.className = 'cmd-palette';
+    return;
+  }
+  cmdSelected = Math.min(cmdSelected, matches.length - 1);
+  if (cmdSelected < 0) cmdSelected = 0;
+  palette.className = 'cmd-palette active';
+  palette.innerHTML = matches.map((c, i) => `
+    <div class="cmd-item${i === cmdSelected ? ' selected' : ''}" onclick="completeCommand('${c.name}')">
+      <span class="cmd-name">${c.name} ${c.args}</span>
+      <span class="cmd-desc">${c.desc}</span>
+    </div>
+  `).join('');
+}
+
+function completeCommand(name) {
+  const input = $('chatInput');
+  const parts = input.value.split(' ');
+  parts[0] = name;
+  input.value = parts.join(' ') + (parts.length === 1 ? ' ' : '');
+  $('cmdPalette').className = 'cmd-palette';
+  input.focus();
+}
+
+async function executeCommand(text) {
+  const parts = text.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const args = parts.slice(1).join(' ');
+
+  switch (cmd) {
+    case '/peek': {
+      if (!args) { appendSystemMsg('Usage: /peek <agent name or id>'); return true; }
+      try {
+        const res = await fetch('/api/peek?' + new URLSearchParams({ agent: args }));
+        const data = await res.json();
+        if (data.error) { appendSystemMsg('Error: ' + data.error); return true; }
+        appendSystemMsg(`--- ${data.label} (win ${data.win}) ---\n${data.text}\n---`);
+      } catch (e) { appendSystemMsg('Peek failed: ' + e.message); }
+      return true;
+    }
+    case '/spawn': {
+      try {
+        const body = args ? { cwd: args } : {};
+        const res = await fetch('/api/spawn', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Spawned in kitty window ' + data.win);
+      } catch (e) { appendSystemMsg('Spawn failed: ' + e.message); }
+      return true;
+    }
+    case '/delegate': {
+      const m = args.match(/^(\S+)\s+(.+)$/);
+      if (!m) { appendSystemMsg('Usage: /delegate <agent> <task description>'); return true; }
+      try {
+        const res = await fetch('/api/delegate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: m[1], message: m[2], description: m[2].substring(0, 60) }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Delegated: ' + data.taskId);
+      } catch (e) { appendSystemMsg('Delegate failed: ' + e.message); }
+      return true;
+    }
+    case '/done': {
+      if (!args) { appendSystemMsg('Usage: /done <agent>'); return true; }
+      try {
+        const res = await fetch('/api/done', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: args }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Marked done');
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/kick': {
+      if (!args) { appendSystemMsg('Usage: /kick <agent>'); return true; }
+      try {
+        const res = await fetch('/api/kick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: args }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Kicked ' + args);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/export': {
+      if (!args) { appendSystemMsg('Usage: /export <agent name or id>'); return true; }
+      window.open('/api/export?agent=' + encodeURIComponent(args) + '&format=markdown', '_blank');
+      appendSystemMsg('Downloading thread for ' + args);
+      return true;
+    }
+    case '/reindex': {
+      appendSystemMsg('Reindexing...');
+      try {
+        const res = await fetch('/api/reindex', { method: 'POST' });
+        const data = await res.json();
+        appendSystemMsg(`Indexed ${data.entriesAdded} entries from ${data.filesIndexed} files in ${data.elapsed}s`);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/stats': {
+      try {
+        const res = await fetch('/api/logs/stats');
+        const data = await res.json();
+        appendSystemMsg(`Index: ${data.totalEntries} entries, ${data.totalFiles} files, ${data.totalBytes}`);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    default:
+      return false; // not a command, send as chat
+  }
+}
+
+function appendSystemMsg(text) {
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+  line.style.color = 'var(--text-dim)';
+  line.style.fontFamily = "'SF Mono','Menlo',monospace";
+  line.style.fontSize = '11px';
+  line.innerHTML = renderMarkdown(esc(text));
+  chatLog.appendChild(line);
+  scrollToBottom();
+}
+
+// --- Peek from agent row ---
+async function peekAgent(agent) {
+  try {
+    const res = await fetch('/api/peek?' + new URLSearchParams({ agent }));
+    const data = await res.json();
+    if (data.error) { appendSystemMsg('Peek error: ' + data.error); return; }
+    appendSystemMsg(`--- ${data.label} (win ${data.win}) ---\n${data.text}\n---`);
+    shouldAutoScroll = true;
+    scrollToBottom();
+  } catch (e) { appendSystemMsg('Peek failed: ' + e.message); }
+}
+
+// --- Send ---
+async function sendChat() {
+  const input = $('chatInput');
+  const msg = input.value.trim();
+  if (!msg) return;
+  $('cmdPalette').className = 'cmd-palette';
+  if (msg.startsWith('/')) {
+    input.value = '';
+    const handled = await executeCommand(msg);
+    if (handled) return;
+    // Not a known command — send as chat
+    input.value = msg;
+  }
+  const btn = $('chatSend');
+  btn.disabled = true;
+  input.value = '';
+  const target = chatSendTarget || (currentState && currentState.manager) || undefined;
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, to: target }),
+    });
+    if (!res.ok) throw new Error(await res.text());
+    shouldAutoScroll = true;
+  } catch (e) {
+    input.value = msg;
+    alert('Failed: ' + e.message);
+  }
+  btn.disabled = false;
+  input.focus();
+}
+
+$('chatInput').addEventListener('input', updatePalette);
+$('chatInput').addEventListener('keydown', e => {
+  const palette = $('cmdPalette');
+  if (palette.classList.contains('active')) {
+    const items = palette.querySelectorAll('.cmd-item');
+    if (e.key === 'ArrowUp') { e.preventDefault(); cmdSelected = Math.max(0, cmdSelected - 1); updatePalette(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); cmdSelected = Math.min(items.length - 1, cmdSelected + 1); updatePalette(); return; }
+    if (e.key === 'Tab' && items.length > 0) { e.preventDefault(); items[cmdSelected]?.click(); return; }
+    if (e.key === 'Escape') { palette.className = 'cmd-palette'; return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+
+function toggle(id) { $(id).classList.toggle('collapsed'); }
+
+// --- Tab switching ---
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === tab));
+  document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === 'tab-' + tab));
+  if (tab === 'timeline' && currentState) drawGantt(currentState);
+  if (tab === 'logs') {
+    if (!projectsLoaded) loadProjects();
+    if (!$('logSearchInput').value.trim()) loadTimeline();
+  }
+}
+
+// --- Log search ---
+let projectsLoaded = false;
+let logSearchTimer = null;
+
+async function loadProjects() {
+  try {
+    const res = await fetch('/api/logs/projects');
+    const projects = await res.json();
+    const sel = $('logProjectFilter');
+    for (const p of projects) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      // Show just the last path component
+      const parts = p.path.split('/');
+      opt.textContent = parts[parts.length - 1] || p.id;
+      sel.appendChild(opt);
+    }
+    projectsLoaded = true;
+  } catch {}
+}
+
+async function loadTimeline() {
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  statusEl.textContent = 'Loading timeline...';
+  try {
+    const res = await fetch('/api/logs/timeline?limit=200');
+    const data = await res.json();
+    if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
+    statusEl.textContent = data.events.length + ' events';
+    resultsEl.innerHTML = data.events.map(renderTimelineEvent).join('');
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+// Make a clickable agent span for timeline events — uses raw ID for hover, label for display
+function evtAgentLink(id, label) {
+  const uuid = (id && typeof id === 'string' && id.length > 8) ? id : '';
+  const tip = uuid ? `<span class="agent-tip">${uuid}</span>` : '';
+  const name = label || (uuid ? uuid.slice(0, 8) : String(id || ''));
+  const agent = currentState ? (currentState.agents || []).find(a => a.id === id || a.name === id) : null;
+  const alive = agent && isActive(agent);
+  const cls = alive ? 'agent-name' : 'agent-name agent-dead';
+  const click = alive && uuid ? ` onclick="selectAgent('${esc(id)}')"` : '';
+  return `<span class="${cls}"${click}>${esc(name)}${tip}</span>`;
+}
+
+function renderTimelineEvent(e) {
+  const ts = e.timestamp ? timeShort(e.timestamp) : '';
+  const fromHtml = evtAgentLink(e.from, e.fromLabel);
+  const toHtml = evtAgentLink(e.to || e.agent, e.toLabel);
+  const evtClass = 'evt-' + (e.type || 'chat');
+
+  if (e.type === 'delegate') {
+    const desc = esc(e.description || '');
+    const msg = esc((e.message || '').substring(0, 200));
+    return `<div class="timeline-event ${evtClass}">
+      <span class="chat-ts">${ts}</span>
+      <span class="evt-from nick-manager">${fromHtml}</span>
+      <span class="evt-arrow">&rarr;</span>
+      <span class="evt-to">${toHtml}</span>
+      <span class="log-role role-delegate">delegate</span>
+      <strong>${desc}</strong>
+      ${msg ? `<div class="evt-text">${msg}${(e.message||'').length > 200 ? '...' : ''}</div>` : ''}
+    </div>`;
+  }
+
+  if (e.type === 'task_done') {
+    return `<div class="timeline-event ${evtClass}">
+      <span class="chat-ts">${ts}</span>
+      ${toHtml}
+      <span class="log-role role-task_done">done</span>
+      ${e.description ? '<span>' + esc(e.description) + '</span>' : ''}
+      ${e.task_id ? '<span class="log-session">' + esc(e.task_id) + '</span>' : ''}
+    </div>`;
+  }
+
+  // chat
+  const text = esc((e.message || e.text || '').substring(0, 300));
+  return `<div class="timeline-event ${evtClass}">
+    <span class="chat-ts">${ts}</span>
+    <span class="evt-from">${fromHtml}</span>
+    <span class="evt-arrow">&rarr;</span>
+    <span class="evt-to">${toHtml}</span>
+    ${text ? `<div class="evt-text">${text}${(e.message||e.text||'').length > 300 ? '...' : ''}</div>` : ''}
+  </div>`;
+}
+
+function highlightSnippet(snippet, query) {
+  // FTS5 snippets use ⟨⟨...⟩⟩ markers for matches
+  if (snippet.includes('⟨⟨')) {
+    return esc(snippet).replace(/⟨⟨(.*?)⟩⟩/g, '<mark>$1</mark>');
+  }
+  // Fallback: client-side highlight
+  const escaped = esc(snippet);
+  const queryEsc = esc(query);
+  const re = new RegExp(queryEsc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  return escaped.replace(re, '<mark>$&</mark>');
+}
+
+function projectShort(proj) {
+  // proj is like "-Users-skip-work-bregman-lower-bound" or "Users-skip-work-foo"
+  // Extract the meaningful part after the last "work-" or "projects-" segment
+  const m = proj.match(/work-(.+)$/);
+  if (m) return m[1].replace(/-/g, '/');
+  // Fallback: last 2 segments
+  const parts = proj.replace(/^-/, '').split('-');
+  return parts.slice(-2).join('-') || proj;
+}
+
+async function searchLogs() {
+  const query = $('logSearchInput').value.trim();
+  const project = $('logProjectFilter').value;
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+
+  if (query.length < 2) {
+    loadTimeline();
+    return;
+  }
+
+  statusEl.textContent = 'Searching...';
+  resultsEl.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({ q: query, limit: '50' });
+    if (project) params.set('project', project);
+    const res = await fetch('/api/logs/search?' + params);
+    const data = await res.json();
+
+    if (data.error) {
+      statusEl.textContent = 'Error: ' + data.error;
+      return;
+    }
+
+    statusEl.textContent = data.results.length + ' result' + (data.results.length !== 1 ? 's' : '');
+
+    const HOME = '/Users/skip';
+    const PROJECTS = HOME + '/.claude/projects/';
+    const EVENTS_FILE = HOME + '/.claude/agent-messages.jsonl';
+
+    resultsEl.innerHTML = data.results.map(r => {
+      let filePath, roleClass, ts;
+      if (r.source === 'events') {
+        filePath = EVENTS_FILE + ':' + r.line;
+        const zedUrl = 'zed://file' + EVENTS_FILE + ':' + r.line;
+        roleClass = 'role-' + (r.role || 'chat');
+        ts = r.timestamp ? timeShort(r.timestamp) : '';
+        return `<div class="log-result">
+          <div class="log-result-header">
+            <span class="log-role ${roleClass}">${esc(r.role)}</span>
+            ${ts ? `<span class="log-session">${ts}</span>` : ''}
+            <a class="log-src-btn" href="${zedUrl}" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
+          </div>
+          <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+        </div>`;
+      }
+      // JSONL session result
+      const fullPath = PROJECTS + r.project + '/' + r.sessionId + '.jsonl';
+      filePath = fullPath + ':' + r.line;
+      const zedUrl = 'zed://file' + fullPath + ':' + r.line;
+      return `<div class="log-result" onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})">
+        <div class="log-result-header">
+          <span class="log-role ${r.role === 'user' ? 'role-user' : 'role-assistant'}">${r.role}</span>
+          <span class="log-project">${esc(projectShort(r.project))}</span>
+          <a class="log-src-btn" href="${zedUrl}" onclick="event.stopPropagation()" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
+        </div>
+        <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+async function showContext(project, sessionId, line) {
+  const overlay = $('contextOverlay');
+  const body = $('contextBody');
+  const title = $('contextTitle');
+
+  title.textContent = projectShort(project) + ' / ' + sessionId.substring(0, 8) + '...';
+  body.innerHTML = '<div class="empty">Loading...</div>';
+  overlay.classList.add('active');
+
+  try {
+    const params = new URLSearchParams({ project, session: sessionId, line: String(line), radius: '10' });
+    const res = await fetch('/api/logs/context?' + params);
+    const data = await res.json();
+
+    if (data.error) {
+      body.innerHTML = '<div class="empty">Error: ' + esc(data.error) + '</div>';
+      return;
+    }
+
+    body.innerHTML = data.messages.map(m => `
+      <div class="context-msg${m.isTarget ? ' target' : ''}">
+        <div class="context-msg-role ${m.role}">${m.role}</div>
+        <div class="context-msg-text">${esc(m.text)}</div>
+      </div>
+    `).join('');
+
+    // Scroll to target
+    const target = body.querySelector('.target');
+    if (target) target.scrollIntoView({ block: 'center' });
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+  }
+}
+
+function closeContext() {
+  $('contextOverlay').classList.remove('active');
+}
+
+$('logSearchInput').addEventListener('input', () => {
+  clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(searchLogs, 400);
+});
+
+$('logSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(logSearchTimer); searchLogs(); }
+});
+
+$('logProjectFilter').addEventListener('change', () => {
+  if ($('logSearchInput').value.trim().length >= 2) searchLogs();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeContext(); $('cmdPalette').className = 'cmd-palette'; }
+  // Keyboard shortcuts (only when not typing in an input)
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'f' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openChatSearch(); return; }
+  if (e.key === '/') { e.preventDefault(); $('chatInput').focus(); $('chatInput').value = '/'; updatePalette(); }
+  if (e.key === 'c' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); $('chatInput').focus(); }
+  if (e.key === '1') switchTab('dashboard');
+  if (e.key === '2') switchTab('timeline');
+  if (e.key === '3') switchTab('logs');
+});
+
+// --- Agent search ---
+const searchInput = $('agentSearch');
+const searchResults = $('searchResults');
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  if (!q || !currentState) {
+    searchResults.className = 'search-results';
+    searchResults.innerHTML = '';
+    return;
+  }
+  const agents = (currentState.agents || []).filter(a => {
+    const name = (a.friendly_name || a.name || String(a.id)).toLowerCase();
+    const id = String(a.id);
+    return name.includes(q) || id.includes(q);
+  });
+  if (agents.length === 0) {
+    searchResults.className = 'search-results active';
+    searchResults.innerHTML = '<div class="empty">No matches</div>';
+    return;
+  }
+  searchResults.className = 'search-results active';
+  searchResults.innerHTML = agents.map(a => {
+    const name = a.friendly_name || a.name || String(a.id);
+    const alive = isActive(a);
+    const status = alive ? timeAgo(a.last_seen) : 'off';
+    const tagged = chatFilterSet.has(a.id);
+    return `<div class="search-result${tagged ? ' tagged' : ''}" onclick="selectAgent('${a.id}')">
+      <span class="agent-name">${esc(name)}</span>
+      <span class="agent-id">${String(a.id).slice(0, 8)} ${status}</span>
+      ${tagged ? '<span class="chat-btn" style="opacity:0.5">added</span>' : '<span class="chat-btn">+ add</span>'}
+    </div>`;
+  }).join('');
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    searchInput.value = '';
+    searchResults.className = 'search-results';
+    searchResults.innerHTML = '';
+  }
+});
+
+function selectAgent(id) {
+  // Always add, never toggle — search results add to filter
+  const sid = String(id);
+  if (!chatFilterSet.has(sid)) {
+    chatFilterSet.add(sid);
+    chatSendTarget = sid;
+    renderFilterBar();
+    renderChat(currentState);
+  }
+  searchInput.value = '';
+  searchResults.className = 'search-results';
+  searchResults.innerHTML = '';
+  $('chatInput').focus();
+}
+
+// --- Gantt timeline ---
+const ganttColors = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060'];
+
+function drawGantt(state) {
+  const canvas = $('ganttCanvas');
+  const container = $('tab-timeline');
+  const dpr = window.devicePixelRatio || 1;
+  const W = container.clientWidth;
+
+  const tasks = (state.tasks || []).filter(t => t.delegated_at);
+  if (tasks.length === 0) {
+    canvas.style.height = '60px';
+    canvas.width = W * dpr;
+    canvas.height = 60 * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#6b6b88';
+    ctx.font = '12px Helvetica Neue, sans-serif';
+    ctx.fillText('No tasks with timestamps', 20, 35);
+    return;
+  }
+
+  // Group tasks by agent
+  const agentTasks = new Map();
+  for (const t of tasks) {
+    const aid = t.agent;
+    if (!agentTasks.has(aid)) agentTasks.set(aid, []);
+    agentTasks.get(aid).push(t);
+  }
+
+  const agents = [...agentTasks.keys()];
+  const ROW_H = 32;
+  const LABEL_W = 120;
+  const PAD_TOP = 40;
+  const PAD_BOTTOM = 10;
+  const H = PAD_TOP + agents.length * ROW_H + PAD_BOTTOM;
+
+  canvas.style.height = H + 'px';
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // Time range
+  const now = Date.now();
+  let tMin = now, tMax = now;
+  for (const t of tasks) {
+    const s = new Date(t.delegated_at).getTime();
+    const e = t.completed_at ? new Date(t.completed_at).getTime() : now;
+    if (s < tMin) tMin = s;
+    if (e > tMax) tMax = e;
+  }
+  // Add 5% padding
+  const range = tMax - tMin || 1;
+  tMin -= range * 0.02;
+  tMax += range * 0.03;
+
+  const chartW = W - LABEL_W - 10;
+  function tToX(t) { return LABEL_W + ((t - tMin) / (tMax - tMin)) * chartW; }
+
+  // Background
+  ctx.fillStyle = '#0f0f1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Time axis
+  ctx.strokeStyle = '#1e1e32';
+  ctx.lineWidth = 1;
+  const tickCount = Math.floor(chartW / 80);
+  const tickInterval = (tMax - tMin) / tickCount;
+  ctx.fillStyle = '#6b6b88';
+  ctx.font = '10px Helvetica Neue, sans-serif';
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= tickCount; i++) {
+    const t = tMin + i * tickInterval;
+    const x = tToX(t);
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_TOP - 5);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+    const d = new Date(t);
+    const label = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    ctx.fillText(label, x, PAD_TOP - 10);
+  }
+
+  // Draw rows
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  agents.forEach((aid, i) => {
+    const y = PAD_TOP + i * ROW_H;
+    const color = ganttColors[i % ganttColors.length];
+
+    // Alternating row bg
+    if (i % 2 === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      ctx.fillRect(0, y, W, ROW_H);
+    }
+
+    // Agent label
+    const label = agentLabel(state, aid);
+    ctx.fillStyle = color;
+    ctx.font = '11px Helvetica Neue, sans-serif';
+    ctx.fillText(label, LABEL_W - 8, y + ROW_H / 2);
+
+    // Task bars
+    const rowTasks = agentTasks.get(aid);
+    for (const t of rowTasks) {
+      const s = new Date(t.delegated_at).getTime();
+      const e = t.completed_at ? new Date(t.completed_at).getTime() : now;
+      const x1 = tToX(s);
+      const x2 = tToX(e);
+      const barH = 18;
+      const barY = y + (ROW_H - barH) / 2;
+
+      // Bar
+      const alpha = t.status === 'done' ? 0.5 : 0.8;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.roundRect(x1, barY, Math.max(x2 - x1, 3), barH, 3);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Pulsing right edge for active tasks
+      if (t.status !== 'done') {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.3;
+        ctx.fillRect(x2 - 2, barY, 4, barH);
+        ctx.globalAlpha = 1;
+      }
+
+      // Task description inside bar if wide enough
+      const barW = x2 - x1;
+      if (barW > 50) {
+        ctx.fillStyle = '#0f0f1a';
+        ctx.font = '10px Helvetica Neue, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x1 + 4, barY, barW - 8, barH);
+        ctx.clip();
+        ctx.fillText(t.description || '', x1 + 5, barY + barH / 2 + 1);
+        ctx.restore();
+        ctx.textAlign = 'right';
+      }
+    }
+  });
+
+  // "Now" line
+  const nowX = tToX(now);
+  ctx.strokeStyle = 'rgba(122,184,160,0.6)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(nowX, PAD_TOP - 5);
+  ctx.lineTo(nowX, H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#7ab8a0';
+  ctx.font = '10px Helvetica Neue, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('now', nowX, PAD_TOP - 10);
+}
+</script>
+</body>
+</html>

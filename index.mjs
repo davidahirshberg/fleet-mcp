@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 /**
- * Agent Manager MCP Server v3.0
+ * Agent Manager MCP Server v4.0
  *
  * Coordinates agents via shared state file + kitty kicks for notifications.
- * All agents register at startup. Communication goes through the state file;
- * kitty sends a nudge so agents know to check.
+ * Agent identity = session UUID (auto-detected from most recent JSONL).
+ * Kitty window IDs are metadata for notifications only.
  *
  * Tools:
  *   - register(manager?, session_id?)    register this agent (all agents call this)
@@ -28,14 +28,53 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import { SearchIndex } from './dashboard/search-index.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
 
 const STATE_FILE = `${os.homedir()}/.claude/agent-tasks.json`;
-const ME = process.env.AGENT_WIN ? parseInt(process.env.AGENT_WIN)
+const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
+
+// Lazy search index — opened read-only on first search call
+let _searchIndex = null;
+function getSearchIndex() {
+  if (!_searchIndex) {
+    const dbPath = `${os.homedir()}/.claude/search-index.sqlite`;
+    if (!fs.existsSync(dbPath)) return null;
+    _searchIndex = new SearchIndex(dbPath);
+  }
+  return _searchIndex;
+}
+
+// Append-only message log. Every communication event gets a line.
+function logEvent(event) {
+  const entry = { ...event, timestamp: new Date().toISOString() };
+  try {
+    fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
+  } catch { /* best effort */ }
+}
+// Kitty window ID — used only for notifications (kicking agents)
+const KITTY_WIN = process.env.AGENT_WIN ? parseInt(process.env.AGENT_WIN)
   : process.env.KITTY_WINDOW_ID ? parseInt(process.env.KITTY_WINDOW_ID)
   : null;
+
+// Agent identity = session UUID (auto-detected from most recent JSONL)
+function detectSessionId() {
+  const cwd = process.env.PWD || '';
+  const projectHash = cwd.replace(/\//g, '-') || '-';
+  const projectDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
+  try {
+    const jsonls = fs.readdirSync(projectDir)
+      .filter(f => f.endsWith('.jsonl'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+      .sort((a, b) => b.mtime - a.mtime);
+    if (jsonls.length > 0) return jsonls[0].name.replace('.jsonl', '');
+  } catch { /* project dir doesn't exist */ }
+  return null;
+}
+
+const ME = detectSessionId();
 
 // ---- State helpers ----
 
@@ -50,6 +89,12 @@ function loadState() {
 function saveState(state) {
   if (!state.messages) state.messages = [];
   if (!state.agents) state.agents = [];
+
+  // Heartbeat: update last_seen for this agent on every save
+  if (ME) {
+    const me = state.agents.find(a => a.id === ME);
+    if (me) me.last_seen = new Date().toISOString();
+  }
 
   // Prune: drop done tasks older than 24h, read messages older than 1h
   const now_ = Date.now();
@@ -100,29 +145,24 @@ function now() {
 }
 
 function requireManager() {
-  if (!ME) return 'Cannot identify caller — $KITTY_WINDOW_ID not set.';
+  if (!ME) return 'Cannot identify caller — no session ID detected.';
   const state = loadState();
-  if (state.manager !== ME) return `Only the manager (win ${state.manager ?? 'unregistered'}) can do this. You are win ${ME}.`;
-  return null;
-}
-
-// Resolve agent identifier — accepts number (kitty win ID) or string (agent name)
-function resolveAgent(val) {
-  if (typeof val === 'number') return val;
-  if (typeof val === 'string' && /^\d+$/.test(val)) return parseInt(val);
-  return val; // string agent name (e.g. "todd")
+  const agent = getAgent(state, ME);
+  if (agent?.is_manager) return null;
+  if (state.manager === ME) return null;
+  return `Only a manager can do this. You are ${ME} (not a manager).`;
 }
 
 // ---- Agent registry ----
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  return state.agents.find(a => a.id === id || a.kitty_win === id || a.name === id || a.friendly_name === id);
+  return state.agents.find(a => a.id === id || a.name === id || a.friendly_name === id);
 }
 
 function removeAgent(state, id) {
   if (!state.agents) return;
-  state.agents = state.agents.filter(a => a.id !== id && a.kitty_win !== id && a.name !== id && a.friendly_name !== id);
+  state.agents = state.agents.filter(a => a.id !== id && a.name !== id && a.friendly_name !== id);
 }
 
 function kittyWindowExists(win) {
@@ -132,6 +172,20 @@ function kittyWindowExists(win) {
   } catch {
     return false;
   }
+}
+
+// Heartbeat-based liveness: agent is alive if last_seen within threshold.
+// Works for all agents (kitty and headless). Falls back to kitty check if no heartbeat.
+const ALIVE_THRESHOLD_MS = 10 * 60 * 1000; // 10 minutes
+
+function agentAlive(agent) {
+  if (!agent) return false;
+  if (agent.last_seen) {
+    return (Date.now() - new Date(agent.last_seen).getTime()) < ALIVE_THRESHOLD_MS;
+  }
+  // No heartbeat yet — fall back to kitty window check
+  if (agent.kitty_win) return kittyWindowExists(agent.kitty_win);
+  return false;
 }
 
 // Lazy cleanup: check if agent's kitty window still exists. Remove if not.
@@ -231,6 +285,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           manager: { type: 'boolean', description: 'Register as manager (default false)' },
+          testing: { type: 'boolean', description: 'Register as a secondary/test manager. Gets manager privileges but does not replace the primary manager or start keepalive. Requires manager=true.' },
           session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
           name: { type: 'string', description: 'Agent name (for headless agents without kitty window)' },
         },
@@ -242,7 +297,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: ['number', 'string'], description: 'Agent identifier — kitty window ID (number), agent name, or friendly name' },
+          agent: { type: 'string', description: 'Agent identifier — session UUID, agent name, or friendly name' },
           description: { type: 'string', description: 'Short human-readable description (5-10 words)' },
           message: { type: 'string', description: 'Full task message for the agent' },
           after: { description: 'Task ID or array of IDs — deferred until all complete.', oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'string' } }] },
@@ -284,7 +339,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: ['number', 'string'], description: 'Agent identifier. Omit to mark own task done.' },
+          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name). Omit to mark own task done.' },
         },
       },
     },
@@ -316,7 +371,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          to: { type: ['number', 'string'], description: 'Agent to pass manager role to. Omit to just vacate.' },
+          to: { type: 'string', description: 'Agent to pass manager role to. Omit to just vacate.' },
         },
       },
     },
@@ -326,7 +381,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: ['number', 'string'], description: 'Agent identifier (kitty win, session ID, or current name)' },
+          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name)' },
           friendly_name: { type: 'string', description: 'Friendly name (e.g. "sims guy", "survival paper")' },
         },
         required: ['agent', 'friendly_name'],
@@ -338,7 +393,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       inputSchema: {
         type: 'object',
         properties: {
-          agent: { type: ['number', 'string'], description: 'Agent identifier or friendly name' },
+          agent: { type: 'string', description: 'Agent identifier (session UUID, name, or friendly name)' },
           win: { type: 'number', description: 'Kitty window to use. Omit to auto-find an idle tab.' },
         },
         required: ['agent'],
@@ -355,6 +410,35 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: 'search_logs',
+      description: 'Full-text search across all agent session logs and event history. Returns matching snippets with source info. Powered by FTS5 index (fast). Use this to find past conversations, decisions, or context from any agent session.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          query: { type: 'string', description: 'Search query (supports FTS5 syntax: AND, OR, "exact phrase", prefix*)' },
+          project: { type: 'string', description: 'Filter to a specific project directory name (e.g. "-Users-skip-work-foo")' },
+          agent: { type: 'string', description: 'Filter to a specific agent (by UUID, name, or friendly name)' },
+          limit: { type: 'number', description: 'Max results (default 20, max 100)' },
+        },
+        required: ['query'],
+      },
+    },
+    {
+      name: 'get_thread',
+      description: 'Export a conversation thread. Returns formatted messages for an agent, task, or time range. Useful for reading what another agent did, reviewing task history, or exporting context.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Required unless task_id is given.' },
+          task_id: { type: 'string', description: 'Task ID — returns all messages related to this task.' },
+          since: { type: 'string', description: 'ISO timestamp — only messages after this time.' },
+          until: { type: 'string', description: 'ISO timestamp — only messages before this time.' },
+          include_delegations: { type: 'boolean', description: 'Include task delegations (default true).' },
+          limit: { type: 'number', description: 'Max messages (default 50, max 200).' },
+        },
+      },
+    },
   ],
 }));
 
@@ -364,11 +448,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ---- register ----
   if (name === 'register' || name === 'register_manager') {
     const isManager = name === 'register_manager' || args.manager === true;
+    const isTesting = isManager && args.testing === true;
     const agentName = args.name || null;
 
-    // Need either KITTY_WINDOW_ID or a name
+    // Need either a session UUID or a name
     if (!ME && !agentName) {
-      return { content: [{ type: 'text', text: '$KITTY_WINDOW_ID not set and no name provided. Set AGENT_WIN or pass name for headless agents.' }], isError: true };
+      return { content: [{ type: 'text', text: 'No session ID detected and no name provided. Pass session_id or name for headless agents.' }], isError: true };
     }
 
     const state = loadState();
@@ -376,12 +461,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     const id = ME || agentName;
 
-    // Guard: can't claim manager if someone else already is (unless they're dead)
-    if (isManager && state.manager && state.manager !== id) {
+    // Guard: can't claim primary manager if someone else already is (unless they're dead)
+    // Testing managers skip this — they don't claim the primary slot
+    if (isManager && !isTesting && state.manager && state.manager !== id) {
       const currentManager = getAgent(state, state.manager);
-      const managerAlive = currentManager?.kitty_win && kittyWindowExists(currentManager.kitty_win);
-      if (managerAlive) {
-        return { content: [{ type: 'text', text: `Manager already registered (${state.manager}). Only the current manager can re-register as manager.` }], isError: true };
+      if (agentAlive(currentManager)) {
+        return { content: [{ type: 'text', text: `Manager already registered (${state.manager}). Only the current manager can re-register as manager. Use testing=true to register as a secondary manager.` }], isError: true };
       }
       // Current manager is dead — allow takeover
       if (currentManager) removeAgent(state, state.manager);
@@ -396,52 +481,36 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       id,
       registered_at: now(),
     };
-    if (ME) entry.kitty_win = ME;
+    if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
     if (agentName) entry.name = agentName;
-    // Session ID: use explicit arg, or auto-detect from most recent JSONL
-    if (args.session_id) {
-      entry.session_id = args.session_id;
-    } else {
-      const cwd = process.env.PWD || '';
-      const projectHash = cwd.replace(/\//g, '-') || '-';
-      const projectDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
-      try {
-        const jsonls = fs.readdirSync(projectDir)
-          .filter(f => f.endsWith('.jsonl'))
-          .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-          .sort((a, b) => b.mtime - a.mtime);
-        if (jsonls.length > 0) {
-          entry.session_id = jsonls[0].name.replace('.jsonl', '');
-        }
-      } catch { /* project dir doesn't exist, skip */ }
-    }
+    // session_id is the same as id for session-based agents; explicit arg overrides
+    if (args.session_id) entry.session_id = args.session_id;
+    else if (ME) entry.session_id = ME;
     if (oldFriendlyName) entry.friendly_name = oldFriendlyName;
+    entry.last_seen = now();
     // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
 
     state.agents.push(entry);
 
-    if (isManager) {
+    if (isManager && !isTesting) {
       state.manager = id;
-      // Start keepalive if not already running
-      try {
-        execSync(`pgrep -f ${BIN}/agent-keepalive`, { encoding: 'utf8', timeout: 5000 });
-      } catch {
-        exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
-      }
+      // Kill any stale keepalives, start fresh with the correct script
+      try { execSync(`pkill -f agent-keepalive`, { timeout: 5000 }); } catch {}
+      exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
     }
 
     saveState(state);
 
     const agentCount = state.agents.length;
-    let msg = `Registered ${id}${isManager ? ' as manager' : ''}. ${agentCount} agent(s) registered.`;
+    let msg = `Registered ${id}${isManager ? (isTesting ? ' as test manager' : ' as manager') : ''}. ${agentCount} agent(s) registered.`;
 
     const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
     const repoRefPath = path.join(__dirname, 'managing-agents.md');
     const refExists = fs.existsSync(refPath);
 
-    if (isManager) {
+    if (isManager && !isTesting) {
       msg += ' Keepalive watcher running.';
       msg += '\n\nWhen you see 📬 as input, call my_task() — it means an agent sent you a message or a task changed.';
       if (refExists) {
@@ -449,6 +518,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } else {
         msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
       }
+    } else if (isTesting) {
+      msg += '\n\nTest manager: you have manager privileges (delegate, task_done for others, etc.) but are not the primary manager. Keepalive will not kick you. chat() without a recipient still goes to the primary manager.';
     } else {
       msg += '\n\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
       if (refExists) {
@@ -467,10 +538,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
     const state = loadState();
     const oldAgent = getAgent(state, ME);
+    const wasPrimary = state.manager === ME;
     if (oldAgent) delete oldAgent.is_manager;
 
-    const to = args.to != null ? resolveAgent(args.to) : null;
+    const to = args.to != null ? args.to : null;
     if (to) {
+      if (!wasPrimary) return { content: [{ type: 'text', text: `Only the primary manager can hand off. You are a test manager — just unregister.` }], isError: true };
       const newManager = getAgent(state, to);
       if (!newManager) return { content: [{ type: 'text', text: `Agent ${to} not registered.` }], isError: true };
       newManager.is_manager = true;
@@ -480,16 +553,19 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Passed manager to ${to}.` }] };
     }
 
-    delete state.manager;
+    if (wasPrimary) {
+      delete state.manager;
+    }
     saveState(state);
-    return { content: [{ type: 'text', text: `Stepped down as manager. Manager slot is now open.` }] };
+    const roleMsg = wasPrimary ? 'Stepped down as manager. Manager slot is now open.' : 'Stepped down as test manager.';
+    return { content: [{ type: 'text', text: roleMsg }] };
   }
 
   // ---- delegate ----
   if (name === 'delegate') {
     const guard = requireManager();
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-    let agent = resolveAgent(args.agent);
+    let agent = args.agent;
     const { description, message } = args;
     const afterRaw = args.after;
     const blockedBy = afterRaw ? (Array.isArray(afterRaw) ? afterRaw : [afterRaw]) : [];
@@ -498,7 +574,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Resolve friendly name / name to canonical agent ID
     const agentEntry = getAgent(state, agent);
-    if (agentEntry) agent = agentEntry.id;
+    if (!agentEntry) return { content: [{ type: 'text', text: `Agent "${agent}" not registered.` }], isError: true };
+    agent = agentEntry.id;
 
     // Set friendly name if provided
     if (args.friendly_name) {
@@ -512,12 +589,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Replace any existing non-done task for this agent
     state.tasks = state.tasks.filter(t => !(t.agent === agent && t.status !== 'done'));
-    const taskId = `${typeof agent === 'string' ? agent : 'w' + agent}-${Date.now().toString(36)}`;
+    // Task ID: use first 8 chars of UUID or agent name for readability
+    const shortId = typeof agent === 'string' ? agent.slice(0, 8) : `w${agent}`;
+    const taskId = `${shortId}-${Date.now().toString(36)}`;
     const task = {
       id: taskId,
       agent,
       description,
       message,
+      delegated_by: ME,
       delegated_at: now(),
       status: blocked ? 'blocked' : 'pending',
       last_checked: now(),
@@ -525,6 +605,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (blockedBy.length > 0) task.blockedBy = blockedBy;
     state.tasks.push(task);
     saveState(state);
+    logEvent({ type: 'delegate', from: ME, to: agent, task_id: taskId, description, message });
 
     // Kick agent via kitty if not blocked
     let kicked = false;
@@ -551,19 +632,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   // ---- chat ----
   if (name === 'chat') {
     const { message } = args;
-    let to = args.to != null ? resolveAgent(args.to) : null;
+    let to = args.to != null ? args.to : null;
     const state = loadState();
     if (to == null) {
       to = state.manager;
       if (!to) return { content: [{ type: 'text', text: 'No recipient specified and no manager registered.' }], isError: true };
+    } else if (to === 'web' || to === 'skip' || to === 'human') {
+      // Route to the dashboard — message is saved to state, dashboard picks it up via SSE
+      to = 'web';
     } else {
       // Resolve friendly name to canonical ID
       const toEntry = getAgent(state, to);
-      if (toEntry) to = toEntry.id;
+      if (!toEntry) return { content: [{ type: 'text', text: `Recipient "${to}" not registered.` }], isError: true };
+      to = toEntry.id;
     }
     const from = ME || 'unknown';
     postMessage(state, to, from, message);
     saveState(state);
+    logEvent({ type: 'chat', from, to, message });
 
     // Kick recipient
     const kicked = notifyAgent(state, to);
@@ -580,7 +666,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- wait_for_task ----
   if (name === 'wait_for_task') {
-    if (!ME) return { content: [{ type: 'text', text: '$KITTY_WINDOW_ID not set.' }], isError: true };
+    if (!ME) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const timeoutMs = Math.min(args.timeout ?? 600, 600) * 1000;
     const intervalMs = 5000;
     const deadline = Date.now() + timeoutMs;
@@ -595,6 +681,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         saveState(state);
         const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
         return { content: [{ type: 'text', text: `Messages received:\n\n${formatted}` }] };
+      }
+
+      // Check for blocked tasks whose deps are all done — transition to pending
+      for (const t of state.tasks) {
+        if (t.agent === ME && t.status === 'blocked' && !isBlocked(state, t)) {
+          t.status = 'pending';
+        }
       }
 
       // Check for a pending task assigned to me
@@ -629,11 +722,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Show registered agents
     if (agents.length > 0) {
       const agentLines = agents.map(a => {
-        let label = a.friendly_name ? `"${a.friendly_name}"` : `${a.id}`;
-        if (a.name) label += ` (${a.name})`;
-        if (a.friendly_name) label += ` [id:${a.id}]`;
-        if (a.is_manager) label += ' [manager]';
-        if (a.session_id) label += ` session:${a.session_id.slice(0, 8)}`;
+        let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id.slice(0, 8));
+        if (a.friendly_name && a.name) label += ` (${a.name})`;
+        if (a.friendly_name) label += ` [${a.id.slice(0, 8)}]`;
+        if (a.is_manager && a.id === state.manager) label += ' [manager]';
+        else if (a.is_manager) label += ' [test-manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
       });
@@ -645,6 +738,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text }] };
     }
 
+    // Check if there are multiple managers (show delegated_by if so)
+    const managerCount = agents.filter(a => a.is_manager).length;
+    const showOwner = managerCount > 1;
+
     const lines = active.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
       let status = t.status;
@@ -654,7 +751,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if ((t.status === 'pending' || t.status === 'working') && age > 1440) {
         status += ` [stale — ${Math.round(age / 60)}h]`;
       }
-      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago`;
+      let owner = '';
+      if (showOwner && t.delegated_by) {
+        const ownerAgent = getAgent(state, t.delegated_by);
+        const ownerLabel = ownerAgent?.friendly_name || t.delegated_by;
+        owner = ` | by:${ownerLabel}`;
+      }
+      return `[${t.id}] ${t.agent} | ${status} | ${t.description} | ${age}m ago${owner}`;
     });
 
     text += lines.join('\n');
@@ -677,8 +780,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- task_done ----
   if (name === 'task_done') {
-    const agent = args.agent ? resolveAgent(args.agent) : ME;
-    if (!agent) return { content: [{ type: 'text', text: 'No agent specified and $KITTY_WINDOW_ID not set.' }], isError: true };
+    const agent = args.agent ? args.agent : ME;
+    if (!agent) return { content: [{ type: 'text', text: 'No agent specified and no session ID detected.' }], isError: true };
 
     if (agent !== ME) {
       const guard = requireManager();
@@ -694,6 +797,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     task.completed_at = now();
     const unblocked = unblockDependents(state, task.id);
     saveState(state);
+    logEvent({ type: 'task_done', agent, task_id: task.id, description: task.description });
 
     // Kick newly unblocked agents
     for (const u of unblocked) {
@@ -709,6 +813,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msg += ` ${remaining} task(s) remaining.`;
     } else {
       msg += ' All tasks complete.';
+    }
+    // Guide agents to wait for next task instead of going idle
+    if (agent === ME) {
+      msg += '\n\nCall wait_for_task() to wait for your next assignment.';
     }
     return { content: [{ type: 'text', text: msg }] };
   }
@@ -730,7 +838,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const idle = isIdle(win);
 
     const state = loadState();
-    const task = state.tasks.find(t => t.agent === win && t.status !== 'done');
+    // Find the agent by kitty window, then look up their task by UUID
+    const agentEntry = state.agents?.find(a => a.kitty_win === win);
+    const agentId = agentEntry?.id;
+    const task = agentId ? state.tasks.find(t => t.agent === agentId && t.status !== 'done') : null;
     if (task) {
       if (idle && task.status === 'working') task.status = 'idle';
       task.last_checked = now();
@@ -754,16 +865,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- my_task ----
   if (name === 'my_task') {
-    if (!ME) return { content: [{ type: 'text', text: '$KITTY_WINDOW_ID not set.' }], isError: true };
+    if (!ME) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const state = loadState();
     const task = getTask(state, ME);
     const unread = getUnread(state, ME);
 
     let text = '';
+    let dirty = false;
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       let depInfo = '';
-      if (task.blockedBy && task.blockedBy.length > 0) {
+      if (task.blockedBy && task.blockedBy.length > 0 && isBlocked(state, task)) {
         const depDetails = task.blockedBy.map(id => {
           const dep = getTaskById(state, id);
           return dep ? `${id} (${dep.description} — ${dep.status})` : `${id} (unknown)`;
@@ -771,18 +883,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         depInfo = `\nBlocked by: ${depDetails.join(', ')}`;
       }
       text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago${depInfo}`;
+      if (task.message && !task.message_shown) {
+        text += `\n\n${task.message}\n\nUse chat() to report progress, results, or issues. Call task_done() when finished.`;
+        task.message_shown = true;
+        dirty = true;
+      }
     } else {
       text = `Nothing new.`;
     }
 
     if (unread.length > 0) {
-      // Read and return the messages inline
       markRead(state, ME);
-      saveState(state);
+      dirty = true;
       const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
     }
 
+    if (dirty) saveState(state);
     return { content: [{ type: 'text', text }] };
   }
 
@@ -790,7 +907,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'name_agent') {
     const guard = requireManager();
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-    const agentId = resolveAgent(args.agent);
+    const agentId = args.agent;
     const friendlyName = args.friendly_name;
     const state = loadState();
     const agent = getAgent(state, agentId);
@@ -808,7 +925,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'respawn') {
     const guard = requireManager();
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
-    const agentId = resolveAgent(args.agent);
+    const agentId = args.agent;
     const state = loadState();
     const agent = getAgent(state, agentId);
     if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not found in registry.` }], isError: true };
@@ -828,7 +945,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const windowsJson = execSync(`${BIN}/agent-windows`, { encoding: 'utf8', timeout: 5000 });
         const windows = JSON.parse(windowsJson);
         const registeredWins = new Set((state.agents || []).filter(a => a.kitty_win).map(a => a.kitty_win));
-        if (ME) registeredWins.add(ME);
+        if (KITTY_WIN) registeredWins.add(KITTY_WIN);
 
         for (const win of windows) {
           if (registeredWins.has(win.id)) continue;
@@ -905,7 +1022,163 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       try { execSync(`${BIN}/agent-kick ${kickWin}`, { timeout: 10000 }); } catch {}
     }, 15000);
 
-    return { content: [{ type: 'text', text: `Spawned new agent in win ${targetWin} (cwd: ${cwd}). Will kick in ~15s to trigger registration. Use delegate(${targetWin}, ...) once it's registered.` }] };
+    return { content: [{ type: 'text', text: `Spawned new agent in win ${targetWin} (cwd: ${cwd}). Will kick in ~15s to trigger registration. Once registered, find its UUID via task_list() and use delegate() with that.` }] };
+  }
+
+  // ---- search_logs ----
+  if (name === 'search_logs') {
+    const idx = getSearchIndex();
+    if (!idx) {
+      return { content: [{ type: 'text', text: 'Search index not available. The dashboard server builds the index — make sure it has run at least once.' }], isError: true };
+    }
+
+    const query = args.query;
+    if (!query || query.length < 2) {
+      return { content: [{ type: 'text', text: 'Query must be at least 2 characters.' }], isError: true };
+    }
+
+    const limit = Math.min(args.limit || 20, 100);
+    let results = idx.search(query, { project: args.project || undefined, limit });
+
+    // Filter by agent if requested
+    if (args.agent) {
+      const state = loadState();
+      const agentEntry = getAgent(state, args.agent);
+      const agentId = agentEntry?.id || args.agent;
+      results = results.filter(r =>
+        r.from === agentId || r.to === agentId ||
+        r.sessionId === agentId ||
+        (r.project && r.sessionId && r.sessionId === agentId)
+      );
+    }
+
+    if (results.length === 0) {
+      return { content: [{ type: 'text', text: `No results for "${query}".` }] };
+    }
+
+    // Format results
+    const state = loadState();
+    const lines = results.map(r => {
+      const parts = [];
+      if (r.timestamp) parts.push(new Date(r.timestamp).toLocaleString());
+      if (r.source === 'events') {
+        const from = r.from ? (getAgent(state, r.from)?.friendly_name || r.from) : '';
+        parts.push(`[${r.role}] ${from}`);
+      } else {
+        const proj = r.project?.match(/work-(.+)$/)?.[1]?.replace(/-/g, '/') || r.project || '';
+        parts.push(`[${r.role}] ${proj}`);
+        if (r.sessionId) parts.push(r.sessionId.slice(0, 8));
+      }
+      // Clean up snippet markers
+      const snippet = r.snippet.replace(/⟨⟨/g, '**').replace(/⟩⟩/g, '**');
+      parts.push(snippet);
+      return parts.join(' | ');
+    });
+
+    const stats = idx.stats();
+    return { content: [{ type: 'text', text: `${results.length} results (index: ${stats.totalEntries} entries, ${stats.totalFiles} files)\n\n${lines.join('\n\n')}` }] };
+  }
+
+  // ---- get_thread ----
+  if (name === 'get_thread') {
+    const state = loadState();
+    const messages = state.messages || [];
+    const tasks = state.tasks || [];
+    let filtered = [];
+
+    if (args.task_id) {
+      // Find the task and its agent
+      const task = tasks.find(t => t.id === args.task_id);
+      if (!task) {
+        return { content: [{ type: 'text', text: `Task ${args.task_id} not found.` }], isError: true };
+      }
+      const agentId = task.agent;
+      filtered = messages.filter(m => m.from === agentId || m.to === agentId);
+      // Include the delegation itself
+      const delegations = [];
+      if (args.include_delegations !== false) {
+        // Read from event log for richer history
+        try {
+          const logLines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n');
+          for (const line of logLines) {
+            let e;
+            try { e = JSON.parse(line); } catch { continue; }
+            if (e.type === 'delegate' && (e.agent === agentId || e.to === agentId)) {
+              delegations.push(e);
+            }
+            if (e.type === 'task_done' && (e.agent === agentId || e.from === agentId)) {
+              delegations.push(e);
+            }
+            if (e.type === 'chat' && (e.from === agentId || e.to === agentId)) {
+              if (!filtered.find(m => m.timestamp === e.timestamp && m.text === (e.message || e.text))) {
+                filtered.push({ from: e.from, to: e.to, text: e.message || e.text, timestamp: e.timestamp });
+              }
+            }
+          }
+        } catch {}
+        filtered = [...delegations.map(d => ({
+          from: d.from || d.delegated_by,
+          to: d.to || d.agent,
+          text: d.type === 'delegate' ? `[DELEGATE] ${d.description}\n${d.message}` : `[DONE] ${d.description || ''}`,
+          timestamp: d.timestamp,
+        })), ...filtered];
+      }
+    } else if (args.agent) {
+      const agentEntry = getAgent(state, args.agent);
+      if (!agentEntry) {
+        return { content: [{ type: 'text', text: `Agent "${args.agent}" not found.` }], isError: true };
+      }
+      const agentId = agentEntry.id;
+      // Read from event log for full history
+      try {
+        const logLines = fs.readFileSync(LOG_FILE, 'utf8').trim().split('\n');
+        for (const line of logLines) {
+          let e;
+          try { e = JSON.parse(line); } catch { continue; }
+          if (e.from === agentId || e.to === agentId || e.agent === agentId) {
+            const text = e.type === 'delegate'
+              ? `[DELEGATE] ${e.description}\n${e.message || ''}`
+              : e.type === 'task_done'
+              ? `[DONE] ${e.description || ''}`
+              : e.message || e.text || '';
+            filtered.push({ from: e.from, to: e.to || e.agent, text, timestamp: e.timestamp });
+          }
+        }
+      } catch {}
+    } else {
+      return { content: [{ type: 'text', text: 'Provide either agent or task_id.' }], isError: true };
+    }
+
+    // Apply time filters
+    if (args.since) filtered = filtered.filter(m => m.timestamp >= args.since);
+    if (args.until) filtered = filtered.filter(m => m.timestamp <= args.until);
+
+    // Sort by time, deduplicate, limit
+    filtered.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+    const seen = new Set();
+    filtered = filtered.filter(m => {
+      const key = `${m.timestamp}|${m.from}|${(m.text || '').slice(0, 50)}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    const limit = Math.min(args.limit || 50, 200);
+    filtered = filtered.slice(-limit);
+
+    if (filtered.length === 0) {
+      return { content: [{ type: 'text', text: 'No messages found for the given criteria.' }] };
+    }
+
+    // Format as readable thread
+    const lines = filtered.map(m => {
+      const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
+      const from = m.from === 'web' ? 'skip' : (getAgent(state, m.from)?.friendly_name || m.from?.slice?.(0, 8) || m.from);
+      const to = m.to === 'web' ? 'skip' : (getAgent(state, m.to)?.friendly_name || m.to?.slice?.(0, 8) || m.to);
+      return `[${ts}] ${from} → ${to}\n${m.text}`;
+    });
+
+    return { content: [{ type: 'text', text: `${filtered.length} messages:\n\n${lines.join('\n\n---\n\n')}` }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

@@ -1,0 +1,57 @@
+#!/bin/bash
+# Usage: agent-dashboard [start|stop|status] [--port PORT]
+# Manages the agent dashboard web server.
+
+DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PID_FILE="$HOME/.claude/dashboard.pid"
+LOG_FILE="$HOME/.claude/dashboard.log"
+PORT=5199
+
+action="${1:-start}"
+shift 2>/dev/null
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --port) PORT="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+
+case "$action" in
+  start)
+    # Kill existing
+    if [[ -f "$PID_FILE" ]]; then
+      old_pid=$(cat "$PID_FILE")
+      kill "$old_pid" 2>/dev/null
+      rm -f "$PID_FILE"
+    fi
+    nohup node "$DIR/dashboard/server.mjs" --port "$PORT" >> "$LOG_FILE" 2>&1 &
+    echo $! > "$PID_FILE"
+    echo "Dashboard started on port $PORT (pid $!)"
+    echo "  http://localhost:$PORT"
+    # Show Tailscale IP
+    ts_ip=$(ifconfig 2>/dev/null | grep 'inet 100\.' | awk '{print $2}')
+    [[ -n "$ts_ip" ]] && echo "  http://$ts_ip:$PORT"
+    ;;
+  stop)
+    if [[ -f "$PID_FILE" ]]; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null
+      rm -f "$PID_FILE"
+      echo "Dashboard stopped"
+    else
+      echo "No dashboard running"
+    fi
+    ;;
+  status)
+    if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "Dashboard running (pid $(cat "$PID_FILE")), port $PORT"
+    else
+      rm -f "$PID_FILE" 2>/dev/null
+      echo "Dashboard not running"
+    fi
+    ;;
+  *)
+    echo "Usage: agent-dashboard [start|stop|status] [--port PORT]"
+    exit 1
+    ;;
+esac

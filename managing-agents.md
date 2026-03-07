@@ -58,7 +58,7 @@ With `agent-read` and `agent-kick` available, a meta session can actively interv
 ### Tools
 
 - `register(manager?, session_id?, name?)` — register this agent. **All agents call this at session start.** Adds to the agent registry so kicks work. Captures `$PWD` as working directory. Pass `manager=true` for the manager session.
-- `delegate(agent, description, message, after?, friendly_name?)` — assign a task. Writes to state and kicks the agent via kitty. `agent` is a kitty window ID, agent name, or friendly name. Optional `after` for dependencies. Optional `friendly_name` to name the agent on first delegation.
+- `delegate(agent, description, message, after?, friendly_name?)` — assign a task. Writes to state and kicks the agent via kitty. `agent` is a session UUID, agent name, or friendly name. Agent must be registered. Optional `after` for dependencies. Optional `friendly_name` to name the agent on first delegation.
 - `chat(message, to?)` — send a message. Writes to state and kicks the recipient via kitty. Omit `to` to send to the manager.
 - `wait_for_task(timeout?)` — block until a task or message arrives. Agents call this when idle. Polls every 5s.
 - `task_list()` — show all active tasks + registered agents. **Call at session start.** Shows friendly names when set.
@@ -93,12 +93,12 @@ Agents must be registered for kicks to work. Headless agents (no kitty) must pol
 
 ### Agent types
 
-- **Terminal agents**: identified by kitty window ID (number). These are Claude Code sessions.
+- **Terminal agents**: identified by session UUID (auto-detected at startup). Kitty window ID is just metadata for notifications.
 - **Headless agents**: identified by name (string, e.g. "todd"). These are processes like Todd (the tlda triage agent) that run outside of kitty.
 
 ### Agent naming
 
-Agents have friendly names — human-readable labels like "sims guy" or "survival paper" that the manager uses instead of session IDs or window numbers. Names are a manager-side concept; agents don't need to know their own names.
+Agents have friendly names — human-readable labels like "sims guy" or "survival paper" that the manager uses instead of raw UUIDs. Names are a manager-side concept; agents don't need to know their own names.
 
 - Set a name: `name_agent(agent, "sims guy")` or `delegate(agent, ..., friendly_name="sims guy")`
 - Names persist across re-registrations (agent restarts don't lose the name)
@@ -132,13 +132,15 @@ Use `after` to chain tasks: `delegate(agent=18, description="build paper", messa
 
 ### Session start
 
-**Manager**: `register_manager()` then `task_list()`. Register stores your window ID, adds you to the registry, and starts the keepalive watcher. Task list recovers monitoring state.
+**Manager**: `register_manager()` then `task_list()`. Register stores your session UUID and kitty window, adds you to the registry, and starts the keepalive watcher. Task list recovers monitoring state.
 
 **Workers**: `register()` then `wait_for_task()` or `my_task()`. Register adds you to the registry so kicks reach you. Then wait for work.
 
 ### The keepalive watcher
 
-Auto-started by `register_manager`. Kicks the manager (via kitty — the one remaining kitty use) when agents need attention. Polls every 45s with a 5-minute cooldown. Kicks are signed ("— keepalive watcher"). Log: `~/.claude/keepalive.log`.
+Auto-started by `register_manager`. Nudges the manager (via kitty) when agents need attention and the manager is idle. Polls every 45s. Backs off exponentially when the state hasn't changed (5min → 10min → 20min → ... up to 1 hour). Resets when something changes. Log: `~/.claude/keepalive.log`.
+
+Keepalive kicks don't write messages to the inbox — they're just a nudge. The manager should call `task_list()` to see what's up, not `my_task()` (which is for checking your own task and reading agent messages).
 
 **When kicked, check ALL agents.** The #1 failure mode is tunnel vision. Run `task_list()` and look at the full picture. The kick is not "continue what you were doing" — it's "step back and manage."
 
@@ -148,17 +150,23 @@ Auto-started by `register_manager`. Kicks the manager (via kitty — the one rem
 
 ### Behavioral guidelines
 
-**Choose the right agent.** Let tools guys be tools guys and math guys be math guys. An agent deep in ama-mcp infrastructure shouldn't get paper referee fixes; one working on survival sims shouldn't debug the tlda viewer. Match agents to their domain, not just availability. Before delegating, check `task_list()` — pick an agent that's free and has context on the topic. If no one has context, spin up a new agent rather than pulling someone off unrelated work.
+**Agents stay on their project.** An agent working on balancing-act stays on balancing-act. Don't reassign them to spinoffs work when they finish a task — let them sit idle on their project and spin up a new agent for the new project. Agents accumulate project context (file layout, notation, conventions, session history) that's expensive to rebuild. Idle agents are cheap; context switches are not. When a new task comes in, check if there's an idle agent already on that project. If yes, delegate to them. If no, spawn a new one in the project's directory: `spawn(cwd="/Users/skip/work/project-name")`.
 
 **Agents: push back on wrong assignments.** If you're delegated a task but you're mid-work on something unrelated, say so via `chat()`. The manager can reassign. Don't silently drop what you're doing.
 
 **Intervene on mistakes, not imprecision.** When an agent's reasoning is muddled but the action is correct, let it run. The test: will this confusion cause a wrong action? If yes, correct now. If no, note it and move on.
+
+**Screen agent output before relaying to the user.** The manager is a filter, not a passthrough. Before presenting an agent's findings, check them against known user preferences — reference files, repeated decisions from session history, CLAUDE.md rules. If an agent presents something the user has explicitly rejected before (a notation choice, a variable name, a formulation), catch it and send it back before the user sees it. Don't relay stale scratch file conclusions as resolved when session logs may show the user overrode them. The session history is ground truth; scratch files can be outdated.
+
+**Point agents at the source, don't paraphrase the user.** When the user leaves annotations, instructions, or feedback for an agent, tell the agent where to find it — don't rewrite it in your own words. The manager's paraphrase loses nuance, adds interpretation, and plays telephone. The user is the instructor; the manager routes and appraises. When work comes back, screen it for quality and known preferences. But the original instructions go through ungarbled.
 
 **Redirect without explanation when an agent is stuck.** Give the right target and move on. At low context especially, every token costs working memory — be terse.
 
 **Keep working while monitoring.** Between delegation and result, draft sections, write guidance, answer questions. Don't sit idle watching agents think. The keepalive and 📬 kicks handle notifications.
 
 **Report when there's something worth knowing.** Report: blockers needing decisions, significant findings, task completions. Don't report: "agent is thinking," routine progress on a task that's going fine.
+
+**Status reports are fresh, not cached.** When the user asks for status, check agents now — `task_check` the active ones, `task_list` for the overview. Don't parrot what they said last time. The user is asking what's happening right now.
 
 **What requires approval vs. what doesn't.** Things that warrant checking with the user: remote pushes, external services, sending messages outside the local system. Everything else — file edits, script updates, cluster submissions — just do it, following existing guidance.
 
@@ -174,4 +182,32 @@ Auto-started by `register_manager`. Kicks the manager (via kitty — the one rem
 
 **Stay in the chair.** The manager's job is to be available for conversation. Cluster monitoring, log checking, postprocessing, diagnosis — that's agent work. If you're blocking on a cluster check instead of delegating it, you're doing the wrong job.
 
+**Manage the cluster queue actively.** When checking on cluster progress, look for quick jobs stuck behind long arrays. If a 5-minute eff-bounds job is pending behind 50-rep sim arrays, hold the arrays, let the quick job run, release. See `cluster.md` § "Queue Priority." Do this proactively — don't wait for the user or an agent to point it out.
+
 **--resume relaunches MCP servers.** Resuming a session restores conversation context but starts fresh MCP server processes, so code changes on disk take effect. Both `respawn()` and `--resume` pick up new MCP code.
+
+### Writing task delegation
+
+Writing tasks are craft, not production. When delegating writing (drafting sections, rewriting paragraphs, integrating content):
+
+1. **Include the source text explicitly** — point to the file and lines, or paste it in the message. Say "read this first and match its style."
+2. **Set the comparison expectation**: "Before reporting done, re-read the original and confirm your version isn't worse. If you cut anything, say what you cut and why."
+3. **When reviewing writing output**: read the original and the new version side by side. Check for lost explanations, flattened motivation, broken transitions. "Shorter" is not automatically better. If the agent dropped content from author-written text without acknowledging it, send it back.
+
+See `writing-style.md` § "Writing Is Craft, Not Production" for the full guidance agents should follow.
+
+### Verification before done
+
+**Don't accept "done" without user-experience testing.** The agent claiming completion is not sufficient. The manager should require — and verify — that the agent tested their work the way the user would experience it.
+
+- **Web apps / UI**: Use playwright or puppeteer to actually open the page, interact with it, and confirm the fix works visually. "It compiles" or "the server starts" is not done.
+- **Agent infrastructure (ama-mcp, hooks, etc.)**: Role-play the actual usage. If you built a multi-manager feature, spawn a second manager and test the handoff. If you fixed a kick system, send a kick and confirm receipt.
+- **CLI tools**: Run the command with realistic inputs and check the output.
+- **LaTeX**: Build, check for errors with `tlda errors --wait`, and inspect the rendered output with `tlda preview`.
+- **R scripts**: Run on actual data (cluster for sims, local for postprocessing) and check output files exist and look right.
+
+When delegating, include the verification expectation: "test by doing X before reporting done." When reviewing completion, ask "how did you test it?" if the agent doesn't volunteer.
+
+### Delegation vocabulary
+
+When the user says "get a review," "run an audit," "do a style check," etc., they mean: delegate to an agent, who uses the appropriate subagent (proof-reviewer, notation-checker, style-checker — see `~/.claude/reference/subagents.md`) to produce the review, then addresses the feedback. The agent is responsible for the full loop: invoke the subagent, read its output, fix what's fixable, flag what needs discussion. The manager delegates the task; the worker runs the subagent and acts on results. When the worker reports back, skim the subagent's review and the worker's changes to sanity-check the job.

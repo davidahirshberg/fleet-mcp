@@ -8,10 +8,14 @@
 
 BIN="$(cd "$(dirname "$0")" && pwd)"
 INTERVAL=45          # poll interval (seconds)
-COOLDOWN=300         # min seconds between kicks
+COOLDOWN=300         # base min seconds between kicks
+MAX_COOLDOWN=3600    # max cooldown after repeated identical kicks (1 hour)
 STATE_FILE="$HOME/.claude/agent-tasks.json"
 LOG_FILE="$HOME/.claude/keepalive.log"
 LAST_KICK=0
+LAST_SUMMARY=""
+REPEAT_COUNT=0
+CURRENT_COOLDOWN=$COOLDOWN
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -32,12 +36,11 @@ while true; do
 
   # Read state file
   [[ -f "$STATE_FILE" ]] || continue
-  tasks=$(cat "$STATE_FILE" 2>/dev/null) || continue
 
-  # Get manager window
-  manager_win=$(echo "$tasks" | python3 -c "
+  # Get manager window (pipe file directly — echo mangles backslashes in JSON)
+  manager_win=$(python3 -c "
 import json, sys
-state = json.load(sys.stdin)
+state = json.load(open('$STATE_FILE'))
 m = state.get('manager', state.get('manager_win', ''))
 # resolve kitty_win from agent registry if manager is registered
 if m and state.get('agents'):
@@ -49,24 +52,36 @@ print(m)
 
   [[ -z "$manager_win" ]] && continue
 
-  # Cooldown check
+  # Cooldown check (with backoff for repeated identical state)
   now_epoch=$(date +%s)
   elapsed=$((now_epoch - LAST_KICK))
-  [[ $elapsed -lt $COOLDOWN ]] && continue
+  [[ $elapsed -lt $CURRENT_COOLDOWN ]] && continue
 
   # Check what needs attention (skip tasks for dead agents)
-  summary=$(echo "$tasks" | python3 -c "
+  summary=$(python3 -c "
 import json, sys, subprocess
-state = json.load(sys.stdin)
+state = json.load(open('$STATE_FILE'))
 tasks = state.get('tasks', [])
 agents = {a.get('id'): a for a in state.get('agents', [])}
+from datetime import datetime, timedelta
+ALIVE_THRESHOLD = timedelta(minutes=10)
 def agent_alive(t):
     a = agents.get(t.get('agent'))
-    if not a or not a.get('kitty_win'): return True  # headless — assume alive
-    try:
-        subprocess.run(['$BIN/agent-exists', str(a['kitty_win'])], timeout=5, capture_output=True, check=True)
-        return True
-    except: return False
+    if not a: return False
+    # Heartbeat check: last_seen within threshold
+    ls = a.get('last_seen')
+    if ls:
+        try:
+            seen = datetime.fromisoformat(ls.replace('Z', '+00:00'))
+            if (datetime.now(seen.tzinfo) - seen) < ALIVE_THRESHOLD: return True
+        except: pass
+    # Fall back to kitty window check
+    if a.get('kitty_win'):
+        try:
+            subprocess.run(['$BIN/agent-exists', str(a['kitty_win'])], timeout=5, capture_output=True, check=True)
+            return True
+        except: pass
+    return False
 live = [t for t in tasks if agent_alive(t)]
 pending = sum(1 for t in live if t['status'] == 'pending')
 idle = sum(1 for t in live if t['status'] == 'idle')
@@ -83,18 +98,49 @@ print('|'.join(parts))
 
   [[ -z "$reason" ]] && continue
 
-  # Only kick if manager is idle
+  # Skip if manager was recently active (MCP tool call within CURRENT_COOLDOWN)
+  # Scales with backoff: 5min → 10min → 20min → ... so the more stale the state,
+  # the longer the manager needs to be truly idle before we interrupt.
+  ACTIVE_THRESHOLD=$CURRENT_COOLDOWN
+  manager_active=$(python3 -c "
+import json, sys
+from datetime import datetime, timedelta, timezone
+state = json.load(open('$STATE_FILE'))
+mgr_id = state.get('manager')
+agents = state.get('agents', [])
+agent = next((a for a in agents if a.get('id') == mgr_id), None)
+if agent:
+    ls = agent.get('last_seen', '')
+    if ls:
+        seen = datetime.fromisoformat(ls.replace('Z', '+00:00'))
+        now = datetime.now(timezone.utc)
+        if (now - seen).total_seconds() < $ACTIVE_THRESHOLD:
+            print('active')
+            sys.exit(0)
+print('')" 2>/dev/null)
+  if [[ "$manager_active" == "active" ]]; then
+    log "skipped kick: manager recently active (last_seen < ${ACTIVE_THRESHOLD}s)"
+    continue
+  fi
+
+  # Only kick if manager is idle (screen check — catches long tool executions)
   "$BIN/agent-idle" "$manager_win" 2>/dev/null || continue
 
-  # Write reason to state file as a message, then kick
-  python3 -c "
-import json, sys, datetime
-with open('$STATE_FILE', 'r') as f: state = json.load(f)
-msg = {'to': state.get('manager'), 'from': 'keepalive', 'text': sys.argv[1], 'timestamp': datetime.datetime.now().isoformat(), 'read': False}
-state.setdefault('messages', []).append(msg)
-with open('$STATE_FILE', 'w') as f: json.dump(state, f, indent=2)
-" "$(echo "$reason" | tr '|' '. ')" 2>/dev/null
+  # Backoff: if same summary repeats, double the cooldown (up to MAX_COOLDOWN)
+  if [[ "$reason" == "$LAST_SUMMARY" ]]; then
+    REPEAT_COUNT=$((REPEAT_COUNT + 1))
+    # Double cooldown each repeat: 5m, 10m, 20m, 40m, capped at 60m
+    CURRENT_COOLDOWN=$((COOLDOWN * (1 << REPEAT_COUNT)))
+    [[ $CURRENT_COOLDOWN -gt $MAX_COOLDOWN ]] && CURRENT_COOLDOWN=$MAX_COOLDOWN
+  else
+    REPEAT_COUNT=0
+    CURRENT_COOLDOWN=$COOLDOWN
+  fi
+  LAST_SUMMARY="$reason"
+
+  # Just kick — no message. The kick itself is the nudge.
+  # The manager calls task_list() to see what's up.
   "$BIN/agent-kick" "$manager_win" >/dev/null 2>&1
   LAST_KICK=$now_epoch
-  log "kicked manager (win $manager_win): $reason"
+  log "kicked manager (win $manager_win, next in ${CURRENT_COOLDOWN}s): $reason"
 done
