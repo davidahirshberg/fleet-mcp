@@ -572,6 +572,43 @@
     font-style: italic;
     font-size: 12px;
   }
+  /* Terminal folding */
+  .term-fold {
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    display: inline-block;
+    margin: 1px 0;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .term-fold:hover { background: rgba(255,255,255,0.08); }
+  .term-fold::before { content: '▸ '; font-size: 9px; }
+  .term-fold.expanded::before { content: '▾ '; }
+  .term-fold-body { display: none; opacity: 0.5; font-size: 10px; margin-left: 12px; }
+  .term-fold.expanded + .term-fold-body { display: block; }
+  .term-agent-text { color: var(--blue); }
+  .term-chat-msg { color: var(--green); border-left: 2px solid var(--green); padding-left: 8px; margin: 2px 0; }
+  .term-tool-result { color: #b0b0c8; }
+  .term-decision { color: var(--yellow); }
+  .term-verbatim-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 3px 10px;
+    font-size: 11px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .term-verbatim-btn:hover { border-color: var(--text-dim); }
+  .term-verbatim-btn.active {
+    color: var(--cyan);
+    border-color: color-mix(in srgb, var(--cyan) 30%, transparent);
+  }
   /* ANSI color classes */
   .ansi-black { color: #555; }
   .ansi-red { color: #e06c75; }
@@ -1165,6 +1202,7 @@
       <div class="terminal-header" id="terminalHeader">
         <span class="terminal-label" id="terminalLabel"><span class="term-empty">No agent selected</span></span>
         <div class="terminal-controls">
+          <button class="term-verbatim-btn" id="terminalVerbatim" onclick="toggleTerminalVerbatim()" title="Toggle raw/folded view">folded</button>
           <button class="terminal-freeze-btn" id="terminalFreeze" onclick="toggleTerminalFreeze()" title="Freeze/unfreeze">&#x23f8; freeze</button>
         </div>
       </div>
@@ -2191,12 +2229,219 @@ function appendSystemMsg(text) {
 // --- Terminal tab ---
 let terminalAgent = null;
 let terminalAutoTimer = null;
+let terminalVerbatim = false;
+let terminalRawText = ''; // store raw for toggling
 
 async function peekAgent(agent) {
   terminalAgent = agent;
   localStorage.setItem('fleet-terminal-agent', agent);
   switchTab('terminal');
   await refreshTerminal();
+}
+
+function toggleTerminalVerbatim() {
+  terminalVerbatim = !terminalVerbatim;
+  const btn = $('terminalVerbatim');
+  btn.textContent = terminalVerbatim ? 'raw' : 'folded';
+  btn.classList.toggle('active', terminalVerbatim);
+  renderTerminalContent(terminalRawText);
+}
+
+function renderTerminalContent(raw) {
+  const output = $('terminalOutput');
+  const wasAtBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 20;
+  if (terminalVerbatim) {
+    output.innerHTML = ansiToHtml(raw);
+  } else {
+    output.innerHTML = foldTerminalOutput(raw);
+  }
+  if (wasAtBottom) output.scrollTop = output.scrollHeight;
+}
+
+// Strip ANSI escape sequences for pattern matching
+function stripAnsi(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function foldTerminalOutput(raw) {
+  const plain = stripAnsi(raw);
+  const lines = plain.split('\n');
+  const chunks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Detect keepalive / mailbox emoji noise
+    if (isKeepaliveNoise(trimmed)) {
+      const start = i;
+      while (i < lines.length && isKeepaliveNoise(lines[i].trim())) i++;
+      const count = i - start;
+      chunks.push({ type: 'fold', label: `keepalive/notification × ${count}`, lines: lines.slice(start, i) });
+      continue;
+    }
+
+    // Detect tool call sequences (Read, Edit, Grep, Glob, Write, Bash)
+    if (isToolCallStart(trimmed)) {
+      const start = i;
+      const tools = [];
+      while (i < lines.length && isToolCallStart(lines[i].trim())) {
+        tools.push(parseToolCall(lines[i].trim()));
+        // Consume the tool call line and any immediate result lines until next tool or blank
+        i++;
+        while (i < lines.length && isToolResultLine(lines[i], lines, i)) i++;
+      }
+      if (tools.length > 0) {
+        const summary = summarizeToolChain(tools);
+        chunks.push({ type: 'fold', label: summary, lines: lines.slice(start, i) });
+        continue;
+      }
+      i = start; // fallback if parsing failed
+    }
+
+    // Chat messages — highlight them
+    if (isChatMessage(trimmed)) {
+      chunks.push({ type: 'chat', text: line });
+      i++;
+      continue;
+    }
+
+    // Agent decisions / thinking
+    if (isAgentDecision(trimmed)) {
+      chunks.push({ type: 'decision', text: line });
+      i++;
+      continue;
+    }
+
+    // Everything else passes through
+    chunks.push({ type: 'line', text: line });
+    i++;
+  }
+
+  return renderChunks(chunks);
+}
+
+function isKeepaliveNoise(line) {
+  if (!line) return false;
+  // Mailbox emoji, keepalive pings, bare emoji input
+  if (/^📬\s*$/.test(line)) return true;
+  if (/^>\s*📬\s*$/.test(line)) return true;
+  if (/keepalive/i.test(line) && line.length < 120) return true;
+  if (/^Human:\s*📬\s*$/.test(line)) return true;
+  if (/^\$\s*$/.test(line)) return true;
+  return false;
+}
+
+function isToolCallStart(line) {
+  // Match lines that look like tool invocations in Claude Code terminal output
+  // Common patterns: "⏺ Read(file.js)", "⏺ Edit(file.js)", "● Grep", tool headers
+  if (/^[⏺●◆▶]\s*(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch|ListMcpResourcesTool)\b/i.test(line)) return true;
+  // Also match "Read file.js" style without bullet
+  if (/^(Read|Edit|Grep|Glob|Write)\s*\(/i.test(line)) return true;
+  // Match tool use markers like "Tool: Read" or "Using: Read"
+  if (/^(Tool|Using):\s*(Read|Edit|Grep|Glob|Write|Bash)\b/i.test(line)) return true;
+  return false;
+}
+
+function parseToolCall(line) {
+  const m = line.match(/(?:^[⏺●◆▶]\s*|^(?:Tool|Using):\s*)(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch)\s*(?:\(([^)]*)\))?/i);
+  if (m) {
+    return { tool: m[1], arg: m[2] || '' };
+  }
+  // Fallback
+  const m2 = line.match(/^(Read|Edit|Grep|Glob|Write)\s*\(([^)]*)\)/i);
+  if (m2) return { tool: m2[1], arg: m2[2] || '' };
+  return { tool: 'unknown', arg: '' };
+}
+
+function isToolResultLine(line, allLines, idx) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  // Result lines are indented or don't start a new tool
+  if (/^\s{2,}/.test(line)) return true;
+  // Lines that look like file contents, output, or continuation
+  if (/^\d+[│|:]/.test(trimmed)) return true; // line-numbered output
+  if (/^[─━╌]+$/.test(trimmed)) return true; // separator lines
+  // Stop at the next tool call, chat, agent text, or prompt
+  if (isToolCallStart(trimmed)) return false;
+  if (isChatMessage(trimmed)) return false;
+  if (isAgentDecision(trimmed)) return false;
+  if (/^(Human|Assistant|>):/i.test(trimmed)) return false;
+  if (/^[⏺●◆▶]/.test(trimmed)) return false;
+  return true;
+}
+
+function isChatMessage(line) {
+  // Fleet chat messages
+  if (/^(chat|message|📨|💬)\b/i.test(line)) return true;
+  if (/^\[chat\]/i.test(line)) return true;
+  return false;
+}
+
+function isAgentDecision(line) {
+  // Agent thinking/decisions — lines that start with the agent bullet and contain prose
+  if (/^[⏺●◆▶]\s+[A-Z]/.test(line) && !isToolCallStart(line) && line.length > 20) return true;
+  return false;
+}
+
+function summarizeToolChain(tools) {
+  const counts = {};
+  const filesByTool = {};
+  for (const t of tools) {
+    const name = t.tool.charAt(0).toUpperCase() + t.tool.slice(1).toLowerCase();
+    counts[name] = (counts[name] || 0) + 1;
+    if (t.arg) {
+      if (!filesByTool[name]) filesByTool[name] = [];
+      // Extract filename from path
+      const short = t.arg.split('/').pop().replace(/["']/g, '');
+      if (short && !filesByTool[name].includes(short)) filesByTool[name].push(short);
+    }
+  }
+  const parts = [];
+  for (const [tool, count] of Object.entries(counts)) {
+    const files = filesByTool[tool];
+    if (files && files.length > 0) {
+      if (files.length <= 2) {
+        parts.push(`${tool} ${files.join(', ')}`);
+      } else {
+        parts.push(`${tool} ${count} files`);
+      }
+    } else {
+      parts.push(`${tool}${count > 1 ? ' ×' + count : ''}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+function renderChunks(chunks) {
+  let html = '';
+  let foldId = 0;
+  for (const chunk of chunks) {
+    switch (chunk.type) {
+      case 'fold': {
+        const id = 'tf' + (foldId++);
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fold" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        break;
+      }
+      case 'chat':
+        html += `<span class="term-chat-msg">${escHtml(chunk.text)}</span>\n`;
+        break;
+      case 'decision':
+        html += `<span class="term-decision">${escHtml(chunk.text)}</span>\n`;
+        break;
+      case 'line':
+        html += escHtml(chunk.text) + '\n';
+        break;
+    }
+  }
+  return html;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function ansiToHtml(text) {
@@ -2254,9 +2499,8 @@ async function refreshTerminal() {
       return;
     }
     $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(data.label)}</span> <span class="term-win-id">win ${data.win}</span>`;
-    const wasAtBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 20;
-    output.innerHTML = ansiToHtml(data.text);
-    if (wasAtBottom) output.scrollTop = output.scrollHeight;
+    terminalRawText = data.text;
+    renderTerminalContent(terminalRawText);
   } catch (e) {
     output.textContent = 'Failed: ' + e.message;
   }
