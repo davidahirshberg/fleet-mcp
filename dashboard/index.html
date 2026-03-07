@@ -2595,13 +2595,28 @@ function foldTerminalOutput(raw) {
     if (fleetMatch) {
       const start = i;
       i++;
-      // Consume result lines
+      // Consume result lines (⎿ prefix, indented, continuation, … +N lines)
+      // Allow blank lines if followed by more result content
       const resultLines = [];
-      while (i < lines.length && isToolResultLine(lines[i], lines, i)) {
-        resultLines.push(lines[i]);
-        i++;
+      while (i < lines.length) {
+        if (isFleetResultLine(lines[i])) {
+          resultLines.push(lines[i]);
+          i++;
+        } else if (!lines[i].trim()) {
+          // Blank line — peek ahead to see if more result follows
+          let peek = i + 1;
+          while (peek < lines.length && !lines[peek].trim()) peek++;
+          if (peek < lines.length && isFleetResultLine(lines[peek])) {
+            resultLines.push(lines[i]);
+            i++;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
       }
-      const fleetResult = parseFleetResult(fleetMatch, resultLines);
+      const fleetResult = parseFleetResult(fleetMatch.tool, resultLines, fleetMatch.full);
       chunks.push(fleetResult);
       continue;
     }
@@ -2649,32 +2664,66 @@ function foldTerminalOutput(raw) {
 // --- Fleet MCP detection & parsing ---
 
 function isFleetMcpCall(line) {
-  // Match patterns like "⏺ fleet - my_task", "⏺ mcp__fleet__chat", "fleet - register", etc.
+  // Match patterns like "⏺ fleet - my_task (MCP)", "⏺ fleet - task_check (MCP)(win: 61)"
   const m = line.match(/^[⏺●◆▶]?\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|unregister_manager|search_logs|label_agent)\b/i);
-  if (m) return m[1].toLowerCase();
+  if (m) return { tool: m[1].toLowerCase(), full: line };
   // Also match "Tool: fleet - chat" or "Using: mcp__fleet__chat"
   const m2 = line.match(/^(?:Tool|Using):\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|search_logs|label_agent)\b/i);
-  if (m2) return m2[1].toLowerCase();
+  if (m2) return { tool: m2[1].toLowerCase(), full: line };
   return null;
 }
 
-function parseFleetResult(toolName, resultLines) {
-  const rawText = resultLines.map(l => l.trim()).join('\n').trim();
+function isFleetResultLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  // ⎿ prefix = tool result continuation
+  if (/^\s*⎿/.test(line)) return true;
+  // Indented content (at least 2+ spaces)
+  if (/^\s{2,}\S/.test(line)) return true;
+  // "… +N lines (ctrl+o to expand)" truncation markers
+  if (/…\s*\+\d+\s*lines/.test(line)) return true;
+  // Stop at next bullet point, prompt, or separator
+  if (/^[⏺●◆▶❯✻]/.test(trimmed)) return false;
+  if (/^[─━═]+/.test(trimmed)) return false;
+  if (/^(Human|Assistant|>):/i.test(trimmed)) return false;
+  return false;
+}
+
+function parseFleetResult(toolName, resultLines, fullCallLine) {
+  const rawText = resultLines.map(l => l.replace(/^\s*⎿\s*/, '').trim()).join('\n').trim();
   const allLines = resultLines;
+  // Extract parenthesized args from the call line, e.g. "(win: 61)"
+  const argsMatch = fullCallLine && fullCallLine.match(/\(MCP\)\s*\(([^)]+)\)/);
+  const callArgs = argsMatch ? argsMatch[1] : '';
 
   switch (toolName) {
     case 'register':
     case 'register_manager': {
-      const isManager = /manager/i.test(rawText);
+      const isManager = /manager/i.test(rawText) || /manager/i.test(fullCallLine);
       const label = isManager ? 'fleet: registered as manager' : 'fleet: registered';
       return { type: 'fleet', label, lines: allLines };
     }
     case 'my_task': {
+      // Check for messages section (📬 Messages:)
+      const msgSection = rawText.match(/📬\s*Messages?:\s*([\s\S]*)/i);
+      if (msgSection) {
+        const messages = parseFleetMessages(msgSection[1]);
+        if (messages.length > 0) {
+          return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} msg${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
+        }
+      }
+      // "Nothing new" with possible truncated messages
+      if (/nothing new/i.test(rawText)) {
+        const hasTruncated = /\+\d+\s*lines/.test(rawText);
+        const label = hasTruncated ? 'fleet: my_task — has messages (truncated)' : 'fleet: my_task → nothing new';
+        return { type: 'fleet', label, lines: allLines };
+      }
+      // Try parsing any messages in the full text
       const messages = parseFleetMessages(rawText);
       if (messages.length > 0) {
-        return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} message${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
+        return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} msg${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
       }
-      const hasTask = /task|description|message/i.test(rawText) && rawText.length > 30;
+      const hasTask = rawText.length > 30;
       const label = hasTask ? 'fleet: my_task — has task' : 'fleet: my_task → nothing new';
       return { type: 'fleet', label, lines: allLines };
     }
@@ -2704,7 +2753,12 @@ function parseFleetResult(toolName, resultLines) {
       return { type: 'fleet', label: 'fleet: task_done ✓', lines: allLines };
     }
     case 'task_check': {
-      return { type: 'fleet', label: 'fleet: task_check (peek)', lines: allLines };
+      const winInfo = callArgs ? ` (${callArgs})` : '';
+      // Extract status from result like "win 61 WORKING"
+      const statusMatch = rawText.match(/win\s+\d+\s+(WORKING|IDLE|waiting)/i);
+      const status = statusMatch ? statusMatch[1].toLowerCase() : '';
+      const label = `fleet: task_check${winInfo}${status ? ' — ' + status : ''}`;
+      return { type: 'fleet', label, lines: allLines };
     }
     case 'wait_for_task': {
       const hasResult = rawText.length > 20;
@@ -2803,52 +2857,62 @@ function renderFleetBubbles(messages) {
 
 function isKeepaliveNoise(line) {
   if (!line) return false;
-  // Mailbox emoji, keepalive pings, bare emoji input
+  // Mailbox emoji in all forms: "📬", "❯ 📬", "> 📬", "Human: 📬"
   if (/^📬\s*$/.test(line)) return true;
-  if (/^>\s*📬\s*$/.test(line)) return true;
-  if (/keepalive/i.test(line) && line.length < 120) return true;
+  if (/^[❯>]\s*📬\s*$/.test(line)) return true;
   if (/^Human:\s*📬\s*$/.test(line)) return true;
-  if (/^\$\s*$/.test(line)) return true;
+  if (/keepalive/i.test(line) && line.length < 120) return true;
+  // Separator lines (─── ... ─── or with ▪▪▪)
+  if (/^[─━═▪\s]{10,}$/.test(line)) return true;
+  // "✻ Crunched for Ns" status lines
+  if (/^✻\s*(Crunched|Processed|Thinking)/i.test(line)) return true;
   return false;
 }
 
 function isToolCallStart(line) {
-  // Match lines that look like tool invocations in Claude Code terminal output
-  // Common patterns: "⏺ Read(file.js)", "⏺ Edit(file.js)", "● Grep", tool headers
-  if (/^[⏺●◆▶]\s*(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch|ListMcpResourcesTool)\b/i.test(line)) return true;
-  // Also match "Read file.js" style without bullet
-  if (/^(Read|Edit|Grep|Glob|Write)\s*\(/i.test(line)) return true;
-  // Match tool use markers like "Tool: Read" or "Using: Read"
+  // Skip fleet MCP calls — those are handled separately
+  if (/fleet\s*[-–—]/i.test(line) || /mcp__fleet__/i.test(line)) return false;
+  // Match Claude Code tool patterns:
+  // "⏺ Bash(sleep 180 && ...)", "⏺ Read(file.js)", "⏺ Edit(file.js)"
+  if (/^[⏺●◆▶]\s*(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch|ListMcpResourcesTool)\s*[\(]/i.test(line)) return true;
+  // Collapsed tool output: "⏺ Read 3 files (ctrl+o to expand)", "⏺ Searched for 2 patterns"
+  if (/^[⏺●◆▶]\s*(Read|Searched|Edited|Wrote|Grepped)\s+(?:for\s+)?\d+\s/i.test(line)) return true;
+  // "Tool: Read" or "Using: Read"
   if (/^(Tool|Using):\s*(Read|Edit|Grep|Glob|Write|Bash)\b/i.test(line)) return true;
   return false;
 }
 
 function parseToolCall(line) {
+  // "⏺ Read 3 files (ctrl+o to expand)" — collapsed summary (check first)
+  const m2 = line.match(/^[⏺●◆▶]\s*(Read|Searched|Edited|Wrote|Grepped)\s+(?:for\s+)?(\d+)\s+(files?|patterns?|lines?)/i);
+  if (m2) {
+    return { tool: m2[1], arg: `${m2[2]} ${m2[3]}` };
+  }
+  // "⏺ Bash(sleep 180 && echo ...)" — tool with args in parens
   const m = line.match(/(?:^[⏺●◆▶]\s*|^(?:Tool|Using):\s*)(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch)\s*(?:\(([^)]*)\))?/i);
   if (m) {
     return { tool: m[1], arg: m[2] || '' };
   }
-  // Fallback
-  const m2 = line.match(/^(Read|Edit|Grep|Glob|Write)\s*\(([^)]*)\)/i);
-  if (m2) return { tool: m2[1], arg: m2[2] || '' };
   return { tool: 'unknown', arg: '' };
 }
 
 function isToolResultLine(line, allLines, idx) {
   const trimmed = line.trim();
   if (!trimmed) return false;
-  // Result lines are indented or don't start a new tool
-  if (/^\s{2,}/.test(line)) return true;
-  // Lines that look like file contents, output, or continuation
-  if (/^\d+[│|:]/.test(trimmed)) return true; // line-numbered output
-  if (/^[─━╌]+$/.test(trimmed)) return true; // separator lines
-  // Stop at the next tool call, chat, agent text, or prompt
-  if (isToolCallStart(trimmed)) return false;
-  if (isChatMessage(trimmed)) return false;
-  if (isAgentDecision(trimmed)) return false;
+  // ⎿ prefix = tool result continuation (primary pattern)
+  if (/^\s*⎿/.test(line)) return true;
+  // Indented content (continuation of tool output)
+  if (/^\s{2,}\S/.test(line)) return true;
+  // "… +N lines (ctrl+o to expand)" truncation markers
+  if (/…\s*\+\d+\s*lines/.test(line)) return true;
+  // Line-numbered output from file reads
+  if (/^\d+[│|:]/.test(trimmed)) return true;
+  // Stop at next bullet, prompt, separator, or new tool
+  if (/^[⏺●◆▶❯✻]/.test(trimmed)) return false;
+  if (/^[─━═]+/.test(trimmed)) return false;
   if (/^(Human|Assistant|>):/i.test(trimmed)) return false;
-  if (/^[⏺●◆▶]/.test(trimmed)) return false;
-  return true;
+  if (isToolCallStart(trimmed)) return false;
+  return false;
 }
 
 function isChatMessage(line) {
@@ -2859,8 +2923,10 @@ function isChatMessage(line) {
 }
 
 function isAgentDecision(line) {
-  // Agent thinking/decisions — lines that start with the agent bullet and contain prose
-  if (/^[⏺●◆▶]\s+[A-Z]/.test(line) && !isToolCallStart(line) && line.length > 20) return true;
+  // Agent thinking/decisions — lines starting with bullet + prose (not tool calls, not fleet calls)
+  if (/^[⏺●◆▶]\s+\S/.test(line) && !isToolCallStart(line) && !isFleetMcpCall(line) && line.length > 15) return true;
+  // Background command notifications
+  if (/^[⏺●◆▶]\s+Background command/i.test(line)) return true;
   return false;
 }
 
