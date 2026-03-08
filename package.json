@@ -5,10 +5,16 @@
   "type": "module",
   "main": "index.mjs",
   "scripts": {
-    "start": "node index.mjs"
+    "start": "node index.mjs",
+    "dev": "vite",
+    "dashboard": "node dashboard/server.mjs"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "better-sqlite3": "^12.6.2"
+    "better-sqlite3": "^12.6.2",
+    "dockview-core": "^5.1.0"
+  },
+  "devDependencies": {
+    "vite": "^7.3.1"
   }
 }

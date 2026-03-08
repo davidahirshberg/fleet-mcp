@@ -17,6 +17,8 @@ import path from 'path';
 import { execSync, execFileSync, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SearchIndex } from './search-index.mjs';
+import { SessionExtractor, EventExtractor, TldaExtractor } from '../playback/extractors.mjs';
+import { createPlayback, getPlayback, listPlaybacks, editPlayback } from '../playback/storage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, '..', 'bin');
@@ -175,21 +177,32 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        const { message, to } = JSON.parse(body);
-        if (!message) { res.writeHead(400); res.end('missing message'); return; }
+        const { message, to, attachments } = JSON.parse(body);
+        if (!message && (!attachments || !attachments.length)) { res.writeHead(400); res.end('missing message'); return; }
+        if (!to) { res.writeHead(400); res.end('missing "to" — specify a recipient'); return; }
         const state = loadState();
-        const recipient = to != null ? to : state.manager;
-        if (!recipient) { res.writeHead(400); res.end('no manager registered'); return; }
+        // Resolve friendly name / agent name to canonical ID
+        const toAgent = (state.agents || []).find(a =>
+          a.id === to || a.friendly_name === to || a.name === to ||
+          (a.id && a.id.startsWith(to))
+        );
+        const recipient = toAgent ? toAgent.id : to;
+        // Build message text, appending attachment summaries
+        let text = message || '';
+        if (attachments && attachments.length) {
+          const parts = attachments.map(a => `[${a.type || 'attachment'}] ${a.snippet || ''} (from ${a.source || 'unknown'})`);
+          text = text ? text + '\n\n' + parts.join('\n') : parts.join('\n');
+        }
         if (!state.messages) state.messages = [];
         state.messages.push({
           to: recipient,
           from: 'web',
-          text: message,
+          text,
           timestamp: new Date().toISOString(),
           read: false,
         });
         saveState(state);
-        logEvent({ type: 'chat', from: 'web', to: recipient, message });
+        logEvent({ type: 'chat', from: 'web', to: recipient, message: text });
         const kick = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, kick }));
@@ -948,6 +961,95 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify(r.data));
       } catch (e) {
         res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // --- Playback API ---
+
+  // List playbacks
+  if (url.pathname === '/api/playbacks' && req.method === 'GET') {
+    const project = url.searchParams.get('project') || undefined;
+    const agent = url.searchParams.get('agent') || undefined;
+    const limit = parseInt(url.searchParams.get('limit')) || 50;
+    const playbacks = listPlaybacks({ project, agent, limit });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(playbacks));
+    return;
+  }
+
+  // Get playback by ID
+  if (url.pathname.startsWith('/api/playbacks/') && req.method === 'GET') {
+    const id = url.pathname.split('/')[3];
+    const format = url.searchParams.get('format') || 'full';
+    const playback = getPlayback(id, format);
+    if (!playback) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Playback not found' }));
+      return;
+    }
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(playback));
+    return;
+  }
+
+  // Record a new playback
+  if (url.pathname === '/api/playbacks' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { sources, start, end, title } = JSON.parse(body);
+        const allEvents = [];
+        const sourceMeta = [];
+
+        for (const src of sources) {
+          if (src.type === 'session') {
+            const ext = new SessionExtractor();
+            allEvents.push(...ext.extract(src.id, { project: src.project, start, end }));
+            sourceMeta.push({ type: 'session', id: src.id, project: src.project });
+          } else if (src.type === 'events') {
+            const ext = new EventExtractor();
+            allEvents.push(...ext.extract({ agents: src.agents, start, end }));
+            sourceMeta.push({ type: 'events', agents: src.agents });
+          } else if (src.type === 'tlda') {
+            const ext = new TldaExtractor();
+            allEvents.push(...ext.extract(src.project, { start, end }));
+            sourceMeta.push({ type: 'tlda', project: src.project });
+          }
+        }
+
+        const result = createPlayback({ title, sources: sourceMeta, events: allEvents, start, end });
+        res.writeHead(201, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Edit a playback
+  if (url.pathname.startsWith('/api/playbacks/') && url.pathname.endsWith('/edit') && req.method === 'POST') {
+    const id = url.pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { operations } = JSON.parse(body);
+        const result = editPlayback(id, operations);
+        if (!result) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Playback not found' }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
       }
     });

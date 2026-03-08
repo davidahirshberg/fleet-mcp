@@ -29,6 +29,8 @@ import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SearchIndex } from './dashboard/search-index.mjs';
+import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
+import { createPlayback, getPlayback, listPlaybacks, editPlayback } from './playback/storage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -65,21 +67,33 @@ const KITTY_WIN = process.env.AGENT_WIN ? parseInt(process.env.AGENT_WIN)
 // This avoids picking a stale session that another agent happened to touch.
 function detectSessionId() {
   const cwd = process.env.PWD || '';
-  const projectHash = cwd.replace(/\//g, '-') || '-';
-  const projectDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
+
+  // Build candidate project dirs: the cwd itself, plus the main worktree
+  // if cwd is a git worktree (so agents in worktrees can find their sessions)
+  const candidates = [cwd];
   try {
-    const now = Date.now();
-    const jsonls = fs.readdirSync(projectDir)
-      .filter(f => f.endsWith('.jsonl'))
-      .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
-      .sort((a, b) => b.mtime - a.mtime);
-    if (jsonls.length === 0) return null;
-    // Prefer the JSONL being written right now (within 30s of server start)
-    const hot = jsonls.filter(f => now - f.mtime < 30000);
-    if (hot.length === 1) return hot[0].name.replace('.jsonl', '');
-    // Multiple hot or none — fall back to most recent
-    return jsonls[0].name.replace('.jsonl', '');
-  } catch { /* project dir doesn't exist */ }
+    const wtOutput = execSync('git worktree list --porcelain', { cwd, encoding: 'utf8', timeout: 5000 });
+    const mainMatch = wtOutput.match(/^worktree (.+)$/m);
+    if (mainMatch && mainMatch[1] !== cwd) candidates.push(mainMatch[1]);
+  } catch { /* not a git repo or git not available */ }
+
+  for (const dir of candidates) {
+    const projectHash = dir.replace(/\//g, '-') || '-';
+    const projectDir = path.join(os.homedir(), '.claude', 'projects', projectHash);
+    try {
+      const now = Date.now();
+      const jsonls = fs.readdirSync(projectDir)
+        .filter(f => f.endsWith('.jsonl'))
+        .map(f => ({ name: f, mtime: fs.statSync(path.join(projectDir, f)).mtimeMs }))
+        .sort((a, b) => b.mtime - a.mtime);
+      if (jsonls.length === 0) continue;
+      // Prefer the JSONL being written right now (within 30s of server start)
+      const hot = jsonls.filter(f => now - f.mtime < 30000);
+      if (hot.length === 1) return hot[0].name.replace('.jsonl', '');
+      // Multiple hot or none — fall back to most recent
+      return jsonls[0].name.replace('.jsonl', '');
+    } catch { /* project dir doesn't exist */ }
+  }
   return null;
 }
 
@@ -537,6 +551,95 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['agent'],
       },
     },
+    {
+      name: 'restart_mcp',
+      description: 'Restart MCP servers on one or all agents by sending /mcp + Enter to their kitty windows. Manager only. Use after updating fleet code that agents need to pick up.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Omit to restart all agents.' },
+        },
+      },
+    },
+    // ---- Playback tools ----
+    {
+      name: 'playback_record',
+      description: 'Extract events from sources into a new playback recording. Sources: session logs, agent events, tlda changelogs. Returns playback ID and event count.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          sources: {
+            type: 'array',
+            description: 'Data sources to extract from',
+            items: {
+              type: 'object',
+              properties: {
+                type: { type: 'string', enum: ['session', 'events', 'tlda'], description: 'Source type' },
+                id: { type: 'string', description: 'Session UUID (for type=session)' },
+                project: { type: 'string', description: 'Project name (for type=session or type=tlda)' },
+                agents: { type: 'array', items: { type: 'string' }, description: 'Agent IDs to include (for type=events)' },
+              },
+              required: ['type'],
+            },
+          },
+          start: { type: 'string', description: 'ISO timestamp — start of extraction range' },
+          end: { type: 'string', description: 'ISO timestamp — end of extraction range' },
+          title: { type: 'string', description: 'Playback title' },
+        },
+        required: ['sources'],
+      },
+    },
+    {
+      name: 'playback_list',
+      description: 'List available playback recordings, optionally filtered by project or agent.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          project: { type: 'string', description: 'Filter by project name' },
+          agent: { type: 'string', description: 'Filter by agent ID' },
+          limit: { type: 'number', description: 'Max results (default 50)' },
+        },
+      },
+    },
+    {
+      name: 'playback_get',
+      description: 'Get a playback recording by ID. Format: "full" (all data), "summary" (metadata + event counts), "events_only" (just events).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Playback ID (UUID)' },
+          format: { type: 'string', enum: ['full', 'summary', 'events_only'], description: 'Output format (default: full)' },
+        },
+        required: ['id'],
+      },
+    },
+    {
+      name: 'playback_edit',
+      description: 'Apply editing operations to a playback. Supports: trim (select time range), annotate (add markers), speed (adjust playback speed for regions).',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Playback ID' },
+          operations: {
+            type: 'array',
+            description: 'Edit operations to apply',
+            items: {
+              type: 'object',
+              properties: {
+                op: { type: 'string', enum: ['trim', 'annotate', 'speed'], description: 'Operation type' },
+                start_ms: { type: 'number', description: 'Start time in ms (for trim, speed)' },
+                end_ms: { type: 'number', description: 'End time in ms (for trim, speed)' },
+                t: { type: 'number', description: 'Timestamp in ms (for annotate)' },
+                text: { type: 'string', description: 'Annotation text (for annotate)' },
+                factor: { type: 'number', description: 'Speed multiplier (for speed)' },
+              },
+              required: ['op'],
+            },
+          },
+        },
+        required: ['id', 'operations'],
+      },
+    },
   ],
 }));
 
@@ -563,6 +666,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const oldFriendlyName = oldEntry?.friendly_name;
     const oldLabels = oldEntry?.labels;
     removeAgent(state, id);
+
+    // Deregister any OTHER agent on the same kitty window — prevents stale
+    // registrations from lingering after session restart/compaction
+    if (KITTY_WIN) {
+      const stale = state.agents.filter(a => a.kitty_win === KITTY_WIN && a.id !== id);
+      for (const s of stale) {
+        logEvent({ type: 'deregister', agent: s.id, reason: `kitty window ${KITTY_WIN} claimed by ${id}` });
+        removeAgent(state, s.id);
+      }
+    }
 
     const entry = {
       id,
@@ -591,6 +704,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (labels.size > 0) entry.labels = [...labels];
 
     state.agents.push(entry);
+
+    // Remove legacy top-of-chain singleton — all managers are peers
+    delete state.manager;
 
     // Start keepalive if this is the first manager (or restart if stale)
     if (isManager) {
@@ -638,8 +754,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const state = loadState();
     const oldAgent = getAgent(state, ME);
     if (oldAgent) delete oldAgent.is_manager;
-    // Clean up legacy top-of-chain if it was us
-    if (state.manager === ME) delete state.manager;
+    // Clean up legacy top-of-chain field if present
+    delete state.manager;
     saveState(state);
     return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
   }
@@ -724,7 +840,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       } else {
         // Fall back to any live manager
         const mgr = (state.agents || []).find(a => a.is_manager && a.id !== ME && agentAlive(a));
-        to = mgr?.id || state.manager; // legacy fallback
+        to = mgr?.id; // no legacy state.manager fallback
       }
       if (!to) return { content: [{ type: 'text', text: 'No recipient specified and no manager registered.' }], isError: true };
     } else if (to === 'web' || to === 'skip' || to === 'human') {
@@ -1378,6 +1494,130 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Agent "${agent}" — kick failed: ${kick.error}. Message delivered via state file.` }] };
     }
     return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id.slice(0, 8)} (${kick.result})${message ? ' (with message)' : ''}.` }] };
+  }
+
+  // ---- restart_mcp ----
+  if (name === 'restart_mcp') {
+    const guard = requireManager();
+    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
+    const state = loadState();
+    const targets = [];
+    if (args.agent) {
+      const entry = getAgent(state, args.agent);
+      if (!entry) return { content: [{ type: 'text', text: `Agent "${args.agent}" not registered.` }], isError: true };
+      if (!entry.kitty_win) return { content: [{ type: 'text', text: `Agent "${args.agent}" has no kitty window.` }], isError: true };
+      targets.push(entry);
+    } else {
+      targets.push(...state.agents.filter(a => a.kitty_win && a.id !== ME));
+    }
+    const results = [];
+    for (const t of targets) {
+      try {
+        // Send /mcp + Enter via kitty to trigger Claude Code's MCP restart
+        const sock = execSync(`ls -t /tmp/kitty-sock-* 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 3000 }).trim();
+        execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${t.kitty_win}" '/mcp\n'`, { timeout: 5000 });
+        results.push(`${t.friendly_name || t.id.slice(0, 8)}: sent`);
+      } catch {
+        results.push(`${t.friendly_name || t.id.slice(0, 8)}: failed`);
+      }
+    }
+    return { content: [{ type: 'text', text: `MCP restart → ${targets.length} agent(s):\n${results.join('\n')}` }] };
+  }
+
+  // ---- playback_record ----
+  if (name === 'playback_record') {
+    const sources = args.sources;
+    if (!sources || !Array.isArray(sources) || sources.length === 0) {
+      return { content: [{ type: 'text', text: 'At least one source is required.' }], isError: true };
+    }
+
+    const allEvents = [];
+    const sourceMeta = [];
+
+    for (const src of sources) {
+      if (src.type === 'session') {
+        if (!src.id) {
+          return { content: [{ type: 'text', text: 'Session source requires an id (session UUID).' }], isError: true };
+        }
+        const extractor = new SessionExtractor();
+        const events = extractor.extract(src.id, { project: src.project, start: args.start, end: args.end });
+        allEvents.push(...events);
+        sourceMeta.push({ type: 'session', id: src.id, project: src.project });
+      } else if (src.type === 'events') {
+        const extractor = new EventExtractor();
+        const events = extractor.extract({ agents: src.agents, start: args.start, end: args.end });
+        allEvents.push(...events);
+        sourceMeta.push({ type: 'events', agents: src.agents });
+      } else if (src.type === 'tlda') {
+        if (!src.project) {
+          return { content: [{ type: 'text', text: 'tlda source requires a project name.' }], isError: true };
+        }
+        const extractor = new TldaExtractor();
+        const events = extractor.extract(src.project, { start: args.start, end: args.end });
+        allEvents.push(...events);
+        sourceMeta.push({ type: 'tlda', project: src.project });
+      }
+    }
+
+    if (allEvents.length === 0) {
+      return { content: [{ type: 'text', text: 'No events found for the given sources and time range.' }] };
+    }
+
+    const result = createPlayback({
+      title: args.title,
+      sources: sourceMeta,
+      events: allEvents,
+      start: args.start,
+      end: args.end,
+    });
+
+    logEvent({ type: 'playback_record', from: ME || 'unknown', playbackId: result.id, eventCount: result.event_count, title: args.title });
+
+    return { content: [{ type: 'text', text: `Playback created: ${result.id}\n\nTitle: ${result.title}\nEvents: ${result.event_count}\nDuration: ${(result.duration_ms / 1000).toFixed(1)}s\nSources: ${result.sources}` }] };
+  }
+
+  // ---- playback_list ----
+  if (name === 'playback_list') {
+    const playbacks = listPlaybacks({ project: args.project, agent: args.agent, limit: args.limit });
+
+    if (playbacks.length === 0) {
+      return { content: [{ type: 'text', text: 'No playbacks found.' }] };
+    }
+
+    const lines = playbacks.map(pb => {
+      const types = Object.entries(pb.event_types).map(([k, v]) => `${k}:${v}`).join(', ');
+      return `**${pb.title}** (${pb.id.slice(0, 8)})\n  ${pb.event_count} events (${types}) | ${(pb.duration_ms / 1000).toFixed(0)}s | ${new Date(pb.created).toLocaleString()}`;
+    });
+
+    return { content: [{ type: 'text', text: `${playbacks.length} playback(s):\n\n${lines.join('\n\n')}` }] };
+  }
+
+  // ---- playback_get ----
+  if (name === 'playback_get') {
+    if (!args.id) {
+      return { content: [{ type: 'text', text: 'Playback ID is required.' }], isError: true };
+    }
+
+    const playback = getPlayback(args.id, args.format || 'full');
+    if (!playback) {
+      return { content: [{ type: 'text', text: `Playback ${args.id} not found.` }], isError: true };
+    }
+
+    return { content: [{ type: 'text', text: JSON.stringify(playback, null, 2) }] };
+  }
+
+  // ---- playback_edit ----
+  if (name === 'playback_edit') {
+    if (!args.id || !args.operations) {
+      return { content: [{ type: 'text', text: 'Playback ID and operations are required.' }], isError: true };
+    }
+
+    const result = editPlayback(args.id, args.operations);
+    if (!result) {
+      return { content: [{ type: 'text', text: `Playback ${args.id} not found.` }], isError: true };
+    }
+
+    return { content: [{ type: 'text', text: `Edited playback ${result.id}: ${result.edit_count} edit(s), ${result.event_count} events.` }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };
