@@ -781,6 +781,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agentCount = state.agents.length;
     const role = isManager ? 'manager' : 'agent';
     let msg = `Registered ${entry.id} as ${role}. ${agentCount} agent(s) registered.`;
+    if (entry.friendly_name) {
+      msg += `\nYour name: "${entry.friendly_name}" — other agents and the user know you by this name.`;
+    }
 
     const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
     const repoRefPath = path.join(__dirname, 'managing-agents.md');
@@ -801,6 +804,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         msg += `\nSee ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
       }
     }
+    msg += '\nChat formatting: dashboard renders markdown (**bold**, `code`, lists, headers) and LaTeX ($inline$, $$display$$). Use them in chat() messages.';
 
     return { content: [{ type: 'text', text: msg }] };
   }
@@ -1137,6 +1141,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     let text = '';
     let dirty = false;
+    const meAgent = getAgent(state, ME);
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       let depInfo = '';
@@ -1147,7 +1152,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         });
         depInfo = `\nBlocked by: ${depDetails.join(', ')}`;
       }
-      text = `Your task [${task.id}]: ${task.description}\nStatus: ${task.status} | ${age}m ago${depInfo}`;
+      const nameInfo = meAgent?.friendly_name ? ` (you are "${meAgent.friendly_name}")` : '';
+      text = `Your task [${task.id}]: ${task.description}${nameInfo}\nStatus: ${task.status} | ${age}m ago${depInfo}`;
       if (task.message && !task.message_shown) {
         text += `\n\n${task.message}\n\nUse chat() to report progress, results, or issues. Call task_done() when finished.`;
         task.message_shown = true;
@@ -1160,7 +1166,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (unread.length > 0) {
       markRead(state, ME);
       dirty = true;
-      const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
+      const userAliases = new Set(['web', 'skip', 'human']);
+      const formatted = unread.map(m => {
+        const fromAgent = getAgent(state, m.from);
+        const fromLabel = fromAgent?.friendly_name || fromAgent?.name || m.from;
+        const replyHint = userAliases.has(m.from) ? ' (reply with chat(to: "web"))' : '';
+        return `[from ${fromLabel}]${replyHint} ${m.text}`;
+      }).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
     }
 
@@ -1360,6 +1372,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       for (const a of matches) {
         ids.add(a.id);
         if (a.session_id) ids.add(a.session_id);
+        if (a.session_ids) for (const sid of a.session_ids) ids.add(sid);
       }
       if (ids.size === 0) ids.add(args.agent);
       agentIds = [...ids];

@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
+<script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
 <title>Agent Dashboard v2</title>
 <style>
   :root {
@@ -139,6 +141,12 @@
   }
   .chat-interrupt-btn:hover { opacity: 0.7; color: var(--orange) !important; }
   .chat-interrupt-btn.active { opacity: 1; color: var(--orange) !important; }
+  .chat-retract {
+    display: none; cursor: pointer; margin-left: 4px; font-size: 10px;
+    color: var(--text-dim); opacity: 0.4; vertical-align: middle;
+  }
+  .chat-retract:hover { opacity: 1; color: var(--orange); }
+  .chat-line.from-user:hover .chat-retract { display: inline; }
   .chat-interrupt-line {
     border: none;
     border-top: 1px solid var(--text-dim);
@@ -587,6 +595,45 @@
     text-decoration: none;
     border-bottom: 1px dotted var(--cyan);
   }
+  .chat-line a:hover { border-bottom-style: solid; }
+  .chat-line.msg-selected { background: rgba(147,112,219,0.08); }
+  .chat-line.ambient {
+    font-size: 12px;
+    opacity: 0.6;
+    border-left: 2px solid var(--border);
+    padding-left: 6px;
+    margin-left: 2px;
+    cursor: pointer;
+  }
+  .nested-folded { display: none; }
+  .chat-line.expanded .nested-folded { display: block; }
+  .chat-line.expanded .nested-toggle { display: none; }
+  .nested-toggle { cursor: pointer; }
+  .nested-toggle:hover { color: var(--text) !important; }
+  .chat-line.ambient.expanded { opacity: 0.85; }
+  .chat-line .chat-ts {
+    cursor: grab;
+  }
+  .chat-line .chat-ts:active { cursor: grabbing; }
+  .file-path {
+    font-family: 'SF Mono','Menlo',monospace;
+    font-size: 11px;
+    color: var(--blue);
+    cursor: default;
+  }
+  .math-display {
+    font-family: 'SF Mono','Menlo',monospace;
+    font-size: 12px;
+    color: var(--text);
+    padding: 4px 0;
+    text-align: center;
+  }
+  .math-inline {
+    font-family: 'SF Mono','Menlo',monospace;
+    font-size: 12px;
+  }
+  .chat-line .katex { font-size: 1em; }
+  .chat-line .katex-display { margin: 4px 0; text-align: center; }
 
   /* Agent list widget */
   .agents-table { width: 100%; border-collapse: collapse; font-size: 12px; }
@@ -606,6 +653,8 @@
   .agent-seen.fresh { color: var(--text-dim); opacity: 0.7; }
   .agent-seen.stale { color: var(--text-dim); opacity: 0.5; }
   .agent-seen.dead { color: var(--text-dim); opacity: 0.3; }
+  .agent-seen.compacting { color: var(--orange); opacity: 0.5; }
+  .compacting-badge { color: var(--orange) !important; border-color: var(--orange) !important; opacity: 0.6; }
   .agent-ctx { font-size: 10px; opacity: 0.5; font-variant-numeric: tabular-nums; }
   .agent-ctx-cell { text-align: right; white-space: nowrap; width: 1%; }
   .agent-last-action { font-size: 10px; color: var(--text-dim); opacity: 0.4; font-family: 'SF Mono','Menlo',monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; display: inline-block; vertical-align: middle; }
@@ -833,6 +882,11 @@
     border-bottom: 1px solid var(--border);
     min-height: 0;
     transition: background 0.15s;
+    display: none;
+  }
+  .chat-filter-bar.has-filter,
+  .chat-filter-bar.drag-active {
+    display: block;
   }
   .filter-indicator {
     display: flex;
@@ -1072,8 +1126,8 @@
   .tool-ref:hover { background: rgba(200,176,96,0.2); border-color: rgba(200,176,96,0.4); }
   .tool-ref-preview {
     display: none; position: absolute; bottom: calc(100% + 4px); left: 0;
-    background: var(--bg); border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 4px; padding: 6px 8px; font-family: 'SF Mono','Menlo',monospace;
+    background: rgba(255,255,255,0.02); border: 1px solid var(--border);
+    border-radius: 4px; padding: 2px 8px 4px; font-family: 'SF Mono','Menlo',monospace;
     font-size: 11px; color: var(--text-dim); white-space: normal; max-width: 400px;
     max-height: 200px; overflow: auto; z-index: 100; box-shadow: 0 4px 12px rgba(0,0,0,0.4);
     line-height: 1.5;
@@ -2404,6 +2458,23 @@ function dnfMatches(dnf, agentLabels) {
   return dnf.some(andGroup => andGroup.every(label => agentLabels.includes(label)))
 }
 
+// --- Ghost tab for label/agent drag preview ---
+let _ghostTab = null
+function showGhostTab(tabArea, title) {
+  const container = tabArea.closest('.dv-tabs-container') || tabArea
+  if (!_ghostTab) {
+    _ghostTab = document.createElement('div')
+    _ghostTab.style.cssText = 'display:inline-flex;align-items:center;padding:4px 12px;font-size:12px;color:var(--text);background:rgba(147,112,219,0.15);border:1px dashed var(--accent);border-radius:4px 4px 0 0;margin-left:2px;opacity:0.8;pointer-events:none;white-space:nowrap;'
+  }
+  _ghostTab.textContent = '+ ' + title
+  if (!_ghostTab.parentElement || _ghostTab.parentElement !== container) {
+    container.appendChild(_ghostTab)
+  }
+}
+function removeGhostTab() {
+  if (_ghostTab && _ghostTab.parentElement) _ghostTab.remove()
+}
+
 // --- Custom pointer-based drag (bypasses dockview's HTML5 drag interception) ---
 // Uses pointer events + setPointerCapture for Safari compatibility
 let dragLabel = null
@@ -2540,6 +2611,17 @@ function onLabelDragMove(e) {
         overlay.querySelector('.term-drop-label').textContent = `Filter terminal: ${dragLabel}`
       }
     }
+    removeGhostTab()
+    return
+  }
+
+  // Tab bar hover → show ghost tab preview (but NOT on existing tab content)
+  const tabArea = target.closest('.dv-tabs-container, .dv-default-tab, .dv-tabs-and-actions-container, .dv-void-container')
+  const inContent = target.closest('.dv-content-container, .widget')
+  if (tabArea && !inContent) {
+    showGhostTab(tabArea, dragAgent ? (currentState ? agentLabel(currentState, dragAgent) : dragAgent.substring(0, 8)) : dragLabel)
+  } else {
+    removeGhostTab()
   }
 }
 
@@ -2646,7 +2728,7 @@ function onLabelDragEnd(e) {
   }
 
   // Label or agent dropped on tab bar → open new chat panel
-  const tabArea = target?.closest('.dv-tabs-container, .dv-default-tab, .dv-tabs-and-actions-container')
+  const tabArea = target?.closest('.dv-tabs-container, .dv-default-tab, .dv-tabs-and-actions-container, .dv-void-container')
   if (tabArea) {
     const groupEl = tabArea.closest('.dv-groupview')
     let refPanel = null
@@ -2695,6 +2777,7 @@ function onLabelDragEnd(e) {
 function cleanupDrag() {
   _preDrag = false
   document.body.style.userSelect = ''
+  removeGhostTab()
   document.querySelectorAll('.drag-over, .drag-active').forEach(el => el.classList.remove('drag-over', 'drag-active'))
   document.querySelectorAll('.agent-item.label-drop-target').forEach(el => el.classList.remove('label-drop-target'))
   // Resume playback if it was playing before drag
@@ -3226,20 +3309,79 @@ function renderMarkdown(html) {
     const dataAttrs = shouldFold && lang ? ` data-lang="${esc(lang)}"` : ''
     return `<div class="code-block-wrap">${header}<pre${shouldFold ? ' class="code-collapsed"' : ''}><code${dataAttrs}>${highlighted}</code></pre></div>`
   })
+  // Display math: $$...$$ (before inline to avoid conflicts)
+  html = html.replace(/\$\$([\s\S]*?)\$\$/g, (_, tex) => {
+    try {
+      if (typeof katex !== 'undefined') return katex.renderToString(tex.trim(), { displayMode: true, throwOnError: false })
+    } catch {}
+    return `<div class="math-display">${esc(tex)}</div>`
+  })
+  // Inline math: $...$  (not greedy, not matching $5 prices)
+  html = html.replace(/(?<![\\$\w])\$([^$\n]+?)\$(?![\\$\w\d])/g, (_, tex) => {
+    try {
+      if (typeof katex !== 'undefined') return katex.renderToString(tex.trim(), { displayMode: false, throwOnError: false })
+    } catch {}
+    return `<span class="math-inline">${esc(tex)}</span>`
+  })
   // Inline code (handles ``double`` and `single` backtick styles)
   html = html.replace(/``([^`]+)``/g, '<code>$1</code>')
   html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  // Headers (## and ###, not # which is too aggressive)
+  html = html.replace(/^###\s+(.+)$/gm, '<div style="font-weight:500;font-size:12px;color:var(--text);margin:6px 0 2px">$1</div>')
+  html = html.replace(/^##\s+(.+)$/gm, '<div style="font-weight:500;font-size:13px;color:var(--text);margin:8px 0 3px">$1</div>')
+  // Blockquotes
+  html = html.replace(/^&gt;\s?(.+)$/gm, '<div style="border-left:2px solid var(--accent);padding-left:8px;color:var(--text-dim);margin:2px 0">$1</div>')
   // Bold
   html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
   // Italic
   html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
-  // Bullet lists
-  html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>')
+  // Lists with nested folding: top-level items visible, sub-items in collapsible blocks
+  html = html.replace(/((?:^[ ]*(?:\d+\.|[-*])\s+.+$\n?)+)/gm, (block) => {
+    const lines = block.split('\n').filter(l => l.trim())
+    // Group into top-level items with their nested children
+    const groups = [] // [{marker, text, children: [html]}]
+    for (const line of lines) {
+      const indent = line.match(/^(\s*)/)[1].length
+      const m = line.trim().match(/^(\d+\.)\s+(.+)$/) || line.trim().match(/^([-*])\s+(.+)$/)
+      if (!m) continue
+      if (indent >= 2 && groups.length > 0) {
+        groups[groups.length - 1].children.push(
+          `<div style="display:flex;gap:4px;margin:1px 0;padding-left:${indent * 4}px"><span style="color:var(--text-dim);font-size:11px;flex-shrink:0">${m[1]}</span><span>${m[2]}</span></div>`
+        )
+      } else {
+        groups.push({ marker: m[1], text: m[2], children: [] })
+      }
+    }
+    return groups.map(g => {
+      const countHint = g.children.length > 0
+        ? `<span class="nested-toggle" style="color:var(--text-dim);font-size:10px;opacity:0.6;margin-left:4px">(${g.children.length})</span>`
+        : ''
+      const nested = g.children.length > 0
+        ? `<div class="nested-folded">${g.children.join('')}</div>`
+        : ''
+      return `<div style="display:flex;gap:4px;margin:1px 0"><span style="color:var(--text-dim);font-size:11px;flex-shrink:0">${g.marker}</span><span>${g.text}${countHint}</span></div>${nested}`
+    }).join('')
+  })
+  // File paths: shorten absolute paths to smart relative form
+  html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) return segment
+    return segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
+      return `<span class="file-path" title="${fullPath}">~/${rel}</span>`
+    })
+  })
   // URLs: linkify bare http(s) URLs (skip already-linked ones inside tags)
   html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
     if (segment.startsWith('<')) return segment
-    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url =>
-      `<a href="${url}" target="_blank">${url}</a>`)
+    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url => {
+      // Smart URL display: show domain + path tail
+      try {
+        const u = new URL(url)
+        const display = u.hostname + (u.pathname.length > 30 ? '/...' + u.pathname.slice(-20) : u.pathname)
+        return `<a href="${url}" target="_blank" title="${url}">${display}</a>`
+      } catch {
+        return `<a href="${url}" target="_blank">${url}</a>`
+      }
+    })
   })
   // Inline tlda previews: [tlda] snippet (from source)
   html = html.replace(/\[tlda\]\s*(.*?)\s*\(from ([^)]+)\)/g, (_, snippet, source) => {
@@ -3282,14 +3424,7 @@ function createChatWidget(container, params) {
   container._widgetParams = params
   container.innerHTML = `
     <div class="chat-widget" style="position:relative">
-      <div class="chat-filter-bar">
-        <div class="filter-indicator">
-          <span class="filter-dot"></span>
-          <span class="filter-summary">all</span>
-        </div>
-        <div class="filter-expression"></div>
-        <div class="label-picker"></div>
-      </div>
+      <div class="chat-filter-bar" style="display:none !important"></div>
       <button class="scroll-toggle" title="Auto-scroll">⏸</button>
       <div class="chat-log"></div>
       <div class="chat-drop-overlay">
@@ -3333,6 +3468,15 @@ function createChatWidget(container, params) {
   })
   container._autoScroll = true
 
+  // Re-render when panel becomes visible (tab switch) — avoids scroll flicker
+  const visObs = new IntersectionObserver(entries => {
+    if (entries[0]?.isIntersecting && container._pendingUpdate) {
+      container._pendingUpdate = false
+      if (currentState) updateChatWidget(container, container._widgetParams || params, currentState)
+    }
+  }, { threshold: 0.1 })
+  visObs.observe(container)
+
   // Activity polling: refresh session data for chat activity cards every 3s (skip for playback)
   if (!params.playback && !container._streamSource) {
     const activityInterval = setInterval(() => {
@@ -3374,44 +3518,6 @@ function createChatWidget(container, params) {
     }
   })
 
-  // Scroll to bottom when tab becomes visible (dockview hides panels with display:none)
-  new IntersectionObserver((entries) => {
-    if (entries[0]?.isIntersecting && container._autoScroll !== false) {
-      requestAnimationFrame(() => { log.scrollTop = log.scrollHeight })
-    }
-  }).observe(log)
-
-  // Preserve unsent text + cursor position across HMR/reloads
-  requestAnimationFrame(() => {
-    const key = container._panelId ? `fleet-draft-${container._panelId}` : null
-    const curKey = key ? key + '-cursor' : null
-    if (key) {
-      const draft = sessionStorage.getItem(key)
-      if (draft) {
-        input.value = draft
-        const cur = parseInt(sessionStorage.getItem(curKey), 10)
-        if (!isNaN(cur)) input.setSelectionRange(cur, cur)
-        input.focus()
-      }
-    }
-    input.addEventListener('input', () => {
-      if (key) sessionStorage.setItem(key, input.value)
-    })
-    input.addEventListener('keyup', () => {
-      if (curKey) sessionStorage.setItem(curKey, input.selectionStart)
-    })
-    input.addEventListener('click', () => {
-      if (curKey) sessionStorage.setItem(curKey, input.selectionStart)
-    })
-  })
-
-  // Scroll to bottom when tab becomes visible (dockview hides panels with display:none)
-  new IntersectionObserver((entries) => {
-    if (entries[0]?.isIntersecting && container._autoScroll !== false) {
-      requestAnimationFrame(() => { log.scrollTop = log.scrollHeight })
-    }
-  }).observe(log)
-
   // Preserve unsent text + cursor position across HMR/reloads
   requestAnimationFrame(() => {
     const key = container._panelId ? `fleet-draft-${container._panelId}` : null
@@ -3437,26 +3543,30 @@ function createChatWidget(container, params) {
   })
 
   // Toggle filter bar expansion
-  indicator.addEventListener('click', (e) => {
-    e.stopPropagation()
-    filterBar.classList.toggle('expanded')
-    picker.classList.remove('open')
-  })
+  if (indicator) {
+    indicator.addEventListener('click', (e) => {
+      e.stopPropagation()
+      filterBar.classList.toggle('expanded')
+      if (picker) picker.classList.remove('open')
+    })
+  }
 
   // Toggle label picker via dot click
   const filterDot = container.querySelector('.filter-dot')
-  filterDot.addEventListener('click', (e) => {
-    e.stopPropagation()
-    picker.classList.toggle('open')
-    if (picker.classList.contains('open')) {
-      filterBar.classList.add('expanded')
-      renderLabelPicker(container, params)
-    }
-  })
+  if (filterDot) {
+    filterDot.addEventListener('click', (e) => {
+      e.stopPropagation()
+      if (picker) picker.classList.toggle('open')
+      if (picker?.classList.contains('open')) {
+        filterBar.classList.add('expanded')
+        renderLabelPicker(container, params)
+      }
+    })
+  }
 
   // Close picker on outside click
   document.addEventListener('click', (e) => {
-    if (!filterBar.contains(e.target)) picker.classList.remove('open')
+    if (filterBar && picker && !filterBar.contains(e.target)) picker.classList.remove('open')
   })
 
   // Track focus
@@ -3588,11 +3698,14 @@ function createChatWidget(container, params) {
   }
 
   async function send() {
-    const msg = input.value.trim()
+    let msg = input.value.trim()
     if (!msg && !container._chatAttachments.length) return
     input.value = ''
     input.style.height = 'auto'
     if (container._panelId) sessionStorage.removeItem(`fleet-draft-${container._panelId}`)
+    // /raw: send without markdown rendering
+    let isRaw = false
+    if (msg.startsWith('/raw ')) { msg = msg.slice(5); isRaw = true }
     // Handle /terminal commands
     if (msg === '/terminal' || msg === '/terminal on') { openTerminalCard(); return }
     if (msg === '/terminal off' || msg === '/terminal close') { closeTerminalCard(); return }
@@ -3618,6 +3731,7 @@ function createChatWidget(container, params) {
         const allIds = matchingAgents.map(a => a.id)
         const results = await Promise.all(matchingAgents.map(a => {
           const payload = { message: msg, to: a.id, cc: allIds }
+          if (isRaw) payload._raw = true
           if (attachments) payload.attachments = attachments
           return fetch('/api/chat', {
             method: 'POST',
@@ -3657,6 +3771,7 @@ function createChatWidget(container, params) {
       // Send as chat
       try {
         const payload = { message: msg, to: target }
+        if (isRaw) payload._raw = true
         if (container._chatAttachments.length) {
           payload.attachments = container._chatAttachments.slice()
         }
@@ -3668,6 +3783,12 @@ function createChatWidget(container, params) {
         if (!res.ok) {
           const err = await res.text()
           log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Send failed: ${esc(err)}</div>`
+        } else if (currentState) {
+          // Check if target agent is compacting — show voicemail notice
+          const targetAgent = (currentState.agents || []).find(a => a.id === target)
+          if (targetAgent?.compacting) {
+            log.innerHTML += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.7">voicemail — ${esc(targetAgent.friendly_name || targetAgent.name || target.substring(0, 8))} is compacting</div>`
+          }
         }
       } catch (e) { console.error('Send failed:', e) }
     }
@@ -3967,6 +4088,8 @@ function renderFilterExpression(container, params) {
   const dnf = container._labelFilter
   const hasFilter = dnf && dnf.length > 0
 
+  const filterBar = container.querySelector('.chat-filter-bar')
+  if (filterBar) filterBar.classList.toggle('has-filter', hasFilter)
   dot.classList.toggle('active', hasFilter)
   if (hasFilter) {
     summary.textContent = dnf.map(g => g.length > 1 ? `(${g.join(' & ')})` : g[0]).join(' | ')
@@ -4019,6 +4142,7 @@ const ACTIVITY_NOISE = new Set([
   'mcp__fleet__wait_for_task', 'mcp__fleet__my_task', 'mcp__fleet__task_list',
   'mcp__fleet__register', 'mcp__fleet__register_manager', 'mcp__fleet__task_check',
   'mcp__fleet__task_done',
+  'ToolSearch',
 ])
 // Fleet tool calls that should render as chat messages instead of tool cards
 const CHAT_TOOLS = new Set([
@@ -4051,8 +4175,15 @@ function renderEditDiff(input) {
   </div>`
 }
 
-function toolArgSummary(input) {
+function toolArgSummary(input, toolName) {
   if (!input) return ''
+  const n = (toolName || '').toLowerCase()
+  // Fleet-specific: show the meaningful args
+  if (n === 'name') return `${input.agent} → ${input.friendly_name}`
+  if (n === 'label') return `${input.agent}: ${(input.labels || []).join(', ')}`
+  if (n === 'delegate') return `${input.agent}: ${(input.description || '').slice(0, 40)}`
+  if (n === 'interrupt') return `${input.agent}${input.message ? ' — ' + input.message.slice(0, 30) : ''}`
+  if (n === 'chat') return `→${input.to || 'manager'}: ${(input.message || '').slice(0, 40)}`
   if (input.to) return input.to
   if (input.agent) return input.agent
   if (input.file_path) return input.file_path.split('/').slice(-2).join('/')
@@ -4147,7 +4278,7 @@ function getActivityEvents(agentId) {
         }
         const name = humanizeToolName(b.name)
         if (!name) continue
-        const arg = toolArgSummary(b.input)
+        const arg = toolArgSummary(b.input, name)
         const detail = toolContentDetail(name, b.input)
         items.push({
           _activity: true,
@@ -4234,9 +4365,9 @@ function renderActivityGroup(group, state) {
   // Badge overlay: agent name + ctx% + count — floats right on first line of detail
   const badge = `<span class="activity-badge">`
     + `<span class="activity-agent ${fromCls}">${esc(nick)}</span> `
+    + (group.length > 1 ? `<span class="activity-count">${group.length}</span> ` : '')
+    + `<span class="activity-signal"></span>`
     + ctxHtml
-    + (group.length > 1 ? ` <span class="activity-count">${group.length}</span>` : '')
-    + ` <span class="activity-signal"></span>`
     + `</span>`
 
   // Build detail: text blocks + tool run cards
@@ -4290,10 +4421,10 @@ function renderActivityGroup(group, state) {
   return `<div class="chat-activity-card will-fold" draggable="true" data-agent="${esc(m.from)}" data-ts="${esc(m.timestamp || '')}">
     <div class="activity-header">
       <span class="activity-agent ${fromCls}">${esc(nick)}</span>
-      ${ctxHtml}
       <span class="activity-last-tool">${headerSummary}</span>
       ${group.length > 1 ? `<span class="activity-count">${group.length}</span>` : ''}
       <span class="activity-signal"></span>
+      ${ctxHtml}
     </div>
     <div class="activity-detail">${badge}${detailHtml}</div>
   </div>`
@@ -4303,11 +4434,13 @@ function renderChatLine(m, state) {
   const nick = agentLabel(state, m.from)
   const fromCls = getNickClass(m.from, state)
   const ts = timeShort(m.timestamp)
-  const text = renderMarkdown(esc(m.text))
+  const text = m._raw ? esc(m.text) : renderMarkdown(esc(m.text))
   const sender = (state.agents || []).find(a => a.id === m.from)
   const senderAgo = sender?.last_seen ? (Date.now() - new Date(sender.last_seen).getTime()) / 1000 : null
   const dimStyle = senderAgo === null ? '' : senderAgo > 600 ? 'opacity:0.4' : senderAgo > 120 ? 'opacity:0.65' : ''
   const isFromUser = !sender
+  const userAliases = new Set(['web', 'skip', 'human'])
+  const isAmbient = !isFromUser && !userAliases.has(m.to) && !userAliases.has(m.from)
   const receipt = isFromUser ? (m.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px" title="Read">✓</span>' : '') : ''
   // Multi-target: show all cc recipients
   let toHtml
@@ -4341,7 +4474,7 @@ function renderChatLine(m, state) {
   let attachHtml = ''
   if (m.attachments && m.attachments.length) {
     attachHtml = m.attachments.map(renderAttachChip).join(' ')
-    attachHtml = '<div style="margin:2px 0 0 0">' + attachHtml + '</div>'
+    attachHtml = ' ' + attachHtml
   }
   // Strip flattened attachment text and auto-generate chips from legacy messages
   const rawText = m.text || ''
@@ -4354,10 +4487,29 @@ function renderChatLine(m, state) {
       m.attachments = [...rawText.matchAll(/\[([\w-]+)\] ([\s\S]+?)\(from (.+?)\)/g)]
         .map(mx => ({ type: mx[1], snippet: mx[2].trim(), source: mx[3].trim() }))
       attachHtml = m.attachments.map(renderAttachChip).join(' ')
-      attachHtml = '<div style="margin:2px 0 0 0">' + attachHtml + '</div>'
+      attachHtml = ' ' + attachHtml
     }
   }
-  let line = `<div class="chat-line${isFromUser ? ' from-user' : ''}" style="${dimStyle}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span> ${displayText}${attachHtml}${receipt}</div>`
+  // Retracted messages: show struck-through with dim styling
+  if (m._retracted) {
+    return `<div class="chat-line from-user" style="opacity:0.3;text-decoration:line-through"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText}</div>`
+  }
+  // Retract button for recent user messages (within 5 min)
+  const msgAge = Date.now() - new Date(m.timestamp).getTime()
+  const retractBtn = isFromUser && msgAge < 300000
+    ? `<span class="chat-retract" data-ts="${esc(m.timestamp)}" title="Retract">\u232B</span>`
+    : ''
+  const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}`
+  // Simplify nick display: skip →target when user is sender or receiver
+  const nickHtml = isAmbient
+    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span>`
+    : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
+  let line
+  if (isAmbient) {
+    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${displayText}${attachHtml}</div>`
+  } else {
+    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${displayText}${receipt}${attachHtml}${retractBtn}</div>`
+  }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()
     const cls = age < 10000 ? 'chat-interrupt-line fresh' : 'chat-interrupt-line'
@@ -4371,6 +4523,11 @@ const CHAT_PAGE_SIZE = 100
 function updateChatWidget(container, params, state) {
   const log = container.querySelector('.chat-log')
   if (!log) return
+  // Skip re-render when panel is hidden (prevents scroll position loss)
+  if (container.offsetHeight === 0) {
+    container._pendingUpdate = true
+    return
+  }
   // Filter out legacy server-side _activity messages (now handled client-side via session cache)
   let msgs = (state.messages || []).filter(m => !m._activity)
 
@@ -4415,7 +4572,7 @@ function updateChatWidget(container, params, state) {
         if (ACTIVITY_NOISE.has(m._tool)) return false
         m._activity = true
         m._toolName = humanizeToolName(m._tool)
-        m._toolArg = toolArgSummary(m._input)
+        m._toolArg = toolArgSummary(m._input, m._toolName)
         m._toolDetail = toolContentDetail(m._toolName, m._input)
         m._toolInput = m._input
         return true
@@ -4427,12 +4584,18 @@ function updateChatWidget(container, params, state) {
   // DNF filter evaluation
   const dnf = container._labelFilter
   let filtered = msgs
+  let _filterEmpty = false
   if (dnf && dnf.length > 0) {
     const matchingAgentIds = new Set()
     for (const a of (state.agents || [])) {
       if (agentMatchesDnf(dnf, a)) matchingAgentIds.add(a.id)
     }
-    filtered = msgs.filter(m => matchingAgentIds.has(m.from) || matchingAgentIds.has(m.to))
+    if (matchingAgentIds.size === 0) {
+      filtered = []
+      _filterEmpty = true
+    } else {
+      filtered = msgs.filter(m => matchingAgentIds.has(m.from) || matchingAgentIds.has(m.to))
+    }
   }
 
   // Merge activity events from session data (fetched client-side)
@@ -4564,6 +4727,11 @@ function updateChatWidget(container, params, state) {
     }
     i++
   }
+  // Show empty state when filter matches no agents
+  if (_filterEmpty) {
+    const filterDesc = dnf.map(g => g.join(' + ')).join(' | ')
+    renderedLines = `<div style="padding:20px;text-align:center;color:var(--text-dim);font-size:12px;opacity:0.6">No agents match <span style="color:var(--accent)">${esc(filterDesc)}</span></div>`
+  }
   const linesHtml = renderedLines
 
   // Preserve scroll position if prepending (user scrolled up)
@@ -4571,8 +4739,30 @@ function updateChatWidget(container, params, state) {
   const prevScrollHeight = log.scrollHeight
   const prevScrollTop = log.scrollTop
 
+  // Append compacting indicator for relevant agents
+  let compactingHtml = ''
+  if (!container._streamSource) {
+    const target = container._chatTarget
+    let compactingAgents = (state.agents || []).filter(a => a.compacting)
+    if (target) {
+      compactingAgents = compactingAgents.filter(a => a.id === target)
+    }
+    for (const a of compactingAgents) {
+      const name = a.friendly_name || a.name || a.id.substring(0, 8)
+      const cls = getNickClass(a.id, state)
+      compactingHtml += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> compacting...</div>`
+    }
+  }
+
   container._suppressScrollEvent = true
-  log.innerHTML = linesHtml
+  const prevScroll = log.scrollTop
+  const wasBottom = container._autoScroll !== false
+  log.innerHTML = linesHtml + compactingHtml
+  if (wasBottom) {
+    log.scrollTop = log.scrollHeight
+  } else {
+    log.scrollTop = prevScroll
+  }
   container._suppressScrollEvent = false
 
   // Set up load-more click handler
@@ -4665,8 +4855,91 @@ function updateChatWidget(container, params, state) {
     })
   })
 
-  if (container._autoScroll !== false) {
-    requestAnimationFrame(() => requestAnimationFrame(() => { log.scrollTop = log.scrollHeight }))
+  // Click any message with nested lists to toggle abbreviated/full
+  log.querySelectorAll('.chat-line').forEach(line => {
+    if (!line.querySelector('.nested-folded')) return
+    line.style.cursor = 'pointer'
+    line.addEventListener('click', e => {
+      if (e.target.closest('a, code, .chat-ts, .chat-retract, .tool-ref, .shared-doc')) return
+      line.classList.toggle('expanded')
+    })
+  })
+
+  // Retract button click
+  log.querySelectorAll('.chat-retract').forEach(btn => {
+    btn.addEventListener('click', async e => {
+      e.stopPropagation()
+      const ts = btn.dataset.ts
+      if (!ts) return
+      try {
+        const res = await fetch('/api/retract', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ timestamp: ts, from: 'web' }),
+        })
+        if (res.ok) {
+          const line = btn.closest('.chat-line')
+          if (line) { line.style.opacity = '0.3'; line.style.textDecoration = 'line-through' }
+          btn.remove()
+        }
+      } catch {}
+    })
+  })
+
+  // Message drag (from timestamp) and shift-click selection
+  log.querySelectorAll('.chat-line .chat-ts[draggable]').forEach(ts => {
+    ts.addEventListener('dragstart', e => {
+      const line = ts.closest('.chat-line')
+      if (!line) return
+      // Collect selected messages or just this one
+      const selected = log.querySelectorAll('.chat-line.msg-selected')
+      const lines = selected.length > 0 && line.classList.contains('msg-selected')
+        ? [...selected] : [line]
+      const payload = lines.map(l => {
+        const nick = l.querySelector('.chat-nick')?.textContent?.replace(/[→:]/g, ' ').trim() || ''
+        const ts = l.querySelector('.chat-ts')?.textContent || ''
+        // Get plain text content (strip HTML)
+        const clone = l.cloneNode(true)
+        clone.querySelectorAll('.chat-ts, .chat-nick, .chat-retract').forEach(el => el.remove())
+        const text = clone.textContent.trim()
+        return `[${ts}] ${nick}: ${text}`
+      }).join('\n')
+      e.dataTransfer.setData('text/plain', payload)
+      e.dataTransfer.setData('application/x-chat-attachment', JSON.stringify({
+        type: 'messages',
+        count: lines.length,
+        snippet: payload.slice(0, 200),
+        source: 'chat'
+      }))
+      e.dataTransfer.effectAllowed = 'copy'
+    })
+  })
+  // Shift-click to select range, click to toggle single
+  log.querySelectorAll('.chat-line[data-msg-ts]').forEach(line => {
+    line.addEventListener('click', e => {
+      if (e.target.closest('.chat-retract, a, .tool-ref, .shared-doc, code')) return
+      if (!e.target.closest('.chat-ts')) return // only select via timestamp click
+      if (e.altKey && container._lastClickedMsg) {
+        // Range select
+        const all = [...log.querySelectorAll('.chat-line[data-msg-ts]')]
+        const startIdx = all.indexOf(container._lastClickedMsg)
+        const endIdx = all.indexOf(line)
+        if (startIdx >= 0 && endIdx >= 0) {
+          const [lo, hi] = startIdx < endIdx ? [startIdx, endIdx] : [endIdx, startIdx]
+          all.forEach((l, i) => l.classList.toggle('msg-selected', i >= lo && i <= hi))
+        }
+      } else {
+        line.classList.toggle('msg-selected')
+        if (!line.classList.contains('msg-selected')) {
+          // Deselected — clear all
+          log.querySelectorAll('.chat-line.msg-selected').forEach(l => l.classList.remove('msg-selected'))
+        }
+      }
+      container._lastClickedMsg = line
+    })
+  })
+
+  if (container._autoScroll !== false && log.scrollHeight > 0) {
     // Mark messages as seen per-agent when auto-scrolled to bottom (user is watching)
     const userId = state?.user || 'user'
     const userAliases = ['web', 'skip', 'human', 'user', userId]
@@ -4703,6 +4976,19 @@ function updateChatWidget(container, params, state) {
         input.placeholder = 'Message (no target)...'
       }
     }
+    // Show compacting status for target agent
+    const statusEl = container.querySelector('.chat-input-status')
+    if (statusEl && !container._terminalMode) {
+      const target = container._chatTarget
+      const targetAgent = target ? (state.agents || []).find(a => a.id === target) : null
+      if (targetAgent?.compacting) {
+        statusEl.textContent = 'compacting'
+        statusEl.style.color = 'var(--orange)'
+      } else {
+        statusEl.textContent = ''
+        statusEl.style.color = ''
+      }
+    }
   }
 
 
@@ -4724,7 +5010,7 @@ function updateAgentsWidget(container, params, state) {
   if (dragLabel || dragAgent || dragGhost || _preDrag) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
   const agents0 = state.agents || []
-  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '')).join('|')
+  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '')).join('|')
   const taskHash = (state.tasks || []).filter(t => t.status !== 'done').map(t => t.agent + ':' + t.status + ':' + (t.description || '').slice(0, 30)).join('|')
   const seenHash = Object.keys(chatSeenByAgent).sort().map(k => k.slice(0,8) + ':' + chatSeenByAgent[k]).join(',')
   const msgHash = (state.messages || []).length + ':' + selectedAgent + ':' + seenHash
@@ -4774,13 +5060,18 @@ function updateAgentsWidget(container, params, state) {
 
   const rows = agents.map(a => {
     const active = isActive(a)
-    const dotClass = a._ago < 120 ? 'fresh' : a._ago < 600 ? 'stale' : 'dead'
+    const compacting = a.compacting
+    const dotClass = compacting ? 'compacting' : a._ago < 120 ? 'fresh' : a._ago < 600 ? 'stale' : 'dead'
     const seenText = a._ago === Infinity ? '' : a._ago < 60 ? `${a._ago}s` : a._ago < 3600 ? `${Math.floor(a._ago/60)}m` : `${Math.floor(a._ago/3600)}h`
-    const dotTip = a._ago === Infinity ? 'No heartbeat — MCP may not be connected'
+    const dotTip = compacting ? 'Compacting context — agent is temporarily unavailable'
+      : a._ago === Infinity ? 'No heartbeat — MCP may not be connected'
       : a._ago < 120 ? `Active — last MCP call ${seenText} ago`
       : a._ago < 600 ? `Stale — last MCP call ${seenText} ago`
       : `Dead — last MCP call ${seenText} ago`
     const badges = []
+    if (compacting) {
+      badges.push(`<span class="agent-badge compacting-badge">compacting...</span>`)
+    }
     if (a._task) {
       const leadsMatch = a._task.description?.match(/^leads?\s+([\w-]+)$/i)
       if (leadsMatch) {
@@ -4797,7 +5088,7 @@ function updateAgentsWidget(container, params, state) {
     const sel = selectedAgent === a.id ? 'background:rgba(147,112,219,0.1);' : ''
     const dim = active ? '' : 'opacity:0.45;'
     return `<tr class="agent-item" style="${sel}${dim}" data-agent-id="${esc(a.id)}">
-      <td><span class="agent-name" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
+      <td><span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
         const t = new Date(m.timestamp)
         const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
         const fromNick = agentLabel(state, m.from)
@@ -4807,7 +5098,7 @@ function updateAgentsWidget(container, params, state) {
         return `<div class="msg-item"><div class="msg-header"><span class="msg-nick"><span class="${fromCls}">${esc(fromNick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}">${esc(toNick)}</span></span><span class="msg-time">${timeStr}</span></div><div class="msg-text">${renderMarkdown(esc(m.text || ''))}</div></div>`
       }).join('')}</div></span></span>` : ''}</td>
       <td><span class="agent-seen ${dotClass}" title="${dotTip}">${seenText}</span></td>
-      <td class="agent-ctx-cell">${a.context_pct != null ? `<span class="agent-ctx" style="color:${a.context_pct > 80 ? 'var(--orange)' : a.context_pct > 60 ? '#eab308' : 'var(--text-dim)'}">${a.context_pct}%</span>` : ''}</td>
+      <td class="agent-ctx-cell">${a.context_pct != null ? `<span class="agent-ctx" style="opacity:${a.context_pct > 80 ? '0.9' : a.context_pct > 60 ? '0.6' : '0.4'}">${a.context_pct}%</span>` : ''}</td>
       <td>${badges.join(' ')}${!a._task && a.last_action ? `<span class="agent-last-action" title="${esc(a.last_action)}">${esc(a.last_action.substring(0, 40))}</span>` : ''}</td>
       <td><span style="display:flex;flex-wrap:wrap;gap:2px;align-items:center">${labelChips}<span class="label-add-btn" title="Add label">+</span></span></td>
     </tr>`
@@ -5799,10 +6090,21 @@ async function fetchSessionLite(agentId) {
     const hash = data.total + ':' + data.events.length + ':' + (data.events[data.events.length - 1]?.timestamp || '')
     const oldHash = existing?.hash
     window._sessionCache[agentId] = { data, hash, fetchedAt: Date.now() }
-    // If cache changed, update chat widgets directly (state hash skip would block broadcastUpdate)
+    // Update agent's context_pct from latest usage data
+    if (currentState) {
+      const lastWithUsage = [...data.events].reverse().find(ev => ev.usage)
+      if (lastWithUsage?.usage) {
+        const agentEntry = (currentState.agents || []).find(a => a.id === agentId)
+        if (agentEntry) {
+          agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+        }
+      }
+    }
+    // If cache changed, update chat + agents widgets directly (state hash skip would block broadcastUpdate)
     if (hash !== oldHash && currentState) {
       for (const [, inst] of panelInstances) {
-        if (inst.widget === WIDGETS.chat && !inst.container._streamSource) {
+        if (inst.container._streamSource) continue
+        if (inst.widget === WIDGETS.chat || inst.widget === WIDGETS.agents) {
           try { inst.widget.update(inst.container, inst.params, currentState) } catch {}
         }
       }
@@ -5822,6 +6124,16 @@ async function fetchSession(agentId, container) {
       const hash = data.total + ':' + data.events.length + ':' + (data.events[data.events.length - 1]?.timestamp || '')
       // Store in shared cache for chat widget activity rendering
       window._sessionCache[agentId] = { data, hash, fetchedAt: Date.now() }
+      // Update agent's context_pct from latest usage data
+      if (currentState) {
+        const lastWithUsage = [...data.events].reverse().find(ev => ev.usage)
+        if (lastWithUsage?.usage) {
+          const agentEntry = (currentState.agents || []).find(a => a.id === agentId)
+          if (agentEntry) {
+            agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+          }
+        }
+      }
       if (body._termHash === hash) return
       body._termHash = hash
       const wasAtBottom = body.scrollHeight - body.scrollTop - body.clientHeight < 30
@@ -7147,7 +7459,7 @@ function syncStreamSources() {
   }
 }
 
-// Clear tab dot when panel becomes active
+// Clear tab dot when panel becomes active + restore chat scroll
 dv.onDidActivePanelChange(({ panel }) => {
   if (!panel) return
   try {
@@ -7157,6 +7469,15 @@ dv.onDidActivePanelChange(({ panel }) => {
       panel.api.setTitle('Agents')
     } else if (inst.widget === WIDGETS.chat) {
       panel.api.setTitle('Chat')
+      // Re-render pending updates and scroll to bottom
+      const container = inst.container
+      if (container?._pendingUpdate && currentState) {
+        container._pendingUpdate = false
+        updateChatWidget(container, container._widgetParams || inst.params, currentState)
+      } else if (container?._autoScroll !== false) {
+        const log = container?.querySelector('.chat-log')
+        if (log) log.scrollTop = log.scrollHeight
+      }
     } else if (inst.widget === WIDGETS.tasks) {
       panel.api.setTitle('Tasks')
     }
@@ -7173,7 +7494,7 @@ function broadcastUpdate(state) {
   const tasks = state.tasks || []
   const lastMsg = msgs[msgs.length - 1]
   const taskStatuses = tasks.map(t => t.status || '').join(',')
-  const agentNames = agents.map(a => (a.friendly_name || '') + (a.labels?.join('') || '')).join(',')
+  const agentNames = agents.map(a => (a.friendly_name || '') + (a.labels?.join('') || '') + (a.compacting ? 'C' : '') + (a.last_seen || '').slice(-6)).join(',')
   const hash = msgs.length + ':' + agents.length + ':' + tasks.length + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.text?.slice(0, 50) || '') + ':' + taskStatuses + ':' + agentNames
   if (hash === _lastStateHash) return
   _lastStateHash = hash
@@ -7268,6 +7589,14 @@ function connectSSE() {
         }
         window._sessionCache = cache
       }
+      // Update agent's context_pct from latest usage data
+      const lastWithUsage = [...events].reverse().find(ev => ev.usage)
+      if (lastWithUsage?.usage && currentState) {
+        const agentEntry = (currentState.agents || []).find(a => a.id === agent)
+        if (agentEntry) {
+          agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+        }
+      }
       // Directly update chat and terminal widgets showing this agent
       for (const [, inst] of panelInstances) {
         if (inst.container._streamSource) continue
@@ -7297,7 +7626,13 @@ function connectSSE() {
 
 // Initial state fetch and SSE — skip in demo mode
 if (!_isDemoMode) {
-  fetch('/api/state').then(r => r.json()).then(broadcastUpdate).catch(() => {})
+  fetch('/api/state').then(r => r.json()).then(state => {
+    broadcastUpdate(state)
+    // Fetch context_pct for all agents on startup
+    for (const a of state.agents || []) {
+      fetchSessionLite(a.id)
+    }
+  }).catch(() => {})
   connectSSE()
 }
 

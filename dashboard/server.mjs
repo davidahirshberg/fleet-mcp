@@ -171,10 +171,26 @@ function syncSessionWatchers(state) {
   for (const agent of agents) {
     const cwd = agent.cwd || '';
     const projectHash = cwd.replace(/\//g, '-');
-    const sid = agent.session_id || agent.id;
-    const jsonlPath = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
+    // Find freshest JSONL across all session IDs (handles compaction)
+    const candidateIds = [];
+    if (agent.session_id) candidateIds.push(agent.session_id);
+    if (agent.session_ids) {
+      for (const sid of agent.session_ids) {
+        if (!candidateIds.includes(sid)) candidateIds.push(sid);
+      }
+    }
+    if (candidateIds.length === 0) candidateIds.push(agent.id);
+    let jsonlPath = null;
+    let bestMtime = 0;
+    for (const sid of candidateIds) {
+      const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
+      try {
+        const stat = fs.statSync(p);
+        if (stat.mtimeMs > bestMtime) { bestMtime = stat.mtimeMs; jsonlPath = p; }
+      } catch {}
+    }
 
-    if (!fs.existsSync(jsonlPath)) continue;
+    if (!jsonlPath) continue;
     activeIds.add(agent.id);
 
     if (sessionWatchers.has(agent.id)) {
@@ -309,7 +325,7 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        const { message, to, cc, attachments } = JSON.parse(body);
+        const { message, to, cc, attachments, _raw } = JSON.parse(body);
         if (!message && (!attachments || !attachments.length)) { res.writeHead(400); res.end('missing message'); return; }
         if (!to) { res.writeHead(400); res.end('missing "to" — specify a recipient'); return; }
         const state = loadState();
@@ -339,12 +355,46 @@ const server = http.createServer(async (req, res) => {
         };
         if (ccResolved) msg.cc = ccResolved;
         if (attachments && attachments.length) msg.attachments = attachments;
+        if (_raw) msg._raw = true;
         state.messages.push(msg);
         saveState(state);
         logEvent({ type: 'chat', from: 'web', to: recipient, cc: ccResolved, message: text });
         const kick = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, kick }));
+      } catch (e) {
+        res.writeHead(500);
+        res.end(e.message);
+      }
+    });
+    return;
+  }
+
+  // Retract a message: if unread, delete it; if read, mark retracted
+  if (url.pathname === '/api/retract' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { timestamp, from } = JSON.parse(body);
+        if (!timestamp) { res.writeHead(400); res.end('missing timestamp'); return; }
+        const state = loadState();
+        const idx = (state.messages || []).findIndex(m =>
+          m.timestamp === timestamp && m.from === (from || 'web')
+        );
+        if (idx < 0) { res.writeHead(404); res.end('message not found'); return; }
+        const msg = state.messages[idx];
+        if (!msg.read) {
+          // Unread: delete entirely — agent never saw it
+          state.messages.splice(idx, 1);
+        } else {
+          // Read: mark retracted so agent knows to ignore
+          msg._retracted = true;
+        }
+        saveState(state);
+        logEvent({ type: 'retract', from: from || 'web', timestamp, deleted: !msg.read });
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, deleted: !msg._retracted }));
       } catch (e) {
         res.writeHead(500);
         res.end(e.message);
@@ -396,7 +446,7 @@ const server = http.createServer(async (req, res) => {
           a.id.startsWith(agentParam)
         );
         const ids = new Set();
-        for (const a of matches) { ids.add(a.id); if (a.session_id) ids.add(a.session_id); }
+        for (const a of matches) { ids.add(a.id); if (a.session_id) ids.add(a.session_id); if (a.session_ids) for (const sid of a.session_ids) ids.add(sid); }
         if (ids.size === 0) ids.add(agentParam);
         agentIds = [...ids];
       }
