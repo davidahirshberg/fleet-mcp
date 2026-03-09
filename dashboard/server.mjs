@@ -18,7 +18,7 @@ import { execSync, execFileSync, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
 import { SearchIndex } from './search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from '../playback/extractors.mjs';
-import { createPlayback, getPlayback, listPlaybacks, editPlayback } from '../playback/storage.mjs';
+import { createPlayback, getPlayback, listPlaybacks, editPlayback, trimCopy } from '../playback/storage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, '..', 'bin');
@@ -73,7 +73,7 @@ const searchIndex = new SearchIndex();
 // Build index in background on startup
 searchIndex.buildIncremental().then(r => {
   console.log(`Search index: ${r.entriesAdded} entries indexed in ${r.elapsed}s`);
-});
+}).catch(e => console.error('Search index build failed:', e.message));
 // Re-index every 60s to pick up new content
 setInterval(() => searchIndex.buildIncremental().catch(() => {}), 60000);
 
@@ -95,6 +95,15 @@ function loadState() {
 
 function saveState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
+}
+
+function findAgent(state, query) {
+  if (!query) return null;
+  return (state.agents || []).find(a =>
+    a.id === query || a.friendly_name === query || a.name === query ||
+    a.session_id === query || (a.session_ids && a.session_ids.includes(query)) ||
+    (a.id && a.id.startsWith(query))
+  );
 }
 
 function kickAgentById(state, agentId) {
@@ -120,12 +129,22 @@ function broadcast(data) {
   }
 }
 
+function broadcastEvent(eventType, data) {
+  const msg = `event: ${eventType}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const res of sseClients) {
+    try { res.write(msg); } catch { sseClients.delete(res); }
+  }
+}
+
 // Watch state file for changes
 let debounceTimer = null;
 function onStateChange() {
   if (debounceTimer) clearTimeout(debounceTimer);
   debounceTimer = setTimeout(() => {
-    broadcast(loadState());
+    const state = loadState();
+    broadcast(state);
+    // Update session watchers when agent list changes
+    syncSessionWatchers(state);
   }, 200);
 }
 
@@ -140,6 +159,119 @@ try {
     } catch {}
   }, 2000);
 }
+
+// --- Session JSONL watchers ---
+// Watch each registered agent's session JSONL for tool call updates
+const sessionWatchers = new Map(); // agentId -> { watcher, path, offset, debounce }
+
+function syncSessionWatchers(state) {
+  const agents = state.agents || [];
+  const activeIds = new Set();
+
+  for (const agent of agents) {
+    const cwd = agent.cwd || '';
+    const projectHash = cwd.replace(/\//g, '-');
+    const sid = agent.session_id || agent.id;
+    const jsonlPath = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
+
+    if (!fs.existsSync(jsonlPath)) continue;
+    activeIds.add(agent.id);
+
+    if (sessionWatchers.has(agent.id)) {
+      const w = sessionWatchers.get(agent.id);
+      if (w.path === jsonlPath) continue; // already watching
+      // Path changed — close old watcher
+      try { w.watcher.close(); } catch {}
+    }
+
+    // Start watching
+    const offset = { value: 0 };
+    try {
+      const stat = fs.statSync(jsonlPath);
+      offset.value = stat.size; // start from current end
+    } catch {}
+
+    try {
+      let debounce = null;
+      const watcher = fs.watch(jsonlPath, { persistent: false }, () => {
+        if (debounce) clearTimeout(debounce);
+        debounce = setTimeout(() => readNewSessionLines(agent.id, jsonlPath, offset), 150);
+      });
+      sessionWatchers.set(agent.id, { watcher, path: jsonlPath, offset, debounce: null });
+    } catch {}
+  }
+
+  // Close watchers for agents no longer registered
+  for (const [id, w] of sessionWatchers) {
+    if (!activeIds.has(id)) {
+      try { w.watcher.close(); } catch {}
+      sessionWatchers.delete(id);
+    }
+  }
+}
+
+function readNewSessionLines(agentId, jsonlPath, offset) {
+  try {
+    const stat = fs.statSync(jsonlPath);
+    if (stat.size <= offset.value) return; // no new data
+
+    const fd = fs.openSync(jsonlPath, 'r');
+    const buf = Buffer.alloc(stat.size - offset.value);
+    fs.readSync(fd, buf, 0, buf.length, offset.value);
+    fs.closeSync(fd);
+    offset.value = stat.size;
+
+    const chunk = buf.toString('utf8');
+    const lines = chunk.split('\n').filter(l => l.trim());
+    const events = [];
+
+    for (const line of lines) {
+      try {
+        const obj = JSON.parse(line);
+        const t = obj.type;
+        if (t === 'progress' || t === 'file-history-snapshot') continue;
+        const msg = obj.message || {};
+        const ev = { type: t, timestamp: obj.timestamp };
+
+        if (t === 'assistant' && msg.content) {
+          const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+          ev.blocks = content.map(c => {
+            if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input, id: c.id };
+            if (c.type === 'text') return { type: 'text', text: c.text };
+            return { type: c.type };
+          });
+          if (msg.usage) {
+            const u = msg.usage;
+            ev.usage = {
+              input: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+              output: u.output_tokens || 0,
+            };
+          }
+        } else if (t === 'user' && msg.content) {
+          const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+          ev.blocks = content.map(c => {
+            if (c.type === 'tool_result') {
+              const text = typeof c.content === 'string' ? c.content :
+                Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content);
+              return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false };
+            }
+            if (c.type === 'text') return { type: 'text', text: c.text };
+            return { type: c.type };
+          });
+        } else continue;
+
+        events.push(ev);
+      } catch {}
+    }
+
+    if (events.length > 0) {
+      broadcastEvent('session', { agent: agentId, events });
+    }
+  } catch {}
+}
+
+// Initial sync
+try { syncSessionWatchers(loadState()); } catch {}
 
 // --- HTTP server ---
 const server = http.createServer(async (req, res) => {
@@ -177,16 +309,20 @@ const server = http.createServer(async (req, res) => {
     req.on('data', chunk => body += chunk);
     req.on('end', () => {
       try {
-        const { message, to, attachments } = JSON.parse(body);
+        const { message, to, cc, attachments } = JSON.parse(body);
         if (!message && (!attachments || !attachments.length)) { res.writeHead(400); res.end('missing message'); return; }
         if (!to) { res.writeHead(400); res.end('missing "to" — specify a recipient'); return; }
         const state = loadState();
-        // Resolve friendly name / agent name to canonical ID
-        const toAgent = (state.agents || []).find(a =>
-          a.id === to || a.friendly_name === to || a.name === to ||
-          (a.id && a.id.startsWith(to))
-        );
-        const recipient = toAgent ? toAgent.id : to;
+        const resolve = (id) => {
+          const a = (state.agents || []).find(a =>
+            a.id === id || a.friendly_name === id || a.name === id ||
+            (a.id && a.id.startsWith(id))
+          );
+          return a ? a.id : id;
+        };
+        const recipient = resolve(to);
+        // Resolve cc list (broadcast recipients)
+        const ccResolved = cc && cc.length ? cc.map(resolve) : null;
         // Build message text, appending attachment summaries
         let text = message || '';
         if (attachments && attachments.length) {
@@ -194,15 +330,18 @@ const server = http.createServer(async (req, res) => {
           text = text ? text + '\n\n' + parts.join('\n') : parts.join('\n');
         }
         if (!state.messages) state.messages = [];
-        state.messages.push({
+        const msg = {
           to: recipient,
           from: 'web',
           text,
           timestamp: new Date().toISOString(),
           read: false,
-        });
+        };
+        if (ccResolved) msg.cc = ccResolved;
+        if (attachments && attachments.length) msg.attachments = attachments;
+        state.messages.push(msg);
         saveState(state);
-        logEvent({ type: 'chat', from: 'web', to: recipient, message: text });
+        logEvent({ type: 'chat', from: 'web', to: recipient, cc: ccResolved, message: text });
         const kick = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, kick }));
@@ -389,7 +528,7 @@ const server = http.createServer(async (req, res) => {
       const state = loadState();
       const agentMap = {};
       for (const a of (state.agents || [])) {
-        agentMap[a.id] = a.friendly_name || a.name || String(a.id).slice(0, 8);
+        agentMap[a.id] = a.friendly_name || a.name || a.id;
         if (a.name) agentMap[a.name] = a.friendly_name || a.name;
       }
       agentMap['web'] = 'skip';
@@ -480,18 +619,175 @@ const server = http.createServer(async (req, res) => {
     const agentQuery = url.searchParams.get('agent') || '';
     if (!agentQuery) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent required' })); return; }
     const state = loadState();
-    const agent = (state.agents || []).find(a =>
-      a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
-      (a.id && a.id.startsWith(agentQuery))
-    );
+    const agent = findAgent(state, agentQuery);
     if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
     if (!agent.kitty_win) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent has no kitty window' })); return; }
     try {
       const text = execFileSync(path.join(BIN, 'agent-read'), [String(agent.kitty_win)],
         { encoding: 'utf8', timeout: 5000 }).trim();
-      const label = agent.friendly_name || agent.name || agent.id.slice(0, 8);
+      const label = agent.friendly_name || agent.name || agent.id;
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ text, label, win: agent.kitty_win }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'read failed: ' + e.message }));
+    }
+    return;
+  }
+
+  // Send text to agent's kitty terminal
+  if (url.pathname === '/api/send-text' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { agent: agentQuery, text, enter } = JSON.parse(body);
+        const state = loadState();
+        const agent = findAgent(state, agentQuery);
+        if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+        if (!agent.kitty_win) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no kitty window' })); return; }
+        const socks = fs.readdirSync('/tmp').filter(f => f.startsWith('kitty-sock-')).map(f => '/tmp/' + f);
+        let sent = false;
+        for (const sock of socks) {
+          try {
+            if (text) {
+              execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${agent.kitty_win}" -- ${JSON.stringify(text)}`, { timeout: 5000, stdio: 'pipe' });
+            }
+            if (enter !== false) {
+              execSync(`kitty @ --to "unix:${sock}" send-key --match "id:${agent.kitty_win}" enter`, { timeout: 5000, stdio: 'pipe' });
+            }
+            sent = true;
+            break;
+          } catch {}
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: sent }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Send a key to agent's kitty terminal
+  if (url.pathname === '/api/send-key' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { agent: agentQuery, key } = JSON.parse(body);
+        const state = loadState();
+        const agent = findAgent(state, agentQuery);
+        if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+        if (!agent.kitty_win) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'no kitty window' })); return; }
+        const socks = fs.readdirSync('/tmp').filter(f => f.startsWith('kitty-sock-')).map(f => '/tmp/' + f);
+        let sent = false;
+        for (const sock of socks) {
+          try {
+            execSync(`kitty @ --to "unix:${sock}" send-key --match "id:${agent.kitty_win}" ${key}`, { timeout: 5000, stdio: 'pipe' });
+            sent = true;
+            break;
+          } catch {}
+        }
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: sent }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Session: read agent's JSONL log as structured events
+  if (url.pathname === '/api/session' && req.method === 'GET') {
+    const agentQuery = url.searchParams.get('agent') || '';
+    const afterTs = url.searchParams.get('after') || '';  // only events after this timestamp
+    const limit = parseInt(url.searchParams.get('limit') || '200');
+    if (!agentQuery) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent required' })); return; }
+    const state = loadState();
+    const agent = findAgent(state, agentQuery);
+    if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
+
+    // Find JSONL: try all session_ids, pick freshest
+    const cwd = agent.cwd || '';
+    const projectHash = cwd.replace(/\//g, '-');
+    const candidateIds = [];
+    if (agent.session_id) candidateIds.push(agent.session_id);
+    if (agent.session_ids) {
+      for (const sid of agent.session_ids) {
+        if (!candidateIds.includes(sid)) candidateIds.push(sid);
+      }
+    }
+    if (candidateIds.length === 0) candidateIds.push(agent.id);
+    let jsonlPath = null;
+    let bestMtime = 0;
+    let sessionId = candidateIds[0];
+    for (const sid of candidateIds) {
+      const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
+      try {
+        const stat = fs.statSync(p);
+        if (stat.mtimeMs > bestMtime) { bestMtime = stat.mtimeMs; jsonlPath = p; sessionId = sid; }
+      } catch {}
+    }
+
+    if (!jsonlPath) {
+      res.writeHead(404, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'session log not found' }));
+      return;
+    }
+
+    try {
+      const raw = fs.readFileSync(jsonlPath, 'utf8');
+      const lines = raw.split('\n').filter(l => l.trim());
+      const events = [];
+      for (let i = lines.length - 1; i >= 0 && events.length < limit; i--) {
+        try {
+          const obj = JSON.parse(lines[i]);
+          if (afterTs && obj.timestamp && obj.timestamp <= afterTs) break;
+          const t = obj.type;
+          if (t === 'progress') continue;  // skip noisy progress events
+          const msg = obj.message || {};
+          const ev = { type: t, timestamp: obj.timestamp };
+
+          if (t === 'assistant' && msg.content) {
+            const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+            ev.blocks = content.map(c => {
+              if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input };
+              if (c.type === 'text') return { type: 'text', text: c.text };
+              return { type: c.type };
+            });
+            if (msg.usage) {
+              const u = msg.usage;
+              ev.usage = {
+                input: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+                output: u.output_tokens || 0,
+              };
+            }
+          } else if (t === 'user' && msg.content) {
+            const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+            ev.blocks = content.map(c => {
+              if (c.type === 'tool_result') {
+                const text = typeof c.content === 'string' ? c.content :
+                  Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content);
+                return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false };
+              }
+              if (c.type === 'text') return { type: 'text', text: c.text };
+              return { type: c.type };
+            });
+          } else if (t === 'file-history-snapshot') {
+            continue;  // skip
+          } else {
+            continue;  // skip unknown types
+          }
+          events.push(ev);
+        } catch {}
+      }
+      events.reverse();  // chronological order
+      const label = agent.friendly_name || agent.name || agent.id;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events, label, sessionId, total: lines.length }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: 'read failed: ' + e.message }));
@@ -527,9 +823,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { agent: agentQuery } = JSON.parse(body);
         const state = loadState();
-        const agent = (state.agents || []).find(a =>
-          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery
-        );
+        const agent = findAgent(state, agentQuery);
         if (!agent?.kitty_win) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found or no window' })); return; }
         const kick = kickAgentById(state, agent.id);
         res.writeHead(kick.ok ? 200 : 500, { 'Content-Type': 'application/json' });
@@ -550,10 +844,7 @@ const server = http.createServer(async (req, res) => {
       try {
         const { agent: agentQuery, message } = JSON.parse(body);
         const state = loadState();
-        const agent = (state.agents || []).find(a =>
-          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
-          a.id.startsWith(agentQuery)
-        );
+        const agent = findAgent(state, agentQuery);
         if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
         if (message) {
           if (!state.messages) state.messages = [];
@@ -563,7 +854,7 @@ const server = http.createServer(async (req, res) => {
         if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no kitty window — message delivered via state file only' })); return; }
         const kick = kickAgentById(state, agent.id);
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ ...kick, agent: agent.friendly_name || agent.id.slice(0, 8) }));
+        res.end(JSON.stringify({ ...kick, agent: agent.friendly_name || agent.id }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -581,10 +872,7 @@ const server = http.createServer(async (req, res) => {
         const { agent: agentQuery, labels } = JSON.parse(body);
         if (!agentQuery || !Array.isArray(labels)) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent and labels[] required' })); return; }
         const state = loadState();
-        const agent = (state.agents || []).find(a =>
-          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
-          (a.id && a.id.startsWith(agentQuery))
-        );
+        const agent = findAgent(state, agentQuery);
         if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
         agent.labels = labels;
         saveState(state);
@@ -608,10 +896,7 @@ const server = http.createServer(async (req, res) => {
         const { agent: agentQuery, name: newName } = JSON.parse(body);
         if (!agentQuery || newName == null) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent and name required' })); return; }
         const state = loadState();
-        const agent = (state.agents || []).find(a =>
-          a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery ||
-          (a.id && a.id.startsWith(agentQuery))
-        );
+        const agent = findAgent(state, agentQuery);
         if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
         agent.friendly_name = newName || undefined;
         saveState(state);
@@ -655,11 +940,9 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const state = loadState();
-      const agent = (state.agents || []).find(a =>
-        a.id === agentQuery || a.friendly_name === agentQuery || a.name === agentQuery
-      );
+      const agent = findAgent(state, agentQuery);
       const agentId = agent?.id || agentQuery;
-      const agentName = agent?.friendly_name || agent?.name || agentId.slice(0, 8);
+      const agentName = agent?.friendly_name || agent?.name || agentId;
 
       // Read full event log
       let events = [];
@@ -681,7 +964,7 @@ const server = http.createServer(async (req, res) => {
       // Build agent name map
       const nameMap = { web: 'skip' };
       for (const a of (state.agents || [])) {
-        nameMap[a.id] = a.friendly_name || a.name || a.id.slice(0, 8);
+        nameMap[a.id] = a.friendly_name || a.name || a.id;
       }
 
       const lines = events.map(e => {
@@ -1047,6 +1330,30 @@ const server = http.createServer(async (req, res) => {
           return;
         }
         res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Trim-copy a playback (create excerpt)
+  if (url.pathname.startsWith('/api/playbacks/') && url.pathname.endsWith('/trim') && req.method === 'POST') {
+    const id = url.pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { startT, endT, title, tags } = JSON.parse(body);
+        const result = trimCopy(id, { startT, endT, title, tags });
+        if (!result) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Playback not found' }));
+          return;
+        }
+        res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });

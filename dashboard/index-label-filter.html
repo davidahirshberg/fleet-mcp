@@ -1,0 +1,1174 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Agent Dashboard v2 — Label Filter</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --surface: #161625;
+    --text: #c8c8d8;
+    --text-dim: #6b6b88;
+    --accent: #9370db;
+    --green: #7ab8a0;
+    --yellow: #c8b060;
+    --blue: #7a9ec8;
+    --purple: #9370db;
+    --orange: #c8956a;
+    --cyan: #6aafb0;
+    --border: #1e1e32;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-weight: 300;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  #app { width: 100%; height: 100%; }
+
+  /* Dockview theme overrides for dark mode */
+  .fleet-dockview {
+    --dv-activegroup-visiblepanel-tab-background-color: var(--surface);
+    --dv-activegroup-visiblepanel-tab-color: var(--text);
+    --dv-activegroup-hiddenpanel-tab-background-color: var(--bg);
+    --dv-activegroup-hiddenpanel-tab-color: var(--text-dim);
+    --dv-inactivegroup-visiblepanel-tab-background-color: var(--surface);
+    --dv-inactivegroup-visiblepanel-tab-color: var(--text-dim);
+    --dv-inactivegroup-hiddenpanel-tab-background-color: var(--bg);
+    --dv-inactivegroup-hiddenpanel-tab-color: var(--text-dim);
+    --dv-tab-divider-color: var(--border);
+    --dv-group-view-background-color: var(--bg);
+    --dv-tabs-and-actions-container-background-color: #0c0c16;
+    --dv-tabs-container-scrollbar-color: var(--text-dim);
+    --dv-separator-border: var(--border);
+    --dv-paneview-header-border-color: var(--border);
+    --dv-color: var(--text);
+    --dv-background-color: var(--bg);
+  }
+
+  /* Widget base styles */
+  .widget {
+    padding: 8px;
+    color: var(--text);
+    font-size: 13px;
+  }
+
+  /* Chat widget */
+  .chat-widget .chat-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .chat-widget .chat-input-bar {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+  }
+  .chat-widget .chat-input-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    outline: none;
+  }
+  .chat-widget .chat-input-bar button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 6px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+  }
+  .chat-widget {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  .chat-line {
+    padding: 2px 0;
+    line-height: 1.4;
+    word-wrap: break-word;
+    overflow-wrap: break-word;
+  }
+  .chat-ts { color: var(--text-dim); font-size: 11px; margin-right: 4px; }
+  .chat-nick { font-weight: 500; margin-right: 4px; }
+  .nick-web { color: #9370db; }
+  .nick-manager { color: var(--green); }
+  .nick-keepalive { color: var(--text-dim); }
+  .nick-agent-0 { color: var(--blue); }
+  .nick-agent-1 { color: var(--purple); }
+  .nick-agent-2 { color: var(--orange); }
+  .nick-agent-3 { color: var(--cyan); }
+  .nick-agent-4 { color: #b87a95; }
+  .nick-agent-5 { color: var(--yellow); }
+  .chat-line pre {
+    background: rgba(255,255,255,0.05);
+    padding: 6px 8px;
+    border-radius: 4px;
+    margin: 4px 0;
+    overflow-x: auto;
+    font-size: 12px;
+    font-family: 'SF Mono','Menlo',monospace;
+  }
+  .chat-line code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-family: 'SF Mono','Menlo',monospace;
+  }
+  .chat-line pre code { background: none; padding: 0; }
+  .chat-line a {
+    color: var(--cyan);
+    text-decoration: none;
+    border-bottom: 1px dotted var(--cyan);
+  }
+
+  /* Agent list widget */
+  .agent-item {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .agent-item:hover { background: rgba(255,255,255,0.03); }
+  .agent-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+  .agent-dot.active { background: var(--green); }
+  .agent-dot.inactive { background: var(--text-dim); opacity: 0.4; }
+  .agent-name { font-weight: 400; }
+  .agent-badge {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.06);
+    color: var(--text-dim);
+  }
+
+  /* Label chips — shared between agents list and filter bar */
+  .label-chip {
+    display: inline-block;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    cursor: grab;
+    user-select: none;
+    white-space: nowrap;
+  }
+  .label-chip:active { cursor: grabbing; }
+  .label-chip.in-agent-list {
+    margin-left: 2px;
+  }
+
+  /* Filter bar */
+  .chat-filter-bar {
+    position: relative;
+    border-bottom: 1px solid var(--border);
+    min-height: 0;
+  }
+  .filter-indicator {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px;
+    cursor: pointer;
+    font-size: 11px;
+    color: var(--text-dim);
+    min-height: 22px;
+  }
+  .filter-indicator:hover { color: var(--text); }
+  .filter-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--text-dim);
+    flex-shrink: 0;
+    transition: background 0.15s;
+  }
+  .filter-dot.active { background: var(--accent); }
+  .filter-expression {
+    display: none;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px;
+    padding: 4px 8px;
+    font-size: 10px;
+    min-height: 28px;
+  }
+  .chat-filter-bar:hover .filter-expression,
+  .chat-filter-bar.expanded .filter-expression { display: flex; }
+  .chat-filter-bar:hover .filter-indicator .filter-summary,
+  .chat-filter-bar.expanded .filter-indicator .filter-summary { display: none; }
+
+  /* DNF visual: AND groups stacked, OR groups side-by-side */
+  .filter-and-group {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    background: rgba(255,255,255,0.04);
+    border-radius: 4px;
+    padding: 2px;
+    min-width: 40px;
+    min-height: 20px;
+    transition: background 0.15s;
+  }
+  .filter-and-group.drag-over {
+    background: rgba(147, 112, 219, 0.15);
+    outline: 1px dashed var(--accent);
+  }
+  .filter-or-sep {
+    color: var(--text-dim);
+    font-size: 10px;
+    font-style: italic;
+    padding: 0 2px;
+  }
+  .filter-chip {
+    display: flex;
+    align-items: center;
+    gap: 3px;
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    white-space: nowrap;
+  }
+  .filter-chip-x {
+    cursor: pointer;
+    opacity: 0.5;
+    font-size: 9px;
+    line-height: 1;
+  }
+  .filter-chip-x:hover { opacity: 1; }
+
+  /* Drop zone for new OR clause */
+  .filter-drop-new {
+    min-width: 28px;
+    min-height: 20px;
+    border: 1px dashed transparent;
+    border-radius: 4px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--text-dim);
+    font-size: 10px;
+    transition: border-color 0.15s, background 0.15s;
+  }
+  .filter-drop-new.drag-over {
+    border-color: var(--accent);
+    background: rgba(147, 112, 219, 0.08);
+  }
+
+  /* Label picker dropdown */
+  .label-picker {
+    display: none;
+    position: absolute;
+    top: 100%;
+    left: 0;
+    z-index: 100;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px;
+    min-width: 180px;
+    flex-wrap: wrap;
+    gap: 4px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .label-picker.open { display: flex; }
+  .label-picker .label-chip { cursor: grab; }
+
+  /* Task list widget */
+  .task-item {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    line-height: 1.4;
+  }
+  .task-status {
+    font-size: 10px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    margin-right: 4px;
+  }
+  .task-status.pending { background: rgba(200, 176, 96, 0.15); color: var(--yellow); }
+  .task-status.working { background: rgba(122, 158, 200, 0.15); color: var(--blue); }
+
+  /* Terminal widget */
+  .terminal-widget {
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    height: 100%;
+    overflow-y: auto;
+    padding: 8px;
+    background: var(--bg);
+  }
+
+  /* Search widget */
+  .search-widget { display: flex; flex-direction: column; height: 100%; }
+  .search-bar {
+    display: flex;
+    gap: 6px;
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .search-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 6px 10px;
+    border-radius: 4px;
+    font-size: 13px;
+    outline: none;
+  }
+  .search-results {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px;
+  }
+  .search-result {
+    padding: 6px 8px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+  }
+  .search-result:hover { background: rgba(255,255,255,0.03); }
+
+  /* Placeholder */
+  .widget-placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    color: var(--text-dim);
+    font-size: 14px;
+  }
+</style>
+</head>
+<body>
+<div id="app"></div>
+<script type="module">
+import { DockviewComponent } from 'dockview-core'
+import 'dockview-core/dist/styles/dockview.css'
+
+// --- State ---
+let currentState = null
+let selectedAgent = localStorage.getItem('fleet-selected-agent') || null
+let lastFocusedChat = null
+let lastFocusedTerminal = null
+
+// --- Helpers ---
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+function timeShort(ts) {
+  if (!ts) return ''
+  const d = new Date(ts)
+  return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })
+}
+function agentLabel(state, id) {
+  const a = (state?.agents || []).find(a => a.id === id)
+  return a?.friendly_name || a?.name || (id === 'web' ? 'skip' : id?.substring(0, 8) || '?')
+}
+function isActive(a) {
+  return a.last_seen && (Date.now() - new Date(a.last_seen).getTime()) < 600000
+}
+
+// --- Label colors (hash-based) ---
+const LABEL_COLORS = ['#9370db','#7ab8a0','#c8b060','#7a9ec8','#c8956a','#6aafb0','#b87a95','#8bc87a']
+function labelColor(name) {
+  let h = 0
+  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0
+  return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length]
+}
+
+// --- Nick colors (stable per-agent) ---
+const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5']
+const nickMap = new Map()
+let nickIdx = 0
+
+function getNickClass(id, state) {
+  if (id === 'web') return 'nick-web'
+  if (id === 'keepalive') return 'nick-keepalive'
+  const agents = state?.agents || []
+  const agent = agents.find(a => a.id === id)
+  if (agent?.is_manager) return 'nick-manager'
+  if (!nickMap.has(id)) {
+    nickMap.set(id, nickColors[nickIdx % nickColors.length])
+    nickIdx++
+  }
+  return nickMap.get(id)
+}
+
+// --- Minimal markdown renderer ---
+function renderMarkdown(html) {
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${code.replace(/^\n|\n$/g, '')}</code></pre>`)
+  html = html.replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>')
+  html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>')
+  html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) return segment
+    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url =>
+      `<a href="${url}" target="_blank">${url}</a>`)
+  })
+  return html
+}
+
+// --- Per-panel state persistence ---
+function savePanelState(panelId, key, value) {
+  try {
+    const store = JSON.parse(localStorage.getItem('fleet-panel-state') || '{}')
+    if (!store[panelId]) store[panelId] = {}
+    store[panelId][key] = value
+    localStorage.setItem('fleet-panel-state', JSON.stringify(store))
+  } catch {}
+}
+function loadPanelState(panelId, key) {
+  try {
+    const store = JSON.parse(localStorage.getItem('fleet-panel-state') || '{}')
+    return store[panelId]?.[key] ?? null
+  } catch { return null }
+}
+
+// --- DNF filter helpers ---
+// Filter format: [[label, label], [label]] — array of AND-groups, OR'd together
+// null or [] means no filter (show all)
+function dnfToString(dnf) {
+  if (!dnf || dnf.length === 0) return 'all'
+  return dnf.map(group => group.length > 1 ? `(${group.join(' & ')})` : group[0]).join(' | ')
+}
+
+function dnfMatches(dnf, agentLabels) {
+  if (!dnf || dnf.length === 0) return true
+  return dnf.some(andGroup =>
+    andGroup.every(label => agentLabels.includes(label))
+  )
+}
+
+// --- Drag state ---
+let dragLabel = null // label being dragged
+
+// --- Document-level drag handlers (dockview eats panel-level events) ---
+document.addEventListener('dragover', (e) => {
+  if (!dragLabel) return
+  const target = e.target.closest('.filter-and-group, .filter-drop-new')
+  if (target) {
+    e.preventDefault()
+    e.dataTransfer.dropEffect = 'copy'
+  }
+}, true)
+
+document.addEventListener('dragenter', (e) => {
+  if (!dragLabel) return
+  const target = e.target.closest('.filter-and-group, .filter-drop-new')
+  if (target) {
+    e.preventDefault()
+    target.classList.add('drag-over')
+  }
+}, true)
+
+document.addEventListener('dragleave', (e) => {
+  const target = e.target.closest('.filter-and-group, .filter-drop-new')
+  if (target) {
+    // Only remove if we're actually leaving the element
+    const related = e.relatedTarget?.closest('.filter-and-group, .filter-drop-new')
+    if (related !== target) target.classList.remove('drag-over')
+  }
+}, true)
+
+document.addEventListener('drop', (e) => {
+  if (!dragLabel) return
+  const andGroup = e.target.closest('.filter-and-group')
+  const dropNew = e.target.closest('.filter-drop-new')
+
+  if (!andGroup && !dropNew) return
+  e.preventDefault()
+
+  // Find the chat widget container this belongs to
+  const filterBar = (andGroup || dropNew).closest('.chat-filter-bar')
+  if (!filterBar) return
+  const chatWidget = filterBar.closest('.chat-widget')
+  if (!chatWidget) return
+  const container = chatWidget.parentElement
+
+  const label = dragLabel
+  const dnf = container._labelFilter || []
+
+  if (andGroup) {
+    // AND with existing group
+    const groupIdx = parseInt(andGroup.dataset.groupIdx, 10)
+    if (!isNaN(groupIdx) && dnf[groupIdx]) {
+      if (!dnf[groupIdx].includes(label)) {
+        dnf[groupIdx].push(label)
+        container._labelFilter = [...dnf]
+      }
+    }
+  } else if (dropNew) {
+    // New OR clause
+    container._labelFilter = [...dnf, [label]]
+  }
+
+  if (container._panelId) savePanelState(container._panelId, 'labelFilter', container._labelFilter)
+  if (currentState) updateChatWidget(container, container._widgetParams || {}, currentState)
+
+  // Clean up drag-over styles
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'))
+}, true)
+
+document.addEventListener('dragend', () => {
+  dragLabel = null
+  document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'))
+}, true)
+
+// --- Widget definitions ---
+
+function createChatWidget(container, params) {
+  container._widgetParams = params
+  container.innerHTML = `
+    <div class="chat-widget">
+      <div class="chat-filter-bar">
+        <div class="filter-indicator">
+          <span class="filter-dot"></span>
+          <span class="filter-summary">all</span>
+        </div>
+        <div class="filter-expression"></div>
+        <div class="label-picker"></div>
+      </div>
+      <div class="chat-log"></div>
+      <div class="chat-input-bar">
+        <input type="text" placeholder="Message..." class="chat-input">
+        <button class="chat-send">send</button>
+      </div>
+    </div>`
+  const log = container.querySelector('.chat-log')
+  const input = container.querySelector('.chat-input')
+  const btn = container.querySelector('.chat-send')
+  const filterBar = container.querySelector('.chat-filter-bar')
+  const indicator = container.querySelector('.filter-indicator')
+  const picker = container.querySelector('.label-picker')
+
+  // Per-widget state
+  container._chatTarget = null
+  container._labelFilter = null // DNF: [[label, ...], ...] or null
+  requestAnimationFrame(() => {
+    const saved = container._panelId ? loadPanelState(container._panelId, 'chatTarget') : null
+    const savedLabels = container._panelId ? loadPanelState(container._panelId, 'labelFilter') : null
+    container._chatTarget = saved || params.agent || selectedAgent || null
+    // Migrate from flat array to DNF if needed
+    if (savedLabels && savedLabels.length > 0 && !Array.isArray(savedLabels[0])) {
+      // Old format: flat array — convert each label to its own OR clause
+      container._labelFilter = savedLabels.map(l => [l])
+    } else {
+      container._labelFilter = savedLabels || params.labels || null
+    }
+    if (currentState) updateChatWidget(container, params, currentState)
+  })
+  container._autoScroll = true
+
+  // Toggle filter bar expansion
+  indicator.addEventListener('click', (e) => {
+    e.stopPropagation()
+    filterBar.classList.toggle('expanded')
+    picker.classList.remove('open')
+  })
+
+  // Toggle label picker
+  const filterDot = container.querySelector('.filter-dot')
+  filterDot.addEventListener('click', (e) => {
+    e.stopPropagation()
+    picker.classList.toggle('open')
+    if (picker.classList.contains('open')) {
+      filterBar.classList.add('expanded')
+      renderLabelPicker(container, params)
+    }
+  })
+
+  // Close picker on outside click
+  document.addEventListener('click', (e) => {
+    if (!filterBar.contains(e.target)) {
+      picker.classList.remove('open')
+    }
+  })
+
+  // Track focus
+  container.addEventListener('focusin', () => { lastFocusedChat = container })
+  container.addEventListener('click', () => { lastFocusedChat = container })
+
+  log.addEventListener('scroll', () => {
+    container._autoScroll = log.scrollHeight - log.scrollTop - log.clientHeight < 30
+  })
+
+  async function send() {
+    const msg = input.value.trim()
+    if (!msg) return
+    input.value = ''
+    if (msg.startsWith('/')) {
+      const result = executeCommand(msg)
+      if (result) {
+        log.innerHTML += `<div class="chat-line" style="color:var(--text-dim)">${esc(result)}</div>`
+      }
+      return
+    }
+    const target = container._chatTarget
+    if (!target) {
+      log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Select an agent first (click one in the Agents panel)</div>`
+      input.value = msg
+      return
+    }
+    container._autoScroll = true
+    try {
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: msg, to: target }),
+      })
+      if (!res.ok) {
+        const err = await res.text()
+        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Send failed: ${esc(err)}</div>`
+      }
+    } catch (e) { console.error('Send failed:', e) }
+  }
+  btn.addEventListener('click', send)
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() } })
+}
+
+function renderLabelPicker(container, params) {
+  const picker = container.querySelector('.label-picker')
+  if (!picker || !currentState) return
+  const allLabels = new Set()
+  for (const a of (currentState.agents || [])) {
+    for (const l of (a.labels || [])) allLabels.add(l)
+  }
+  const labels = [...allLabels].sort()
+  picker.innerHTML = labels.map(l => {
+    const c = labelColor(l)
+    return `<span class="label-chip" draggable="true" data-label="${esc(l)}" style="color:${c};border:1px solid ${c}60;background:${c}15">${esc(l)}</span>`
+  }).join('')
+  if (labels.length === 0) {
+    picker.innerHTML = '<span style="color:var(--text-dim);font-size:11px">No labels found</span>'
+  }
+
+  // Add clear-all button
+  const dnf = container._labelFilter
+  if (dnf && dnf.length > 0) {
+    const clearBtn = document.createElement('span')
+    clearBtn.style.cssText = 'color:var(--text-dim);border:1px solid var(--border);padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px;margin-left:auto'
+    clearBtn.textContent = 'clear'
+    clearBtn.addEventListener('click', () => {
+      container._labelFilter = null
+      if (container._panelId) savePanelState(container._panelId, 'labelFilter', null)
+      if (currentState) updateChatWidget(container, params, currentState)
+    })
+    picker.appendChild(clearBtn)
+  }
+
+  // Drag events on picker chips
+  picker.querySelectorAll('.label-chip').forEach(chip => {
+    chip.addEventListener('dragstart', (e) => {
+      dragLabel = chip.dataset.label
+      e.dataTransfer.effectAllowed = 'copy'
+      e.dataTransfer.setData('text/plain', chip.dataset.label)
+      e.stopPropagation()
+    })
+    // Click = quick add as new OR clause
+    chip.addEventListener('click', () => {
+      const label = chip.dataset.label
+      const dnf = container._labelFilter || []
+      // Check if label already exists in any group
+      const alreadyExists = dnf.some(g => g.includes(label))
+      if (!alreadyExists) {
+        container._labelFilter = [...dnf, [label]]
+      }
+      if (container._panelId) savePanelState(container._panelId, 'labelFilter', container._labelFilter)
+      if (currentState) updateChatWidget(container, container._widgetParams || params, currentState)
+    })
+  })
+}
+
+function renderFilterExpression(container, params) {
+  const expr = container.querySelector('.filter-expression')
+  const dot = container.querySelector('.filter-dot')
+  const summary = container.querySelector('.filter-summary')
+  if (!expr) return
+
+  const dnf = container._labelFilter
+  const hasFilter = dnf && dnf.length > 0
+
+  dot.classList.toggle('active', hasFilter)
+  summary.textContent = hasFilter ? dnfToString(dnf) : 'all'
+
+  if (!hasFilter) {
+    expr.innerHTML = '<span style="color:var(--text-dim);font-size:10px">Drop labels here to filter</span><span class="filter-drop-new" style="flex:1">+</span>'
+    return
+  }
+
+  let html = ''
+  dnf.forEach((group, gi) => {
+    if (gi > 0) html += '<span class="filter-or-sep">or</span>'
+    html += `<div class="filter-and-group" data-group-idx="${gi}">`
+    group.forEach((label, li) => {
+      const c = labelColor(label)
+      html += `<span class="filter-chip" style="color:${c};border:1px solid ${c}60;background:${c}15">`
+      html += `${esc(label)}<span class="filter-chip-x" data-group="${gi}" data-label="${esc(label)}">&times;</span>`
+      html += `</span>`
+    })
+    html += '</div>'
+  })
+  html += '<span class="filter-drop-new">+</span>'
+  expr.innerHTML = html
+
+  // Remove handlers
+  expr.querySelectorAll('.filter-chip-x').forEach(x => {
+    x.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const gi = parseInt(x.dataset.group, 10)
+      const label = x.dataset.label
+      const dnf = container._labelFilter || []
+      if (dnf[gi]) {
+        dnf[gi] = dnf[gi].filter(l => l !== label)
+        if (dnf[gi].length === 0) dnf.splice(gi, 1)
+        container._labelFilter = dnf.length > 0 ? [...dnf] : null
+        if (container._panelId) savePanelState(container._panelId, 'labelFilter', container._labelFilter)
+        if (currentState) updateChatWidget(container, params, currentState)
+      }
+    })
+  })
+}
+
+function updateChatWidget(container, params, state) {
+  const log = container.querySelector('.chat-log')
+  if (!log) return
+  const msgs = state.messages || []
+
+  // DNF filter evaluation
+  const dnf = container._labelFilter
+  let filtered = msgs
+  if (dnf && dnf.length > 0) {
+    const matchingAgentIds = new Set()
+    for (const a of (state.agents || [])) {
+      const agentLabels = a.labels || []
+      if (dnfMatches(dnf, agentLabels)) matchingAgentIds.add(a.id)
+    }
+    filtered = msgs.filter(m => matchingAgentIds.has(m.from) || matchingAgentIds.has(m.to))
+  }
+
+  // Build rendered lines
+  log.innerHTML = filtered.map(m => {
+    const nick = agentLabel(state, m.from)
+    const toNick = agentLabel(state, m.to)
+    const fromCls = getNickClass(m.from, state)
+    const toCls = getNickClass(m.to, state)
+    const ts = timeShort(m.timestamp)
+    const text = renderMarkdown(esc(m.text))
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}">${esc(toNick)}</span>:</span> ${text}</div>`
+  }).join('')
+
+  if (container._autoScroll !== false) {
+    requestAnimationFrame(() => requestAnimationFrame(() => { log.scrollTop = log.scrollHeight }))
+  }
+
+  const input = container.querySelector('.chat-input')
+  if (input) {
+    const target = container._chatTarget ? agentLabel(state, container._chatTarget) : 'no target'
+    input.placeholder = `Message (to ${target})...`
+  }
+
+  // Render filter expression and picker
+  renderFilterExpression(container, params)
+  const picker = container.querySelector('.label-picker')
+  if (picker?.classList.contains('open')) renderLabelPicker(container, params)
+}
+
+function createAgentsWidget(container, params) {
+  container.innerHTML = '<div class="agents-list"></div>'
+}
+
+function updateAgentsWidget(container, params, state) {
+  const list = container.querySelector('.agents-list')
+  if (!list) return
+  const agents = (state.agents || []).slice().sort((a, b) => {
+    const aa = isActive(a), ba = isActive(b)
+    if (aa !== ba) return aa ? -1 : 1
+    const at = new Date(a.last_seen || 0).getTime()
+    const bt = new Date(b.last_seen || 0).getTime()
+    return bt - at
+  })
+  list.innerHTML = agents.map(a => {
+    const name = a.friendly_name || a.name || a.id?.substring(0, 8)
+    const active = isActive(a)
+    const badges = []
+    if (a.is_manager) badges.push('<span class="agent-badge">mgr</span>')
+    const task = (state.tasks || []).find(t => t.agent === a.id && t.status !== 'done')
+    if (task) badges.push(`<span class="agent-badge">${esc(task.description?.substring(0, 30) || 'working')}</span>`)
+    // Label chips
+    const labelChips = (a.labels || []).map(l => {
+      const c = labelColor(l)
+      return `<span class="label-chip in-agent-list" draggable="true" data-label="${esc(l)}" style="color:${c};border:1px solid ${c}40;background:${c}10">${esc(l)}</span>`
+    }).join('')
+    const sel = selectedAgent === a.id ? 'background:rgba(147,112,219,0.1);' : ''
+    const dim = active ? '' : 'opacity:0.45;'
+    return `<div class="agent-item" style="${sel}${dim}" data-agent-id="${esc(a.id)}">
+      <span class="agent-dot ${active ? 'active' : 'inactive'}"></span>
+      <span class="agent-name">${esc(name)}</span>
+      ${badges.join(' ')}
+      <span class="agent-labels" style="display:flex;flex-wrap:wrap;gap:2px;margin-left:auto">${labelChips}</span>
+    </div>`
+  }).join('')
+
+  // Agent click handlers
+  list.querySelectorAll('.agent-item').forEach(el => {
+    el.addEventListener('click', (e) => {
+      // Don't select agent if clicking a label chip
+      if (e.target.closest('.label-chip')) return
+      selectedAgent = el.dataset.agentId
+      localStorage.setItem('fleet-selected-agent', selectedAgent)
+      if (lastFocusedChat) {
+        lastFocusedChat._chatTarget = selectedAgent
+        if (lastFocusedChat._panelId) savePanelState(lastFocusedChat._panelId, 'chatTarget', selectedAgent)
+      }
+      if (lastFocusedTerminal) {
+        lastFocusedTerminal._termAgent = selectedAgent
+        if (lastFocusedTerminal._panelId) savePanelState(lastFocusedTerminal._panelId, 'termAgent', selectedAgent)
+      }
+      if (currentState) broadcastUpdate(currentState)
+    })
+  })
+
+  // Label chip drag from agents list
+  list.querySelectorAll('.label-chip').forEach(chip => {
+    chip.addEventListener('dragstart', (e) => {
+      dragLabel = chip.dataset.label
+      e.dataTransfer.effectAllowed = 'copy'
+      e.dataTransfer.setData('text/plain', chip.dataset.label)
+      e.stopPropagation()
+    })
+  })
+}
+
+function createTasksWidget(container, params) {
+  container.innerHTML = '<div class="tasks-list"></div>'
+}
+
+function updateTasksWidget(container, params, state) {
+  const list = container.querySelector('.tasks-list')
+  if (!list) return
+  const tasks = (state.tasks || []).filter(t => t.status !== 'done')
+  list.innerHTML = tasks.map(t => {
+    const agent = agentLabel(state, t.agent)
+    return `<div class="task-item">
+      <span class="task-status ${t.status}">${t.status}</span>
+      <strong>${esc(agent)}</strong>: ${esc(t.description || '')}
+    </div>`
+  }).join('')
+}
+
+function createTerminalWidget(container, params) {
+  container.innerHTML = `<div class="terminal-widget">
+    <div class="terminal-header" style="padding:4px 8px;border-bottom:1px solid var(--border);font-size:11px;color:var(--text-dim);display:flex;align-items:center;gap:6px">
+      <span class="term-agent-name">No agent selected</span>
+      <button class="term-refresh" style="background:none;border:1px solid var(--border);color:var(--text-dim);padding:1px 6px;border-radius:3px;cursor:pointer;font-size:10px">refresh</button>
+      <label style="margin-left:auto;font-size:10px"><input type="checkbox" class="term-auto" checked> auto</label>
+    </div>
+    <div class="terminal-body" style="flex:1;overflow-y:auto;padding:8px;font-family:'SF Mono','Menlo',monospace;font-size:12px;white-space:pre-wrap;word-break:break-all"></div>
+  </div>`
+  container.querySelector('.terminal-widget').style.cssText = 'display:flex;flex-direction:column;height:100%;'
+
+  container._termAgent = null
+  requestAnimationFrame(() => {
+    const saved = container._panelId ? loadPanelState(container._panelId, 'termAgent') : null
+    container._termAgent = saved || params.agent || selectedAgent || null
+    if (currentState) updateTerminalWidget(container, params, currentState)
+  })
+
+  container.addEventListener('focusin', () => { lastFocusedTerminal = container })
+  container.addEventListener('click', () => { lastFocusedTerminal = container })
+
+  const refreshBtn = container.querySelector('.term-refresh')
+  refreshBtn.addEventListener('click', () => {
+    if (container._termAgent) fetchTerminal(container._termAgent, container)
+  })
+  const interval = setInterval(() => {
+    const auto = container.querySelector('.term-auto')
+    if (auto?.checked && container._termAgent) fetchTerminal(container._termAgent, container)
+  }, 5000)
+  container._termInterval = interval
+}
+
+function updateTerminalWidget(container, params, state) {
+  const body = container.querySelector('.terminal-body')
+  const nameEl = container.querySelector('.term-agent-name')
+  if (!body) return
+  const agent = container._termAgent
+  if (!agent) {
+    nameEl.textContent = 'No agent selected'
+    if (!body.dataset.agent) body.textContent = 'Select an agent to view their terminal'
+    return
+  }
+  const a = (state.agents || []).find(a => a.id === agent)
+  const name = a?.friendly_name || a?.name || agent.substring(0, 8)
+  nameEl.textContent = `${name} (win ${a?.kitty_win || '?'})`
+  if (body.dataset.agent !== agent) {
+    body.dataset.agent = agent
+    body.textContent = 'Loading...'
+    fetchTerminal(agent, container)
+  }
+}
+
+async function fetchTerminal(agentId, container) {
+  const body = container.querySelector('.terminal-body')
+  if (!body) return
+  try {
+    const res = await fetch(`/api/peek?agent=${encodeURIComponent(agentId)}`)
+    if (res.ok) {
+      const data = await res.json()
+      body.textContent = data.text || '(empty)'
+      body.scrollTop = body.scrollHeight
+    } else {
+      const err = await res.json().catch(() => ({}))
+      body.textContent = `Error: ${err.error || res.status}`
+    }
+  } catch (e) {
+    body.textContent = `Fetch failed: ${e.message}`
+  }
+}
+
+function createSearchWidget(container, params) {
+  container.innerHTML = `
+    <div class="search-widget">
+      <div class="search-bar">
+        <input type="text" placeholder="Search conversations, events, annotations..." class="search-input">
+      </div>
+      <div class="search-results"></div>
+    </div>`
+  const input = container.querySelector('.search-input')
+  let timeout
+  input.addEventListener('input', () => {
+    clearTimeout(timeout)
+    timeout = setTimeout(() => doSearch(input.value, container), 300)
+  })
+}
+
+async function doSearch(query, container) {
+  const results = container.querySelector('.search-results')
+  if (!query.trim()) { results.innerHTML = ''; return }
+  try {
+    const res = await fetch(`/api/logs/search?q=${encodeURIComponent(query)}&limit=50`)
+    if (!res.ok) return
+    const data = await res.json()
+    results.innerHTML = (data.results || []).map(r => {
+      return `<div class="search-result">${esc(r.snippet || r.text || '').substring(0, 200)}</div>`
+    }).join('') || '<div style="color:var(--text-dim);padding:8px">No results</div>'
+  } catch {}
+}
+
+function updateSearchWidget() {}
+
+function createTimelineWidget(container, params) {
+  container.innerHTML = '<div class="widget-placeholder">Timeline — coming soon</div>'
+}
+function updateTimelineWidget() {}
+
+// --- Widget registry ---
+const WIDGETS = {
+  chat: { create: createChatWidget, update: updateChatWidget },
+  agents: { create: createAgentsWidget, update: updateAgentsWidget },
+  tasks: { create: createTasksWidget, update: updateTasksWidget },
+  terminal: { create: createTerminalWidget, update: updateTerminalWidget },
+  search: { create: createSearchWidget, update: updateSearchWidget },
+  timeline: { create: createTimelineWidget, update: updateTimelineWidget },
+}
+
+// --- Dockview init ---
+const panelInstances = new Map()
+
+const dv = new DockviewComponent(document.getElementById('app'), {
+  createComponent(options) {
+    const widget = WIDGETS[options.name]
+    if (!widget) {
+      const el = document.createElement('div')
+      el.innerHTML = `<div class="widget-placeholder">Unknown widget: ${options.name}</div>`
+      return { element: el }
+    }
+
+    const element = document.createElement('div')
+    element.className = `widget widget-${options.name}`
+    element.style.cssText = 'width:100%;height:100%;overflow:hidden;'
+
+    return {
+      element,
+      init(params) {
+        const widgetParams = params.params || {}
+        element._panelId = params.api.id
+        panelInstances.set(params.api.id, { widget, container: element, params: widgetParams })
+        widget.create(element, widgetParams)
+        if (currentState) widget.update(element, widgetParams, currentState)
+      },
+      dispose() {
+        for (const [id, inst] of panelInstances) {
+          if (inst.container === element) { panelInstances.delete(id); break }
+        }
+      },
+    }
+  },
+  className: 'fleet-dockview',
+})
+
+// --- Default layout ---
+function setupDefaultLayout() {
+  const chat = dv.addPanel({ id: 'chat', component: 'chat', title: 'Chat' })
+
+  dv.addPanel({ id: 'search', component: 'search', title: 'Search',
+    position: { referencePanel: chat, direction: 'within' } })
+
+  dv.addPanel({ id: 'terminal', component: 'terminal', title: 'Terminal',
+    position: { referencePanel: chat, direction: 'within' } })
+
+  dv.addPanel({ id: 'timeline', component: 'timeline', title: 'Timeline',
+    position: { referencePanel: chat, direction: 'within' } })
+
+  const agents = dv.addPanel({ id: 'agents', component: 'agents', title: 'Agents',
+    position: { referencePanel: chat, direction: 'right' } })
+
+  dv.addPanel({ id: 'tasks', component: 'tasks', title: 'Tasks',
+    position: { referencePanel: agents, direction: 'within' } })
+
+  chat.api.setActive()
+}
+
+// Try restore saved layout, fall back to default
+const saved = localStorage.getItem('fleet-layout-v2')
+if (saved) {
+  try {
+    dv.fromJSON(JSON.parse(saved))
+  } catch (e) {
+    console.warn('Failed to restore layout, using default:', e)
+    setupDefaultLayout()
+  }
+} else {
+  setupDefaultLayout()
+}
+
+// Persist layout on changes
+dv.onDidLayoutChange(() => {
+  try { localStorage.setItem('fleet-layout-v2', JSON.stringify(dv.toJSON())) } catch {}
+})
+
+// --- SSE ---
+function broadcastUpdate(state) {
+  currentState = state
+  for (const [id, inst] of panelInstances) {
+    try { inst.widget.update(inst.container, inst.params, state) } catch (e) {
+      console.warn(`Widget update error (${id}):`, e)
+    }
+  }
+}
+
+function connectSSE() {
+  const evtSource = new EventSource('/events')
+  evtSource.onmessage = (e) => {
+    try {
+      const state = JSON.parse(e.data)
+      broadcastUpdate(state)
+    } catch {}
+  }
+  evtSource.onerror = () => {
+    evtSource.close()
+    setTimeout(connectSSE, 3000)
+  }
+}
+
+// Initial state fetch
+fetch('/api/state').then(r => r.json()).then(broadcastUpdate).catch(() => {})
+connectSSE()
+
+// --- Commands ---
+const WIDGET_NAMES = Object.keys(WIDGETS)
+
+function executeCommand(cmd) {
+  const parts = cmd.trim().split(/\s+/)
+  const name = parts[0].toLowerCase()
+  const widget = parts[1] || 'chat'
+  const active = dv.activePanel
+
+  if (name === '/sp' || name === '/split') {
+    if (!WIDGET_NAMES.includes(widget)) return `Unknown widget: ${widget}. Available: ${WIDGET_NAMES.join(', ')}`
+    const id = `${widget}-${Date.now()}`
+    const title = widget.charAt(0).toUpperCase() + widget.slice(1)
+    dv.addPanel({ id, component: widget, title,
+      position: active ? { referencePanel: active, direction: 'below' } : undefined })
+    return null
+  }
+
+  if (name === '/vsp' || name === '/vsplit') {
+    if (!WIDGET_NAMES.includes(widget)) return `Unknown widget: ${widget}. Available: ${WIDGET_NAMES.join(', ')}`
+    const id = `${widget}-${Date.now()}`
+    const title = widget.charAt(0).toUpperCase() + widget.slice(1)
+    dv.addPanel({ id, component: widget, title,
+      position: active ? { referencePanel: active, direction: 'right' } : undefined })
+    return null
+  }
+
+  if (name === '/tab' || name === '/add') {
+    if (!WIDGET_NAMES.includes(widget)) return `Unknown widget: ${widget}. Available: ${WIDGET_NAMES.join(', ')}`
+    const id = `${widget}-${Date.now()}`
+    const title = widget.charAt(0).toUpperCase() + widget.slice(1)
+    dv.addPanel({ id, component: widget, title,
+      position: active ? { referencePanel: active, direction: 'within' } : undefined })
+    return null
+  }
+
+  if (name === '/close') {
+    if (active) dv.removePanel(active)
+    return null
+  }
+
+  if (name === '/only') {
+    const panels = dv.panels.filter(p => p !== active)
+    for (const p of panels) dv.removePanel(p)
+    return null
+  }
+
+  if (name === '/reset') {
+    localStorage.removeItem('fleet-layout-v2')
+    location.reload()
+    return null
+  }
+
+  if (name === '/help') {
+    return 'Commands: /sp [widget], /vsp [widget], /tab [widget], /close, /only, /reset\nWidgets: ' + WIDGET_NAMES.join(', ')
+  }
+
+  return null
+}
+
+// Keyboard shortcuts
+document.addEventListener('keydown', e => {
+  if (e.metaKey && e.shiftKey && e.key === 's') {
+    e.preventDefault()
+    executeCommand('/sp chat')
+  }
+  if (e.metaKey && e.shiftKey && e.key === 'v') {
+    e.preventDefault()
+    executeCommand('/vsp terminal')
+  }
+  if (e.metaKey && e.key === 'w') {
+    e.preventDefault()
+    executeCommand('/close')
+  }
+})
+</script>
+</body>
+</html>

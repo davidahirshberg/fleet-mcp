@@ -1,0 +1,4480 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Agent Dashboard</title>
+<style>
+  :root {
+    --bg: #0f0f1a;
+    --surface: #161625;
+    --text: #c8c8d8;
+    --text-dim: #6b6b88;
+    --accent: #9370db;
+    --green: #7ab8a0;
+    --yellow: #c8b060;
+    --blue: #7a9ec8;
+    --purple: #9370db;
+    --orange: #c8956a;
+    --cyan: #6aafb0;
+    --pink: #b87a95;
+    --border: #1e1e32;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; overflow: hidden; }
+  body {
+    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-weight: 300;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.4;
+  }
+
+  /* Split layout */
+  .split {
+    display: flex;
+    height: 100%;
+  }
+  .left-pane {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    width: 50%;
+    flex-shrink: 0;
+  }
+  .right-pane {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    overflow: hidden;
+  }
+  .agents-panel {
+    flex-shrink: 0;
+    height: 180px;
+    border-top: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  /* Drag handles */
+  .drag-handle-v {
+    width: 5px;
+    cursor: col-resize;
+    background: var(--border);
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+    touch-action: none;
+  }
+  .drag-handle-v:hover,
+  .drag-handle-v.dragging {
+    background: var(--accent);
+  }
+  .drag-handle-h {
+    height: 5px;
+    cursor: row-resize;
+    background: transparent;
+    flex-shrink: 0;
+    position: relative;
+    z-index: 5;
+    touch-action: none;
+  }
+  .drag-handle-h:hover,
+  .drag-handle-h.dragging {
+    background: var(--accent);
+  }
+  .agents-panel .section-body {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .tasks-completed-split {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Chat header with selector */
+  .chat-header {
+    padding: 6px 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+  }
+  .chat-header .dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    flex-shrink: 0;
+  }
+  .chat-header .dot.disconnected { background: var(--accent); }
+  .chat-filter { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; flex: 1; min-height: 20px; }
+  .chat-filter-all { color: var(--text-dim); font-size: 12px; cursor: pointer; }
+  .chat-filter-all:hover { color: var(--text); }
+  .chat-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 10px; cursor: pointer; border: 1px solid; line-height: 1.3; transition: filter 0.1s; }
+  .chat-tag:hover { filter: brightness(1.3); }
+  .chat-tag .tag-x { opacity: 0.5; margin-left: 1px; font-size: 13px; line-height: 1; }
+  .chat-tag:hover .tag-x { opacity: 1; }
+  .chat-send-to { color: var(--text-dim); font-size: 11px; margin-left: auto; flex-shrink: 0; }
+
+  /* Chat log — IRC style */
+  .chat-log {
+    flex: 1;
+    overflow-y: auto;
+    padding: 4px 8px;
+    -webkit-overflow-scrolling: touch;
+  }
+  .chat-line {
+    white-space: pre-wrap;
+    word-break: break-word;
+    padding: 1px 0;
+  }
+  .chat-line:hover { background: rgba(255,255,255,0.03); }
+  .chat-line .pin-btn { opacity: 0; cursor: pointer; color: var(--text-dim); font-size: 10px; margin-left: 4px; }
+  .chat-line:hover .pin-btn { opacity: 0.5; }
+  .chat-line .pin-btn:hover { opacity: 1; color: var(--yellow); }
+  .chat-search-bar {
+    display: none;
+    padding: 4px 8px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .chat-search-bar.active { display: flex; }
+  .chat-search-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .chat-search-bar input:focus { border-color: var(--yellow); }
+  .chat-search-bar .search-count { color: var(--text-dim); font-size: 11px; min-width: 50px; }
+  .chat-search-bar button {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 14px;
+    padding: 0 4px;
+    font-family: inherit;
+  }
+  .chat-search-bar button:hover { color: var(--text); }
+  .chat-line.search-hit { background: rgba(200,176,96,0.12); }
+  .chat-line.search-current { background: rgba(200,176,96,0.25); outline: 1px solid rgba(200,176,96,0.4); }
+  .pinned-bar { background: rgba(200,176,96,0.08); border-bottom: 1px solid var(--border); max-height: 120px; overflow-y: auto; font-size: 12px; }
+  .pinned-msg { padding: 3px 8px; display: flex; align-items: flex-start; gap: 4px; }
+  .pinned-msg .pin-icon { color: var(--yellow); font-size: 10px; flex-shrink: 0; margin-top: 2px; }
+  .pinned-msg .unpin { opacity: 0; cursor: pointer; color: var(--text-dim); font-size: 10px; margin-left: auto; flex-shrink: 0; }
+  .pinned-msg:hover .unpin { opacity: 0.7; }
+  .pinned-msg:hover .unpin:hover { opacity: 1; color: var(--accent); }
+  .chat-ts { color: var(--text-dim); }
+  .chat-nick { font-weight: 700; }
+  .chat-line a.agent-link {
+    color: var(--blue);
+    text-decoration: none;
+    font-weight: 600;
+  }
+  .chat-line a.agent-link:hover { text-decoration: underline; }
+
+  /* Nick colors */
+  .nick-web { color: #9370db; }
+  .nick-manager { color: var(--green); }
+  .nick-keepalive { color: var(--text-dim); }
+  .nick-agent-0 { color: var(--blue); }
+  .nick-agent-1 { color: var(--purple); }
+  .nick-agent-2 { color: var(--orange); }
+  .nick-agent-3 { color: var(--cyan); }
+  .nick-agent-4 { color: var(--pink); }
+  .nick-agent-5 { color: var(--yellow); }
+
+  /* Input bar */
+  .chat-input-bar {
+    padding: 6px 8px;
+    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    background: var(--surface);
+    border-top: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .chat-input-wrap {
+    flex: 1;
+    position: relative;
+  }
+  .chat-input-bar textarea {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 6px 8px;
+    color: var(--text);
+    font-size: 13px;
+    font-family: inherit;
+    outline: none;
+    resize: none;
+    overflow-y: hidden;
+    max-height: 120px;
+    line-height: 1.4;
+  }
+  .cmd-palette {
+    display: none;
+    position: absolute;
+    bottom: 100%;
+    left: 0; right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin-bottom: 4px;
+    max-height: 240px;
+    overflow-y: auto;
+    z-index: 20;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.4);
+  }
+  .cmd-palette.active { display: block; }
+  .cmd-item {
+    padding: 6px 10px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+  }
+  .cmd-item:hover, .cmd-item.selected { background: rgba(108,155,255,0.1); }
+  .cmd-item .cmd-name { color: var(--blue); font-weight: 700; font-family: 'SF Mono','Menlo',monospace; font-size: 11px; }
+  .cmd-item .cmd-desc { color: var(--text-dim); }
+  .chat-input-bar textarea:focus { border-color: var(--blue); }
+  .chat-input-bar textarea::placeholder { color: var(--text-dim); }
+  .chat-input-bar button {
+    background: rgba(122,158,200,0.25);
+    color: var(--blue);
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    font-size: 12px;
+    font-family: inherit;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .chat-input-bar button:active { opacity: 0.7; }
+  .chat-input-bar button:disabled { opacity: 0.3; }
+  .chat-attachments {
+    display: none;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 4px 0;
+  }
+  .chat-attachments.active { display: flex; }
+  .chat-attach-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    background: rgba(122,158,200,0.15);
+    border: 1px solid rgba(122,158,200,0.3);
+    border-radius: 4px;
+    padding: 2px 6px;
+    font-size: 11px;
+    color: var(--blue);
+    max-width: 260px;
+    overflow: hidden;
+  }
+  .chat-attach-chip .chip-type {
+    font-size: 9px; font-weight: 700; text-transform: uppercase;
+    padding: 0 3px; border-radius: 2px; flex-shrink: 0;
+  }
+  .chip-type-session { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .chip-type-events { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .chip-type-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .chip-type-refs { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .chat-attach-chip .chip-label {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    color: var(--text);
+  }
+  .chat-attach-chip .chip-del {
+    cursor: pointer; opacity: 0.5; font-size: 13px; flex-shrink: 0;
+    line-height: 1; padding: 0 2px;
+  }
+  .chat-attach-chip .chip-del:hover { opacity: 1; color: var(--orange); }
+  .chat-input-bar.drag-over { outline: 2px solid var(--blue); outline-offset: -2px; }
+  .log-result[draggable="true"], .pinned-ref-item[draggable="true"] { cursor: grab; }
+  .log-result[draggable="true"]:active, .pinned-ref-item[draggable="true"]:active { cursor: grabbing; }
+  #interruptToggle {
+    background: none;
+    border: 1px solid var(--border);
+    color: var(--text-dim);
+    font-size: 14px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  #interruptToggle:hover { border-color: var(--orange); color: var(--orange); }
+  #interruptToggle.active {
+    background: rgba(200,149,106,0.2);
+    border-color: var(--orange);
+    color: var(--orange);
+  }
+  .chat-input-bar.interrupt-mode textarea {
+    border-color: var(--orange);
+  }
+  .chat-input-bar.interrupt-mode #chatSend {
+    background: rgba(200,149,106,0.25);
+    color: var(--orange);
+  }
+
+  /* Right pane sections */
+  .search-bar {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .search-bar input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .search-bar input:focus { border-color: var(--blue); }
+  .search-bar input::placeholder { color: var(--text-dim); }
+  .search-results {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: none;
+  }
+  .search-results.active { display: block; }
+  .search-result {
+    padding: 4px 10px;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .search-result:hover { background: rgba(108,155,255,0.1); }
+  .search-result .agent-name { font-weight: 700; color: var(--blue); }
+  .search-result .agent-id { color: var(--text-dim); font-size: 11px; }
+  .search-result .chat-btn {
+    margin-left: auto;
+    font-size: 10px;
+    color: var(--green);
+    font-weight: 700;
+  }
+  .section {
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    flex: 1;
+    overflow: hidden;
+  }
+  .section-header {
+    padding: 8px 10px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    background: var(--surface);
+    cursor: pointer;
+    user-select: none;
+    flex-shrink: 0;
+  }
+  .section-header:hover { color: var(--text); }
+  .agents-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .agents-table th {
+    padding: 4px 8px;
+    text-align: left;
+    font-size: 10px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    color: var(--text-dim);
+    background: var(--surface);
+    cursor: pointer;
+    white-space: nowrap;
+    user-select: none;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    z-index: 1;
+  }
+  .agents-table th:hover { color: var(--text); }
+  .agents-table th.sorted { color: var(--blue); }
+  .agents-table th .sort-arrow { font-size: 8px; margin-left: 2px; }
+  .agents-table td {
+    padding: 3px 8px;
+    white-space: nowrap;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+  }
+  .agents-table tr:last-child td { border-bottom: none; }
+  .agents-table td.col-msg { color: var(--text-dim); }
+  .agents-table td.col-seen { color: var(--text-dim); }
+  .agents-table td.col-peek { text-align: center; }
+  .section-body { padding: 0; overflow-y: auto; -webkit-overflow-scrolling: touch; flex: 1; min-height: 0; }
+  .section-body.collapsed { display: none; }
+
+  .agent-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+    font-size: 12px;
+  }
+  .agent-row:last-child { border-bottom: none; }
+  .agent-name { font-weight: 700; cursor: pointer; position: relative; }
+  .agent-name:hover { text-decoration: underline; }
+  .agent-name.agent-dead { color: var(--text-dim); cursor: default; opacity: 0.5; }
+  .agent-name.agent-dead:hover { text-decoration: none; }
+  .agent-name .agent-tip { display: none; position: absolute; left: 0; bottom: 120%; background: var(--surface); border: 1px solid var(--border); padding: 2px 6px; border-radius: 3px; font-size: 10px; color: var(--text-dim); font-weight: 400; white-space: nowrap; pointer-events: none; z-index: 10; }
+  .agent-name:hover .agent-tip { display: block; }
+  .agent-id { color: var(--text-dim); font-size: 11px; }
+  .sparkline { display: inline-block; vertical-align: middle; margin: 0 4px; }
+  .sparkline rect { fill: var(--blue); opacity: 0.6; }
+  .sparkline rect:last-of-type { opacity: 1; }
+  .agent-badge {
+    font-size: 9px; padding: 1px 5px;
+    border-radius: 3px; font-weight: 700;
+  }
+  .badge-manager { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .badge-top { background: rgba(200,176,96,0.2); color: var(--yellow); }
+
+  .label-filter-bar {
+    display: flex; align-items: center; gap: 4px; padding: 6px 10px;
+    border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: 0;
+  }
+  .label-filter-bar:empty { display: none; }
+  .label-btn {
+    font-size: 10px; padding: 2px 8px; border-radius: 3px; border: 1px solid var(--border);
+    background: transparent; cursor: pointer; font-weight: 600; transition: all 0.15s;
+  }
+  .label-btn:hover { opacity: 1; }
+  .label-btn.active { border-width: 2px; }
+  .agent-label {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px; font-weight: 600;
+    display: inline-block; margin-left: 2px; vertical-align: middle;
+  }
+  .add-label-btn {
+    font-size: 9px; padding: 1px 4px; border-radius: 3px; border: 1px dashed var(--border);
+    background: transparent; color: var(--text-dim); cursor: pointer; display: inline-block;
+    vertical-align: middle; margin-left: 2px; line-height: 1;
+  }
+  .add-label-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+  .task-row { padding: 6px 10px; border-bottom: 1px solid rgba(42,42,74,0.5); }
+  .task-row:last-child { border-bottom: none; }
+  .task-header { display: flex; align-items: center; gap: 6px; }
+  .task-status {
+    font-size: 9px; padding: 1px 6px; border-radius: 3px;
+    font-weight: 700; text-transform: uppercase;
+  }
+  .status-pending { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .status-working { background: rgba(122,184,160,0.2); color: var(--green); }
+  .status-blocked { background: rgba(147,112,219,0.2); color: var(--accent); }
+  .status-idle { background: rgba(147,112,219,0.15); color: var(--purple); }
+  .status-done { background: rgba(107,107,136,0.15); color: var(--text-dim); }
+  .task-desc { font-size: 12px; font-weight: 600; }
+  .task-meta { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+  .task-agent { color: var(--blue); }
+  .task-id { font-family: inherit; }
+  .task-desc { cursor: pointer; }
+  .task-desc:hover { color: var(--blue); }
+  .last-msg { color: var(--text-dim); font-size: 10px; }
+  .last-msg.quiet { color: var(--orange); }
+  .rename-btn { opacity: 0; cursor: pointer; font-size: 10px; color: var(--text-dim); margin-left: 2px; }
+  .agent-row:hover .rename-btn { opacity: 0.5; }
+  .rename-btn:hover { opacity: 1 !important; color: var(--blue); }
+  .logs-filter-bar { display: flex; align-items: center; gap: 4px; padding: 4px 10px; border-bottom: 1px solid var(--border); flex-wrap: wrap; min-height: 0; background: var(--surface); }
+  .logs-filter-bar:empty { display: none; }
+
+  .empty { padding: 10px; color: var(--text-dim); font-size: 12px; }
+
+  /* Tab switcher */
+  .tab-bar {
+    display: flex;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .tab-btn {
+    padding: 6px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  .tab-btn:hover { color: var(--text); }
+  .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+  .tab-view { display: none; flex: 1; flex-direction: column; overflow: hidden; min-height: 0; }
+  .tab-view.active { display: flex; }
+  #tab-dashboard { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+  /* Terminal tab */
+  .terminal-header {
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+    min-height: 36px;
+  }
+  .terminal-label {
+    font-size: 12px;
+    color: var(--text-dim);
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .terminal-label .term-agent-name {
+    color: var(--blue);
+    font-weight: 400;
+  }
+  .terminal-label .term-win-id {
+    font-size: 10px;
+    opacity: 0.35;
+    font-family: 'SF Mono', 'Menlo', monospace;
+  }
+  .terminal-label .term-empty {
+    color: var(--text-dim);
+    font-style: italic;
+  }
+  .terminal-controls {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .terminal-freeze-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--green);
+    cursor: pointer;
+    padding: 3px 10px;
+    font-size: 11px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .terminal-freeze-btn:hover { border-color: var(--text-dim); }
+  .terminal-freeze-btn.frozen {
+    color: var(--yellow);
+    border-color: color-mix(in srgb, var(--yellow) 30%, transparent);
+  }
+  .terminal-output {
+    flex: 1;
+    overflow: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 12px 14px;
+    margin: 6px 8px;
+    border-radius: 6px;
+    font-family: 'SF Mono', 'Menlo', 'Monaco', monospace;
+    font-size: 11px;
+    line-height: 1.4;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-all;
+    background: #0a0a14;
+    box-shadow: inset 0 1px 4px rgba(0,0,0,0.4);
+  }
+  .terminal-output:empty::after {
+    content: 'Click the 👁 button on an agent to view their terminal';
+    color: var(--text-dim);
+    font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
+    font-style: italic;
+    font-size: 12px;
+  }
+  /* Terminal folding */
+  .term-fold {
+    color: var(--text-dim);
+    font-size: 10px;
+    cursor: pointer;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.04);
+    display: inline-block;
+    margin: 1px 0;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .term-fold:hover { background: rgba(255,255,255,0.08); }
+  .term-fold::before { content: '▸ '; font-size: 9px; }
+  .term-fold.expanded::before { content: '▾ '; }
+  .term-fold-body { display: none; opacity: 0.5; font-size: 10px; margin-left: 12px; }
+  .term-fold.expanded + .term-fold-body { display: block; }
+  .term-agent-text { color: var(--blue); }
+  .term-chat-msg { color: var(--green); border-left: 2px solid var(--green); padding-left: 8px; margin: 2px 0; }
+  .term-tool-result { color: #b0b0c8; }
+  .term-decision { color: var(--yellow); }
+  /* Fleet MCP call summaries */
+  .term-fleet {
+    color: #9370db;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(147,112,219,0.08);
+    display: inline-block;
+    margin: 1px 0;
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.15s;
+  }
+  .term-fleet:hover { background: rgba(147,112,219,0.14); }
+  .term-fleet::before { content: '▸ '; font-size: 9px; }
+  .term-fleet.expanded::before { content: '▾ '; }
+  .term-fleet.expanded + .term-fold-body { display: block; }
+  /* Fleet chat bubbles */
+  .term-bubble {
+    display: block;
+    margin: 3px 0;
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-width: 85%;
+  }
+  .term-bubble-from {
+    font-size: 9px;
+    opacity: 0.5;
+    margin-bottom: 1px;
+  }
+  .term-bubble-in {
+    background: rgba(122,184,160,0.12);
+    border-left: 2px solid var(--green);
+    color: var(--text);
+  }
+  .term-bubble-out {
+    background: rgba(147,112,219,0.12);
+    border-left: 2px solid #9370db;
+    color: var(--text);
+  }
+  /* Mini chat log from my_task */
+  .term-minichat {
+    border-left: 2px solid rgba(147,112,219,0.3);
+    margin: 2px 0 2px 4px;
+    padding: 2px 0 2px 8px;
+  }
+  .term-verbatim-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 3px 10px;
+    font-size: 11px;
+    transition: border-color 0.15s, color 0.15s;
+  }
+  .term-verbatim-btn:hover { border-color: var(--text-dim); }
+  .term-verbatim-btn.active {
+    color: var(--cyan);
+    border-color: color-mix(in srgb, var(--cyan) 30%, transparent);
+  }
+  /* ANSI color classes */
+  .ansi-black { color: #555; }
+  .ansi-red { color: #e06c75; }
+  .ansi-green { color: #7ab8a0; }
+  .ansi-yellow { color: #c8b060; }
+  .ansi-blue { color: #7a9ec8; }
+  .ansi-magenta { color: #9370db; }
+  .ansi-cyan { color: #6aafb0; }
+  .ansi-white { color: #c8c8d8; }
+  .ansi-bright-black { color: #6b6b88; }
+  .ansi-bright-red { color: #f08080; }
+  .ansi-bright-green { color: #90d4b8; }
+  .ansi-bright-yellow { color: #e0d080; }
+  .ansi-bright-blue { color: #98bee0; }
+  .ansi-bright-magenta { color: #b098e8; }
+  .ansi-bright-cyan { color: #88d0d0; }
+  .ansi-bright-white { color: #e8e8f0; }
+  .ansi-bold { font-weight: 600; }
+  .ansi-dim { opacity: 0.6; }
+  .ansi-italic { font-style: italic; }
+  .ansi-underline { text-decoration: underline; }
+
+  /* Log search */
+  .log-search-bar {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+  .log-search-bar input {
+    flex: 1;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    color: var(--text);
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .log-search-bar input:focus { border-color: var(--blue); }
+  .log-search-bar input::placeholder { color: var(--text-dim); }
+  .log-search-bar select {
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 6px;
+    font-size: 11px;
+    font-family: inherit;
+    outline: none;
+    max-width: 140px;
+  }
+  .log-search-bar select:focus { border-color: var(--blue); }
+  .log-search-status {
+    padding: 4px 10px;
+    font-size: 11px;
+    color: var(--text-dim);
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .log-results {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .log-result {
+    padding: 6px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+    cursor: pointer;
+  }
+  .log-result:hover { background: rgba(108,155,255,0.06); }
+  .log-result-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 3px;
+  }
+  .log-role {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 700;
+    text-transform: uppercase;
+  }
+  .role-user { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .role-assistant { background: rgba(122,184,160,0.2); color: var(--green); }
+  .role-chat { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .role-delegate { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .role-task_done, .role-task-done { background: rgba(122,184,160,0.2); color: var(--green); }
+  .log-project { color: var(--purple); font-size: 11px; font-weight: 600; }
+  .log-session { color: var(--text-dim); font-size: 10px; font-family: monospace; }
+  .log-src-btn {
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.4;
+    cursor: pointer;
+    padding: 0 4px;
+    margin-left: auto;
+    flex-shrink: 0;
+    position: relative;
+  }
+  .log-src-btn:hover { opacity: 1; color: var(--blue); }
+  .log-src-btn .src-tip {
+    display: none;
+    position: absolute;
+    right: 0;
+    bottom: 120%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 10px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    color: var(--text);
+    white-space: nowrap;
+    z-index: 10;
+  }
+  .log-src-btn:hover .src-tip { display: block; }
+  .log-snippet {
+    font-size: 12px;
+    line-height: 1.4;
+    color: var(--text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .log-snippet mark {
+    background: rgba(200,176,96,0.3);
+    color: var(--yellow);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+
+  /* Timeline event */
+  .timeline-event {
+    padding: 4px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+    font-size: 12px;
+  }
+  .timeline-event .chat-ts { color: var(--text-dim); font-size: 11px; }
+  .timeline-event .evt-from { font-weight: 700; }
+  .timeline-event .evt-arrow { color: var(--text-dim); margin: 0 2px; }
+  .timeline-event .evt-to { font-weight: 600; color: var(--blue); }
+  .timeline-event .evt-text { color: var(--text); margin-top: 1px; }
+  .timeline-event.evt-delegate { border-left: 2px solid var(--yellow); }
+  .timeline-event.evt-task_done { border-left: 2px solid var(--green); }
+  .timeline-event.evt-chat { border-left: 2px solid var(--purple); }
+
+  /* Context modal */
+  .context-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 100;
+  }
+  .context-overlay.active { display: flex; align-items: center; justify-content: center; }
+  .context-modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90%;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .context-header {
+    padding: 8px 12px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    border-radius: 8px 8px 0 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 12px;
+    color: var(--text-dim);
+    flex-shrink: 0;
+  }
+  .context-header .close-btn {
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    cursor: pointer;
+    font-size: 16px;
+    font-family: inherit;
+  }
+  .context-header .close-btn:hover { color: var(--text); }
+  .context-body {
+    flex: 1;
+    overflow-y: auto;
+    padding: 8px 0;
+    -webkit-overflow-scrolling: touch;
+  }
+  .context-msg {
+    padding: 6px 12px;
+  }
+  .context-msg.target { background: rgba(200,176,96,0.1); }
+  .context-msg-role {
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    margin-bottom: 2px;
+  }
+  .context-msg-role.user { color: var(--blue); }
+  .context-msg-role.assistant { color: var(--green); }
+  .context-msg-text {
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-break: break-word;
+    line-height: 1.4;
+  }
+
+  /* Refs */
+  .ref-item {
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+    font-size: 12px;
+    line-height: 1.4;
+  }
+  .ref-item:hover { background: rgba(255,255,255,0.03); }
+
+  /* Docs tab */
+  .docs-header {
+    padding: 6px 10px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-shrink: 0;
+  }
+  .docs-header select {
+    flex: 1;
+    background: var(--bg);
+    color: var(--text);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 12px;
+    font-family: inherit;
+    outline: none;
+  }
+  .docs-header select:focus { border-color: var(--blue); }
+  .docs-refresh-btn {
+    background: none;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text-dim);
+    cursor: pointer;
+    padding: 3px 8px;
+    font-size: 14px;
+  }
+  .docs-refresh-btn:hover { border-color: var(--text-dim); color: var(--text); }
+  .docs-list {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .ann-card {
+    padding: 8px 10px;
+    border-bottom: 1px solid rgba(42,42,74,0.5);
+  }
+  .ann-card:hover { background: rgba(108,155,255,0.04); }
+  .ann-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-bottom: 4px;
+  }
+  .ann-color {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .ann-anchor {
+    font-size: 10px;
+    color: var(--cyan);
+    font-family: 'SF Mono','Menlo',monospace;
+    cursor: pointer;
+  }
+  .ann-anchor:hover { text-decoration: underline; }
+  .ann-done { opacity: 0.4; }
+  .ann-text {
+    font-size: 12px;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+    margin-bottom: 4px;
+  }
+  .ann-text[contenteditable] { outline: none; }
+  .ann-text[contenteditable]:focus {
+    background: rgba(255,255,255,0.03);
+    border-radius: 3px;
+    padding: 2px 4px;
+    margin: -2px -4px;
+  }
+  .ann-actions {
+    display: flex;
+    gap: 8px;
+    opacity: 0;
+  }
+  .ann-card:hover .ann-actions { opacity: 1; }
+  .ann-action-btn {
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    background: none;
+    border: none;
+    font-family: inherit;
+    padding: 0;
+  }
+  .ann-action-btn:hover { color: var(--text); }
+  .ann-action-btn.danger:hover { color: var(--orange); }
+  .ann-tabs {
+    display: flex;
+    gap: 2px;
+    margin-top: 4px;
+  }
+  .ann-tab {
+    font-size: 9px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(255,255,255,0.05);
+    color: var(--text-dim);
+    cursor: pointer;
+  }
+  .ann-tab.active { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .ann-tab:hover { background: rgba(255,255,255,0.1); }
+
+  /* Cmd+K unified search */
+  .cmdk-overlay {
+    display: none;
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 200;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 15vh;
+  }
+  .cmdk-overlay.active { display: flex; }
+  .cmdk-modal {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    width: 90%;
+    max-width: 560px;
+    max-height: 60vh;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  }
+  .cmdk-input-wrap {
+    padding: 12px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+  .cmdk-input-wrap input {
+    width: 100%;
+    background: transparent;
+    border: none;
+    color: var(--text);
+    font-size: 15px;
+    font-family: inherit;
+    outline: none;
+  }
+  .cmdk-input-wrap input::placeholder { color: var(--text-dim); }
+  .cmdk-results {
+    flex: 1;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 0;
+  }
+  .cmdk-group-label {
+    padding: 6px 12px 3px;
+    font-size: 10px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--text-dim);
+  }
+  .cmdk-item {
+    padding: 6px 12px;
+    cursor: pointer;
+    font-size: 12px;
+    line-height: 1.4;
+    display: flex;
+    gap: 8px;
+    align-items: flex-start;
+  }
+  .cmdk-item:hover, .cmdk-item.selected { background: rgba(108,155,255,0.1); }
+  .cmdk-item .cmdk-source {
+    font-size: 9px;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-weight: 700;
+    text-transform: uppercase;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .cmdk-item .cmdk-source.src-chat { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .cmdk-item .cmdk-source.src-logs { background: rgba(122,184,160,0.2); color: var(--green); }
+  .cmdk-item .cmdk-source.src-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .cmdk-item .cmdk-source.src-term { background: rgba(200,176,96,0.2); color: var(--yellow); }
+  .cmdk-item .cmdk-text {
+    flex: 1;
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-width: 0;
+  }
+  .cmdk-item .cmdk-text mark {
+    background: rgba(200,176,96,0.3);
+    color: var(--yellow);
+    border-radius: 2px;
+    padding: 0 1px;
+  }
+  .cmdk-item .cmdk-meta {
+    color: var(--text-dim);
+    font-size: 10px;
+    flex-shrink: 0;
+    margin-top: 1px;
+  }
+  .cmdk-empty {
+    padding: 20px 12px;
+    color: var(--text-dim);
+    font-size: 12px;
+    text-align: center;
+  }
+  .cmdk-hint {
+    padding: 6px 12px;
+    font-size: 10px;
+    color: var(--text-dim);
+    border-top: 1px solid var(--border);
+    flex-shrink: 0;
+    display: flex;
+    gap: 12px;
+  }
+  .cmdk-hint kbd {
+    background: rgba(255,255,255,0.08);
+    padding: 0 4px;
+    border-radius: 3px;
+    font-family: inherit;
+    font-size: 10px;
+  }
+
+  /* Pinned refs bar in unified search */
+  .pinned-refs-bar {
+    display: none;
+    background: rgba(200,176,96,0.06);
+    border-bottom: 1px solid var(--border);
+    max-height: 160px;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .pinned-refs-bar.active { display: block; }
+  .pinned-ref-item {
+    padding: 5px 10px;
+    font-size: 12px;
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    border-bottom: 1px solid rgba(42,42,74,0.3);
+    cursor: pointer;
+  }
+  .pinned-ref-item:last-child { border-bottom: none; }
+  .pinned-ref-item:hover { background: rgba(200,176,96,0.08); }
+  .pinned-ref-icon { flex-shrink: 0; font-size: 11px; margin-top: 1px; }
+  .pinned-ref-label { font-weight: 600; color: var(--yellow); }
+  .pinned-ref-meta { font-size: 10px; color: var(--text-dim); }
+  .pinned-ref-del {
+    margin-left: auto; opacity: 0; cursor: pointer; font-size: 14px;
+    color: var(--text-dim); flex-shrink: 0; padding: 0 4px;
+  }
+  .pinned-ref-item:hover .pinned-ref-del { opacity: 0.5; }
+  .pinned-ref-del:hover { opacity: 1 !important; color: var(--orange); }
+  .type-badge {
+    font-size: 9px; padding: 1px 5px; border-radius: 3px;
+    font-weight: 700; text-transform: uppercase; flex-shrink: 0;
+  }
+  .type-session { background: rgba(122,158,200,0.2); color: var(--blue); }
+  .type-events { background: rgba(147,112,219,0.2); color: var(--purple); }
+  .type-tlda { background: rgba(106,175,176,0.2); color: var(--cyan); }
+  .type-refs { background: rgba(200,176,96,0.2); color: var(--yellow); }
+
+  /* File preview thumbnails */
+  .file-thumb {
+    background: rgba(255,255,255,0.04);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    margin: 4px 0;
+    max-width: 360px;
+    cursor: pointer;
+    overflow: hidden;
+    transition: border-color 0.15s;
+  }
+  .file-thumb:hover { border-color: var(--cyan); }
+  .file-thumb-header {
+    font-size: 11px;
+    color: var(--text-dim);
+    padding: 4px 8px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .file-thumb-body {
+    padding: 6px 8px;
+    font-size: 11px;
+    line-height: 1.4;
+    max-height: 100px;
+    overflow: hidden;
+    position: relative;
+  }
+  .file-thumb-body::after {
+    content: '';
+    position: absolute;
+    bottom: 0; left: 0; right: 0;
+    height: 24px;
+    background: linear-gradient(transparent, #1a1a1a);
+    pointer-events: none;
+  }
+  .file-thumb-body pre {
+    margin: 0;
+    font-size: 11px;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-all;
+  }
+  .file-thumb-body .md-preview h1,
+  .file-thumb-body .md-preview h2,
+  .file-thumb-body .md-preview h3 {
+    margin: 0 0 2px;
+    font-size: 12px;
+    color: var(--fg);
+  }
+  .file-thumb-body .md-preview strong { color: var(--fg); }
+  .file-thumb-body .md-preview code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 3px;
+    border-radius: 2px;
+    font-size: 10px;
+  }
+  .file-thumb-loading {
+    color: var(--text-dim);
+    font-size: 11px;
+    font-style: italic;
+  }
+
+  /* File modal */
+  .file-modal-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0,0,0,0.7);
+    z-index: 1000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .file-modal {
+    background: #1e1e1e;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    width: 90vw;
+    max-width: 700px;
+    max-height: 80vh;
+    display: flex;
+    flex-direction: column;
+  }
+  .file-modal-header {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    font-size: 13px;
+    color: var(--cyan);
+  }
+  .file-modal-close {
+    cursor: pointer;
+    color: var(--text-dim);
+    font-size: 18px;
+    padding: 0 4px;
+  }
+  .file-modal-close:hover { color: var(--fg); }
+  .file-modal-body {
+    padding: 12px 14px;
+    overflow: auto;
+    flex: 1;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .file-modal-body pre {
+    margin: 0;
+    font-family: 'SF Mono', 'Menlo', monospace;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .file-modal-body .md-preview h1 { font-size: 18px; margin: 0 0 6px; }
+  .file-modal-body .md-preview h2 { font-size: 15px; margin: 0 0 4px; }
+  .file-modal-body .md-preview h3 { font-size: 13px; margin: 0 0 4px; }
+  .file-modal-body .md-preview code {
+    background: rgba(255,255,255,0.08);
+    padding: 1px 4px;
+    border-radius: 3px;
+    font-size: 11px;
+  }
+  .file-modal-body .md-preview pre {
+    background: rgba(255,255,255,0.05);
+    padding: 8px;
+    border-radius: 4px;
+    margin: 4px 0;
+  }
+
+  /* Mobile: stack vertically */
+  @media (max-width: 700px) {
+    .split { flex-direction: column; }
+    .left-pane { border-right: none; border-bottom: 1px solid var(--border); flex: 1; width: auto !important; }
+    .right-pane { flex: 0 0 40%; }
+    .drag-handle-v { display: none; }
+  }
+</style>
+</head>
+<body>
+
+<div class="split">
+  <!-- Left: Chat -->
+  <div class="left-pane">
+    <div class="chat-header">
+      <span class="dot" id="connDot"></span>
+      <div class="chat-filter" id="chatFilterBar"></div>
+      <span class="chat-send-to" id="chatSendTo"></span>
+    </div>
+    <div class="chat-search-bar" id="chatSearchBar">
+      <input type="text" id="chatSearchInput" placeholder="Search chat..." autocomplete="off">
+      <span class="search-count" id="chatSearchCount"></span>
+      <button onclick="chatSearchNav(-1)" title="Previous">&#x25B2;</button>
+      <button onclick="chatSearchNav(1)" title="Next">&#x25BC;</button>
+      <button onclick="closeChatSearch()" title="Close">&times;</button>
+    </div>
+    <div class="pinned-bar" id="pinnedBar"></div>
+    <div class="chat-log" id="chatLog"></div>
+    <div class="chat-input-bar">
+      <div class="chat-input-wrap">
+        <div class="cmd-palette" id="cmdPalette"></div>
+        <div class="chat-attachments" id="chatAttachments"></div>
+        <textarea id="chatInput" placeholder="Message (to manager)..." autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" rows="1"></textarea>
+      </div>
+      <button id="interruptToggle" onclick="toggleInterrupt()" title="Toggle interrupt mode — next message sends ESC">&#x26A1;</button>
+      <button id="chatSend" onclick="sendChat()">send</button>
+    </div>
+  </div>
+
+  <!-- Vertical resize handle -->
+  <div class="drag-handle-v" id="dragV"></div>
+
+  <!-- Right: Dashboard + Logs -->
+  <div class="right-pane">
+    <div class="tab-bar">
+      <button class="tab-btn active" onclick="switchTab('dashboard')">Dashboard</button>
+      <button class="tab-btn" onclick="switchTab('timeline')">Timeline</button>
+      <button class="tab-btn" onclick="switchTab('search')">Search</button>
+      <button class="tab-btn" onclick="switchTab('terminal')">Terminal</button>
+    </div>
+
+    <div class="tab-view active" id="tab-dashboard">
+      <div class="label-filter-bar" id="labelFilterBar"></div>
+      <div class="search-bar">
+        <input type="text" id="agentSearch" placeholder="Search agents..." autocomplete="off">
+      </div>
+      <div class="search-results" id="searchResults"></div>
+      <div class="tasks-completed-split" id="tasksCompletedSplit">
+        <div class="section" style="flex:1;min-height:60px;overflow-y:auto;">
+          <div class="section-header" onclick="toggle('tasks')">Tasks</div>
+          <div class="section-body" id="tasks"></div>
+        </div>
+        <div class="drag-handle-h" id="dragTasksH"></div>
+        <div class="section" id="completedSection" style="height:180px;min-height:60px;overflow-y:auto;">
+          <div class="section-header" onclick="toggle('done')">Completed</div>
+          <div class="section-body collapsed" id="done"></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="tab-view" id="tab-timeline" style="overflow-y:auto;-webkit-overflow-scrolling:touch;">
+      <canvas id="ganttCanvas" style="width:100%;display:block"></canvas>
+    </div>
+
+    <div class="tab-view" id="tab-search">
+      <div class="logs-filter-bar" id="logsFilterBar"></div>
+      <div class="log-search-bar">
+        <input type="text" id="logSearchInput" placeholder="Search conversations, events, annotations, refs..." autocomplete="off">
+        <select id="logTypeFilter" onchange="searchLogs()">
+          <option value="">all types</option>
+          <option value="session">conversations</option>
+          <option value="events">events</option>
+          <option value="tlda">annotations</option>
+          <option value="refs">pinned refs</option>
+        </select>
+        <select id="logRoleFilter" onchange="searchLogs()">
+          <option value="">all roles</option>
+          <option value="user">user (human)</option>
+          <option value="assistant">assistant</option>
+          <option value="chat">chat</option>
+          <option value="delegate">delegate</option>
+        </select>
+        <select id="logAgentFilter" onchange="searchLogs()"><option value="">all agents</option></select>
+        <select id="logProjectFilter"><option value="">all projects</option></select>
+        <label class="pinned-toggle" id="pinnedToggle" style="display:flex;align-items:center;gap:4px;font-size:11px;color:var(--text-dim);cursor:pointer;white-space:nowrap;"><input type="checkbox" id="pinnedOnlyCheck" onchange="searchLogs()" style="margin:0;cursor:pointer;"> pinned only</label>
+      </div>
+      <div class="pinned-refs-bar" id="pinnedRefsBar"></div>
+      <div class="log-search-status" id="logStatus"></div>
+      <div class="log-results" id="logResults"></div>
+    </div>
+
+    <div class="tab-view" id="tab-terminal">
+      <div class="terminal-header" id="terminalHeader">
+        <span class="terminal-label" id="terminalLabel"><span class="term-empty">No agent selected</span></span>
+        <div class="terminal-controls">
+          <button class="term-verbatim-btn" id="terminalVerbatim" onclick="toggleTerminalVerbatim()" title="Toggle raw/folded view">folded</button>
+          <button class="terminal-freeze-btn" id="terminalFreeze" onclick="toggleTerminalFreeze()" title="Freeze/unfreeze">&#x23f8; freeze</button>
+        </div>
+      </div>
+      <pre class="terminal-output" id="terminalOutput"></pre>
+    </div>
+
+    <!-- Horizontal resize handle -->
+    <div class="drag-handle-h" id="dragH"></div>
+
+    <!-- Active Agents — always visible, fixed height -->
+    <div class="agents-panel">
+      <div class="section-body" id="agents"></div>
+    </div>
+  </div>
+
+  <!-- Context modal -->
+  <div class="context-overlay" id="contextOverlay" onclick="if(event.target===this)closeContext()">
+    <div class="context-modal">
+      <div class="context-header">
+        <span id="contextTitle">Context</span>
+        <button id="contextPinBtn" onclick="pinContext()" style="font-size:11px;padding:2px 8px;background:var(--accent);color:#fff;border:none;border-radius:4px;cursor:pointer;margin-left:auto;margin-right:8px;">pin as reference</button>
+        <button class="close-btn" onclick="closeContext()">&times;</button>
+      </div>
+      <div class="context-body" id="contextBody"></div>
+    </div>
+  </div>
+
+  <!-- Cmd+K unified search -->
+  <div class="cmdk-overlay" id="cmdkOverlay" onclick="if(event.target===this)closeCmdK()">
+    <div class="cmdk-modal">
+      <div class="cmdk-input-wrap">
+        <input type="text" id="cmdkInput" placeholder="Search chat, logs, terminal..." autocomplete="off">
+      </div>
+      <div class="cmdk-results" id="cmdkResults">
+        <div class="cmdk-empty">Type to search across all sources</div>
+      </div>
+      <div class="cmdk-hint">
+        <span><kbd>Esc</kbd> close</span>
+        <span><kbd>Enter</kbd> go to result</span>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// --- Resizable panels ---
+(function() {
+  const MIN_LEFT = 200;
+  const MIN_RIGHT = 200;
+  const MIN_AGENTS = 80;
+  const MIN_TABS = 100;
+
+  function initResizable() {
+    const dragV = document.getElementById('dragV');
+    const dragH = document.getElementById('dragH');
+    const leftPane = document.querySelector('.left-pane');
+    const rightPane = document.querySelector('.right-pane');
+    const agentsPanel = document.querySelector('.agents-panel');
+
+    // Restore saved sizes
+    const savedLeft = localStorage.getItem('fleet-left-width');
+    if (savedLeft) leftPane.style.width = savedLeft;
+
+    const savedAgents = localStorage.getItem('fleet-agents-height');
+    if (savedAgents) agentsPanel.style.height = savedAgents;
+
+    // Vertical handle: resize left/right panes
+    setupDrag(dragV, {
+      onMove(e) {
+        const container = leftPane.parentElement;
+        const rect = container.getBoundingClientRect();
+        const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+        const clamped = Math.max(MIN_LEFT, Math.min(x, rect.width - MIN_RIGHT));
+        leftPane.style.width = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-left-width', leftPane.style.width);
+      }
+    });
+
+    // Tasks/Completed drag handle
+    const dragTasksH = document.getElementById('dragTasksH');
+    const completedSection = document.getElementById('completedSection');
+    const savedCompleted = localStorage.getItem('fleet-completed-height');
+    if (savedCompleted) completedSection.style.height = savedCompleted;
+
+    setupDrag(dragTasksH, {
+      onMove(e) {
+        const container = document.getElementById('tasksCompletedSplit');
+        const rect = container.getBoundingClientRect();
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+        const fromBottom = rect.height - y;
+        const clamped = Math.max(60, Math.min(fromBottom, rect.height - 60));
+        completedSection.style.height = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-completed-height', completedSection.style.height);
+      }
+    });
+
+    // Horizontal handle: resize agents panel height
+    setupDrag(dragH, {
+      onMove(e) {
+        const container = rightPane;
+        const rect = container.getBoundingClientRect();
+        const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+        const fromBottom = rect.height - y;
+        const clamped = Math.max(MIN_AGENTS, Math.min(fromBottom, rect.height - MIN_TABS));
+        agentsPanel.style.height = clamped + 'px';
+      },
+      onEnd() {
+        localStorage.setItem('fleet-agents-height', agentsPanel.style.height);
+      }
+    });
+  }
+
+  function setupDrag(handle, { onMove, onEnd }) {
+    function start(e) {
+      e.preventDefault();
+      handle.classList.add('dragging');
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = handle.classList.contains('drag-handle-v') ? 'col-resize' : 'row-resize';
+
+      function move(e) { onMove(e); }
+      function end() {
+        handle.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', end);
+        document.removeEventListener('touchmove', move);
+        document.removeEventListener('touchend', end);
+        onEnd();
+      }
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', end);
+      document.addEventListener('touchmove', move, { passive: false });
+      document.addEventListener('touchend', end);
+    }
+    handle.addEventListener('mousedown', start);
+    handle.addEventListener('touchstart', start, { passive: false });
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initResizable);
+  } else {
+    initResizable();
+  }
+})();
+let currentState = null;
+let shouldAutoScroll = true;
+const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3','nick-agent-4','nick-agent-5'];
+const nickMap = new Map(); // agent id -> color class
+let nickIdx = 0;
+
+function getNickClass(id, state) {
+  if (id === 'web') return 'nick-web';
+  if (id === 'keepalive') return 'nick-keepalive';
+  if (state && id === state.manager) return 'nick-manager';
+  if (!nickMap.has(id)) {
+    nickMap.set(id, nickColors[nickIdx % nickColors.length]);
+    nickIdx++;
+  }
+  return nickMap.get(id);
+}
+
+const nickColorMap = {
+  'nick-web': '#9370db', 'nick-manager': '#7ab8a0', 'nick-keepalive': '#6b6b88',
+  'nick-agent-0': '#7a9ec8', 'nick-agent-1': '#9370db', 'nick-agent-2': '#c8956a',
+  'nick-agent-3': '#6aafb0', 'nick-agent-4': '#b87a95', 'nick-agent-5': '#c8b060',
+};
+function getNickColor(id, state) {
+  return nickColorMap[getNickClass(id, state)] || '#7a9ec8';
+}
+
+// --- Notifications ---
+let lastMsgCount = 0;
+let notificationsEnabled = false;
+
+function requestNotifications() {
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().then(p => { notificationsEnabled = p === 'granted'; });
+  } else if (Notification.permission === 'granted') {
+    notificationsEnabled = true;
+  }
+}
+requestNotifications();
+
+function checkForNewMessages(state) {
+  const msgs = state.messages || [];
+  if (lastMsgCount === 0) { lastMsgCount = msgs.length; return; }
+  if (msgs.length <= lastMsgCount) { lastMsgCount = msgs.length; return; }
+
+  // Check new messages — notify if addressed to 'web' or from an agent to manager
+  const newMsgs = msgs.slice(lastMsgCount);
+  lastMsgCount = msgs.length;
+
+  for (const m of newMsgs) {
+    if (m.from === 'web') { lastConversationPartner = m.to; continue; }
+    if (m.to === 'web' || m.text?.toLowerCase().includes('@skip') || m.text?.toLowerCase().includes('@human')) {
+      lastConversationPartner = m.from;
+      const nick = agentLabel(state, m.from);
+      if (notificationsEnabled) {
+        new Notification(`${nick}`, { body: m.text?.substring(0, 200), tag: m.timestamp });
+      }
+      // Also flash the title
+      document.title = `* ${nick}: ${(m.text || '').substring(0, 40)}`;
+      setTimeout(() => { document.title = 'Agent Dashboard'; }, 10000);
+    }
+  }
+}
+
+// --- SSE ---
+function connect() {
+  const evtSource = new EventSource('/events');
+  evtSource.onmessage = e => {
+    $('connDot').className = 'dot';
+    currentState = JSON.parse(e.data);
+    checkForNewMessages(currentState);
+    render(currentState);
+  };
+  evtSource.onerror = () => {
+    $('connDot').className = 'dot disconnected';
+    evtSource.close();
+    setTimeout(connect, 3000);
+  };
+}
+connect();
+
+// Reset state if requested
+if (new URLSearchParams(location.search).has('reset')) {
+  localStorage.clear();
+  history.replaceState(null, '', '/');
+}
+
+// Restore persisted UI state
+try {
+  const validTabs = ['dashboard', 'timeline', 'search', 'terminal'];
+  const savedTab = localStorage.getItem('fleet-tab');
+  const savedAgent = localStorage.getItem('fleet-terminal-agent');
+  if (savedAgent) terminalAgent = savedAgent;
+  if (savedTab && validTabs.includes(savedTab)) switchTab(savedTab);
+} catch (e) { console.warn('restore failed:', e); }
+
+// Prevent accidental file drops from navigating away
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => e.preventDefault());
+
+// --- Auto-scroll ---
+const chatLog = $('chatLog');
+chatLog.addEventListener('scroll', () => {
+  shouldAutoScroll = chatLog.scrollHeight - chatLog.scrollTop - chatLog.clientHeight < 30;
+});
+function scrollToBottom() {
+  requestAnimationFrame(() => requestAnimationFrame(() => { chatLog.scrollTop = chatLog.scrollHeight; }));
+}
+
+// --- Helpers ---
+function agentLabel(state, id) {
+  const agents = state.agents || [];
+  const a = agents.find(x => x.id === id || x.name === id);
+  if (a?.friendly_name) return a.friendly_name;
+  if (a?.name) return a.name;
+  if (typeof id === 'string' && id.length > 8) return id.slice(0, 8);
+  return String(id);
+}
+
+// Clickable agent name: hover shows UUID, click sets as chat target. Grey if dead.
+function agentLink(state, id) {
+  const label = agentLabel(state, id);
+  const uuid = typeof id === 'string' && id.length > 8 ? id : '';
+  const tip = uuid ? `<span class="agent-tip">${uuid}</span>` : '';
+  const agent = (state.agents || []).find(a => a.id === id || a.name === id);
+  const alive = agent && isActive(agent);
+  const cls = alive ? 'agent-name' : 'agent-name agent-dead';
+  const nickCls = getNickClass(id, state);
+  const click = ` onclick="selectAgent('${esc(String(id))}')"`;
+
+  return `<span class="${cls} ${nickCls}"${click}>${esc(label)}${tip}</span>`;
+}
+
+function timeAgo(ts) {
+  const m = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
+  if (m < 1) return 'now';
+  if (m < 60) return m + 'm';
+  const h = Math.round(m / 60);
+  if (h < 24) return h + 'h';
+  return Math.round(h / 24) + 'd';
+}
+
+function timeShort(ts) {
+  return new Date(ts).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function esc(s) {
+  if (s == null) return '';
+  const d = document.createElement('div');
+  d.textContent = String(s);
+  return d.innerHTML;
+}
+
+// --- Minimal markdown renderer for chat ---
+function renderMarkdown(html) {
+  // Already HTML-escaped. Apply markdown transforms.
+  // Code blocks: ```...```
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) => {
+    return `<pre style="background:rgba(255,255,255,0.05);padding:6px 8px;border-radius:4px;margin:4px 0;overflow-x:auto;font-size:12px;font-family:'SF Mono','Menlo',monospace"><code>${code.replace(/^\n|\n$/g, '')}</code></pre>`;
+  });
+  // Inline code: `...`
+  html = html.replace(/`([^`\n]+)`/g, '<code style="background:rgba(255,255,255,0.08);padding:1px 4px;border-radius:3px;font-size:12px;font-family:\'SF Mono\',\'Menlo\',monospace">$1</code>');
+  // Bold: **...**
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  // Italic: *...*
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Images: ![alt](url) handled in linkifyAgents before file linkification
+  // Bullet lists: lines starting with - or *
+  html = html.replace(/^([- *]) (.+)$/gm, '<span style="display:block;padding-left:12px">$1 $2</span>');
+  // URLs: linkify bare http(s) URLs (skip already-linked ones inside href/src)
+  html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) return segment;
+    return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url =>
+      `<a href="${url}" target="_blank" style="color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--cyan)">${url}</a>`);
+  });
+  // Inline tlda previews: [tlda] snippet (from source)
+  html = html.replace(/\[tlda\]\s*(.*?)\s*\(from ([^)]+)\)/g, (_, snippet, source) => {
+    const m = source.match(/^tlda:([^/]+)\/?(.*)/);
+    const project = m ? m[1] : '';
+    const shapeId = m ? m[2] : '';
+    const token = 'c5e4726ab77972fc7312f3a703f9cf1c';
+    const openUrl = project
+      ? `http://localhost:5176/?doc=${encodeURIComponent(project)}&token=${token}${shapeId ? '&focus=' + encodeURIComponent(shapeId) : ''}`
+      : '';
+    return `<div class="tlda-embed" style="margin:4px 0">
+      <div style="font-size:11px;color:var(--text-dim);margin-bottom:2px">${esc(source)}</div>
+      <div style="display:flex;gap:8px;align-items:flex-start">
+        <div style="flex:1;font-size:12px;color:var(--text);line-height:1.4;padding:6px 8px;background:rgba(255,255,255,0.04);border-radius:4px;border-left:3px solid var(--purple)">${esc(snippet)}</div>
+        ${openUrl ? `<a href="${openUrl}" target="_blank" style="color:var(--purple);font-size:11px;white-space:nowrap;text-decoration:none;padding:4px 0" title="Open in tlda">open &rarr;</a>` : ''}
+      </div>
+    </div>`;
+  });
+  return html;
+}
+
+const IMG_EXTS = /\.(svg|png|jpe?g|gif|webp)$/i;
+const TEXT_EXTS = /\.(md|r|mjs|js|ts|py|tex|sh|css|json|yaml|yml|txt|csv|toml|html)$/i;
+
+function resolveFilePath(match, cwd) {
+  if (match.startsWith('~/')) return '/Users/skip/' + match.slice(2);
+  if (match.startsWith('/')) return match;
+  if (cwd) return cwd.replace(/\/$/, '') + '/' + match;
+  return match;
+}
+
+function linkifyFiles(html, cwd) {
+  // Match absolute paths, ~/paths, and relative paths with known extensions
+  // Runs on already-escaped HTML, so paths won't contain < > & etc.
+  const absRe = /(?:~\/|\/(?:Users|tmp|var|home)\/)[^\s&<>"',;)}\]]+/g;
+  // Relative paths with file extensions (word/word.ext pattern, at least one directory)
+  const relRe = /(?<![\/\w])(?:\w[\w.-]*\/)+\w[\w.-]*\.\w{1,5}(?=[)\s&<>"',;}\]"]|$)/g;
+
+  function makeLink(match) {
+    const abs = resolveFilePath(match, cwd);
+    const isImg = IMG_EXTS.test(abs);
+    const isText = TEXT_EXTS.test(abs);
+    const link = `<a href="zed://file${abs}" style="color:var(--cyan);text-decoration:none;border-bottom:1px dotted var(--cyan)">${match}</a>`;
+    if (isImg) {
+      const cacheBust = Math.floor(Date.now() / 10000); // refreshes every 10s
+      return link + `<br><a href="zed://file${abs}"><img src="/api/file?path=${encodeURIComponent(abs)}&t=${cacheBust}" style="max-width:240px;max-height:160px;border-radius:4px;margin:4px 0;border:1px solid var(--border);display:block" onerror="this.style.display='none'"></a>`;
+    }
+    if (isText) {
+      const basename = abs.split('/').pop();
+      const thumbType = /\.md$/i.test(abs) ? 'md' : 'code';
+      return link + `<div class="file-thumb" data-path="${abs.replace(/"/g, '&quot;')}" data-type="${thumbType}" onclick="event.preventDefault();openFileModal('${abs.replace(/'/g, "\\'")}')"><div class="file-thumb-header">${esc(basename)}</div><div class="file-thumb-body"><span class="file-thumb-loading">loading...</span></div></div>`;
+    }
+    return link;
+  }
+
+  // Use placeholders so absRe results don't get re-matched by relRe
+  const slots = [];
+  html = html.replace(absRe, match => {
+    const idx = slots.length;
+    slots.push(makeLink(match));
+    return `\x00LINK${idx}\x00`;
+  });
+  html = html.replace(relRe, match => {
+    if (/^https?:/.test(match) || /^[.#]/.test(match)) return match;
+    return makeLink(match);
+  });
+  // Restore placeholders
+  html = html.replace(/\x00LINK(\d+)\x00/g, (_, i) => slots[i]);
+  return html;
+}
+
+function renderSimpleMarkdown(text) {
+  let html = esc(text);
+  // Code blocks
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, lang, code) =>
+    `<pre><code>${code.replace(/^\n|\n$/g, '')}</code></pre>`);
+  // Headers
+  html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+  html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+  html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+  // Bold/italic
+  html = html.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(?<!\*)\*([^*]+)\*(?!\*)/g, '<em>$1</em>');
+  // Inline code
+  html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+  // Bullet lists
+  html = html.replace(/^[- ] (.+)$/gm, '<div style="padding-left:12px">- $1</div>');
+  return html;
+}
+
+async function loadFilePreviews() {
+  const thumbs = document.querySelectorAll('.file-thumb[data-path]:not([data-loaded])');
+  for (const thumb of thumbs) {
+    thumb.setAttribute('data-loaded', '1');
+    const filePath = thumb.dataset.path;
+    const type = thumb.dataset.type;
+    const body = thumb.querySelector('.file-thumb-body');
+    try {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(filePath)}&lines=6`);
+      if (!res.ok) { body.innerHTML = '<span class="file-thumb-loading">unavailable</span>'; continue; }
+      const data = await res.json();
+      if (type === 'md') {
+        body.innerHTML = `<div class="md-preview">${renderSimpleMarkdown(data.content)}</div>`;
+      } else {
+        body.innerHTML = `<pre>${esc(data.content)}</pre>`;
+      }
+    } catch {
+      body.innerHTML = '<span class="file-thumb-loading">unavailable</span>';
+    }
+  }
+}
+
+function openFileModal(filePath) {
+  const overlay = document.createElement('div');
+  overlay.className = 'file-modal-overlay';
+  overlay.onclick = (e) => { if (e.target === overlay) overlay.remove(); };
+  const basename = filePath.split('/').pop();
+  const isMd = /\.md$/i.test(filePath);
+  overlay.innerHTML = `
+    <div class="file-modal">
+      <div class="file-modal-header">
+        <span>${esc(basename)}</span>
+        <a href="zed://file${filePath}" style="color:var(--cyan);text-decoration:none;font-size:11px;margin-left:8px">open in editor</a>
+        <span style="flex:1"></span>
+        <span class="file-modal-close" onclick="this.closest('.file-modal-overlay').remove()">&times;</span>
+      </div>
+      <div class="file-modal-body"><em style="color:var(--text-dim)">Loading...</em></div>
+    </div>`;
+  document.body.appendChild(overlay);
+  const closeOnEsc = (e) => { if (e.key === 'Escape') { overlay.remove(); document.removeEventListener('keydown', closeOnEsc); } };
+  document.addEventListener('keydown', closeOnEsc);
+  fetch(`/api/file?path=${encodeURIComponent(filePath)}`)
+    .then(r => { if (!r.ok) throw new Error('not found'); return r.json(); })
+    .then(data => {
+      const body = overlay.querySelector('.file-modal-body');
+      if (isMd) {
+        body.innerHTML = `<div class="md-preview">${renderSimpleMarkdown(data.content)}</div>`;
+      } else {
+        body.innerHTML = `<pre>${esc(data.content)}</pre>`;
+      }
+    })
+    .catch(() => {
+      const body = overlay.querySelector('.file-modal-body');
+      if (body) body.innerHTML = '<em style="color:var(--orange)">Failed to load file</em>';
+    });
+}
+
+function linkifyAgents(text, state, fromId) {
+  let html = esc(text);
+  const agents = state.agents || [];
+  const sender = agents.find(a => a.id === fromId);
+  const cwd = sender?.cwd || null;
+  // Handle markdown images FIRST — extract ![alt](url) before linkifyFiles mangles the URLs.
+  // Replace with <img> tags; resolve paths the same way linkifyFiles would.
+  html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) => {
+    const src = url.replace(/&amp;/g, '&');
+    // If src is already an /api/ URL (from paste/drop upload), use it directly
+    if (src.startsWith('/api/')) {
+      return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+    }
+    const abs = resolveFilePath(src, cwd);
+    const isImg = IMG_EXTS.test(abs);
+    if (isImg) {
+      const cacheBust = Math.floor(Date.now() / 10000);
+      return `<img src="/api/file?path=${encodeURIComponent(abs)}&t=${cacheBust}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+    }
+    return `<img src="${src}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;cursor:pointer;display:block" onclick="window.open(this.src)">`;
+  });
+  // Linkify file paths BEFORE bolding agent names — names inside paths break the path regex
+  html = linkifyFiles(html, cwd);
+  // Bold agent names, but skip content inside HTML tags (hrefs, srcs, etc.)
+  const names = [];
+  for (const a of agents) {
+    if (a.friendly_name) names.push({ name: a.friendly_name, id: a.id });
+    if (a.name && a.name !== a.friendly_name) names.push({ name: a.name, id: a.id });
+  }
+  names.sort((a, b) => b.name.length - a.name.length);
+  for (const { name } of names) {
+    const escaped = esc(name);
+    const pattern = escaped.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Split on HTML tags, only replace in text segments
+    html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+      if (segment.startsWith('<')) return segment;
+      return segment.replace(new RegExp('\\b' + pattern + '\\b', 'gi'),
+        `<strong style="color:var(--blue)">${escaped}</strong>`);
+    });
+  }
+  return html;
+}
+
+// --- Chat filter (tag-based) ---
+const chatFilterSet = new Set();
+let chatSendTarget = null; // last-clicked agent, used for outgoing messages
+let lastConversationPartner = null; // most recent agent who messaged web or web messaged
+
+function toggleChatFilter(id) {
+  if (chatFilterSet.has(id)) {
+    chatFilterSet.delete(id);
+    const remaining = [...chatFilterSet];
+    chatSendTarget = remaining.length > 0 ? remaining[remaining.length - 1] : null;
+  } else {
+    chatFilterSet.add(id);
+    chatSendTarget = id;
+  }
+  renderFilterBar();
+  renderChat(currentState);
+  renderTimelineEvents();
+}
+
+function setChatTarget(id) {
+  chatSendTarget = id;
+  renderFilterBar();
+}
+
+function clearChatFilter() {
+  chatFilterSet.clear();
+  chatSendTarget = null;
+  renderFilterBar();
+  renderChat(currentState);
+  renderTimelineEvents();
+}
+
+function renderFilterChips() {
+  return [...chatFilterSet].map(id => {
+    const label = currentState ? agentLabel(currentState, id) : id.slice(0, 8);
+    const color = getNickColor(id, currentState);
+    const isTarget = chatSendTarget === id;
+    const targetStyle = isTarget ? ';font-weight:700;border-width:2px' : '';
+    return `<span class="chat-tag" style="color:${color};background:${color}18;border-color:${color}40${targetStyle}" onclick="setChatTarget('${esc(id)}')">${esc(label)}<span class="tag-x" onclick="event.stopPropagation();toggleChatFilter('${esc(id)}')">&times;</span></span>`;
+  }).join('');
+}
+
+function renderFilterBar() {
+  const bar = $('chatFilterBar');
+  const sendTo = $('chatSendTo');
+  const logsBar = $('logsFilterBar');
+  if (chatFilterSet.size === 0) {
+    bar.innerHTML = '<span class="chat-filter-all">all messages</span>';
+    sendTo.textContent = '';
+    const defaultTarget = lastConversationPartner || (currentState && currentState.manager);
+    const targetName = defaultTarget && currentState ? agentLabel(currentState, defaultTarget) : 'manager';
+    $('chatInput').placeholder = `Message (to ${targetName})...`;
+    if (logsBar) logsBar.innerHTML = '';
+  } else {
+    const chips = renderFilterChips();
+    const clearBtn = `<span class="chat-filter-all" onclick="clearChatFilter()">&times; clear</span>`;
+    bar.innerHTML = chips + clearBtn;
+    if (logsBar) logsBar.innerHTML = chips + clearBtn;
+    if (chatSendTarget) {
+      const targetLabel = currentState ? agentLabel(currentState, chatSendTarget) : chatSendTarget.slice(0, 8);
+      sendTo.textContent = 'to: ' + targetLabel;
+      $('chatInput').placeholder = 'Message to ' + targetLabel + '...';
+    }
+  }
+}
+
+// --- Label filter ---
+const activeLabelFilters = new Set(); // labels currently selected
+
+// Stable color for a label name (hash-based)
+const LABEL_COLORS = [
+  '#9370db', '#7ab8a0', '#c8b060', '#7a9ec8', '#c8956a', '#6aafb0', '#b87a95',
+  '#8bc87a', '#c87a7a', '#7ac8c8', '#b8a06a', '#9e7ac8',
+];
+function labelColor(name) {
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+  return LABEL_COLORS[Math.abs(h) % LABEL_COLORS.length];
+}
+
+function getAllLabels(state) {
+  const labels = new Set();
+  for (const a of (state.agents || [])) {
+    for (const l of (a.labels || [])) labels.add(l);
+  }
+  return [...labels].sort();
+}
+
+function renderLabelFilter(state) {
+  const bar = $('labelFilterBar');
+  const allLabels = getAllLabels(state);
+  if (allLabels.length === 0) { bar.innerHTML = ''; return; }
+  const btns = [`<span class="label-btn${activeLabelFilters.size === 0 ? ' active' : ''}" style="color:var(--text-dim);border-color:var(--border)" onclick="clearLabelFilter()">all</span>`];
+  for (const l of allLabels) {
+    const color = labelColor(l);
+    const active = activeLabelFilters.has(l);
+    const style = active
+      ? `color:${color};border-color:${color};background:${color}20`
+      : `color:${color}99;border-color:${color}40`;
+    btns.push(`<span class="label-btn${active ? ' active' : ''}" style="${style}" onclick="toggleLabelFilter('${esc(l)}')">${esc(l)}</span>`);
+  }
+  bar.innerHTML = btns.join('');
+}
+
+function toggleLabelFilter(label) {
+  if (activeLabelFilters.has(label)) activeLabelFilters.delete(label);
+  else activeLabelFilters.add(label);
+  if (currentState) render(currentState);
+}
+
+function clearLabelFilter() {
+  activeLabelFilters.clear();
+  if (currentState) render(currentState);
+}
+
+function agentMatchesLabelFilter(agent) {
+  if (activeLabelFilters.size === 0) return true;
+  const agentLabels = agent.labels || [];
+  for (const f of activeLabelFilters) {
+    if (!agentLabels.includes(f)) return false;
+  }
+  return true; // AND logic
+}
+
+function getLabelFilteredAgentIds(state) {
+  if (activeLabelFilters.size === 0) return null;
+  const ids = new Set();
+  for (const a of (state.agents || [])) {
+    if (agentMatchesLabelFilter(a)) ids.add(a.id);
+  }
+  return ids;
+}
+
+function renderAgentLabels(agent) {
+  const labels = agent.labels || [];
+  if (labels.length === 0) return '';
+  return labels.map(l => {
+    const color = labelColor(l);
+    return `<span class="agent-label" style="color:${color};background:${color}18">${esc(l)}</span>`;
+  }).join('');
+}
+
+async function addLabelToAgent(agentId) {
+  const label = prompt('Add label:');
+  if (!label || !label.trim()) return;
+  const state = currentState;
+  const agent = (state.agents || []).find(a => a.id === agentId);
+  if (!agent) return;
+  const labels = [...new Set([...(agent.labels || []), label.trim()])];
+  try {
+    await fetch('/api/label', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentId, labels }),
+    });
+  } catch (e) { console.error('label failed', e); }
+}
+
+// --- Render ---
+function render(state) {
+  renderFilterBar();
+  renderLabelFilter(state);
+  renderChat(state);
+  renderAgents(state);
+  renderTasks(state);
+  updateLogAgentFilter(state);
+}
+
+function updateLogAgentFilter(state) {
+  const sel = $('logAgentFilter');
+  const cur = sel.value;
+  const agents = (state.agents || []).slice().sort((a, b) => {
+    const na = (a.friendly_name || a.name || a.id).toLowerCase();
+    const nb = (b.friendly_name || b.name || b.id).toLowerCase();
+    return na.localeCompare(nb);
+  });
+  sel.innerHTML = '<option value="">all agents</option>' + agents.map(a => {
+    const label = a.friendly_name || a.name || a.id.slice(0, 8);
+    return `<option value="${esc(a.id)}"${a.id === cur ? ' selected' : ''}>${esc(label)}</option>`;
+  }).join('');
+}
+
+function renderChat(state) {
+  const msgs = state.messages || [];
+  const filtered = chatFilterSet.size > 0
+    ? msgs.filter(m => chatFilterSet.has(m.from) || chatFilterSet.has(m.to))
+    : msgs;
+
+  const lines = filtered.map(m => {
+    const nick = m.from === 'web' ? 'skip' : agentLabel(state, m.from);
+    const toNick = m.to === 'web' ? 'skip' : agentLabel(state, m.to);
+    const fromCls = getNickClass(m.from, state);
+    const toCls = getNickClass(m.to, state);
+    const ts = timeShort(m.timestamp);
+    const text = renderMarkdown(linkifyAgents(m.text, state, m.from));
+    const fromId = (m.from !== 'web' && typeof m.from === 'string' && m.from.length > 8) ? m.from : '';
+    const toId = (m.to !== 'web' && typeof m.to === 'string' && m.to.length > 8) ? m.to : '';
+    const fromClick = fromId ? ` onclick="selectAgent('${esc(m.from)}')" title="${fromId}" style="cursor:pointer"` : '';
+    const toClick = toId ? ` onclick="selectAgent('${esc(m.to)}')" title="${toId}" style="cursor:pointer"` : '';
+    return `<div class="chat-line"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}"${fromClick}>${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}"${toClick}>${esc(toNick)}</span>:</span> ${text}<span class="pin-btn" onclick="(function(d){pinMsg(d.ts,d.nick,d.text)})(JSON.parse(decodeURIComponent('${encodeURIComponent(JSON.stringify({ts, nick, text: m.text}))}')))">&#x1F4CC;</span></div>`;
+  }).join('');
+
+  chatLog.innerHTML = lines;
+  loadFilePreviews();
+  if (shouldAutoScroll) scrollToBottom();
+}
+
+function isActive(a) {
+  return a.last_seen && (Date.now() - new Date(a.last_seen).getTime()) < 600000;
+}
+
+// --- Sparklines ---
+let activityData = {};
+async function fetchActivity() {
+  try {
+    const res = await fetch('/api/activity');
+    activityData = await res.json();
+  } catch {}
+}
+fetchActivity();
+setInterval(fetchActivity, 60000);
+
+function sparklineSvg(agentId) {
+  const data = activityData[agentId];
+  if (!data || data.every(v => v === 0)) return '';
+  const w = 60, h = 14, barW = Math.max(1, Math.floor(w / data.length));
+  const max = Math.max(...data, 1);
+  const bars = data.map((v, i) => {
+    const bh = Math.max(0, (v / max) * h);
+    return `<rect x="${i * barW}" y="${h - bh}" width="${Math.max(1, barW - 1)}" height="${bh}" rx="0.5"/>`;
+  }).join('');
+  return `<svg class="sparkline" width="${data.length * barW}" height="${h}" viewBox="0 0 ${data.length * barW} ${h}">${bars}</svg>`;
+}
+
+function getLastMsgTime(state, agentId) {
+  const msgs = state.messages || [];
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].from === agentId || msgs[i].to === agentId) return msgs[i].timestamp;
+  }
+  return null;
+}
+
+let agentSortMode = 'seen'; // 'seen' | 'name' | 'msg'
+let agentSortAsc = false; // false = descending (most recent first)
+
+function setAgentSort(mode) {
+  if (agentSortMode === mode) {
+    agentSortAsc = !agentSortAsc;
+  } else {
+    agentSortMode = mode;
+    agentSortAsc = mode === 'name'; // name defaults ascending, others descending
+  }
+  if (currentState) renderAgents(currentState);
+}
+
+function sortArrow(col) {
+  if (agentSortMode !== col) return '';
+  return `<span class="sort-arrow">${agentSortAsc ? '▲' : '▼'}</span>`;
+}
+
+function renderAgents(state) {
+  let agents = (state.agents || []).slice();
+  const labelIds = getLabelFilteredAgentIds(state);
+  if (labelIds) agents = agents.filter(a => labelIds.has(a.id));
+  const dir = agentSortAsc ? 1 : -1;
+  agents.sort((a, b) => {
+    const aa = isActive(a), ab = isActive(b);
+    if (aa !== ab) return aa ? -1 : 1;
+    if (agentSortMode === 'name') {
+      const na = (a.friendly_name || a.name || a.id).toLowerCase();
+      const nb = (b.friendly_name || b.name || b.id).toLowerCase();
+      return dir * na.localeCompare(nb);
+    }
+    if (agentSortMode === 'msg') {
+      const ma = getLastMsgTime(state, a.id);
+      const mb = getLastMsgTime(state, b.id);
+      const ta = ma ? new Date(ma).getTime() : 0;
+      const tb = mb ? new Date(mb).getTime() : 0;
+      return dir * (ta - tb);
+    }
+    // default: seen
+    const ta = a.last_seen ? new Date(a.last_seen).getTime() : 0;
+    const tb = b.last_seen ? new Date(b.last_seen).getTime() : 0;
+    return dir * (ta - tb);
+  });
+  if (agents.length === 0) {
+    $('agents').innerHTML = '<div class="empty">No agents registered</div>';
+    return;
+  }
+  const header = `<thead><tr>
+    <th class="${agentSortMode === 'name' ? 'sorted' : ''}" onclick="setAgentSort('name')">Agent${sortArrow('name')}</th>
+    <th></th>
+    <th class="${agentSortMode === 'msg' ? 'sorted' : ''}" onclick="setAgentSort('msg')">Msg${sortArrow('msg')}</th>
+    <th class="${agentSortMode === 'seen' ? 'sorted' : ''}" onclick="setAgentSort('seen')">Seen${sortArrow('seen')}</th>
+    <th></th>
+  </tr></thead>`;
+  const rows = agents.map(a => {
+    const active = isActive(a);
+    const dimStyle = active ? '' : ' style="opacity:0.4"';
+    const badges = [];
+    if (a.is_manager && a.id === state.manager) badges.push('<span class="agent-badge badge-top">top</span>');
+    else if (a.is_manager) badges.push('<span class="agent-badge badge-manager">mgr</span>');
+    const seen = a.last_seen ? timeAgo(a.last_seen) : '-';
+    const spark = sparklineSvg(a.id);
+    const peekBtn = a.kitty_win ? `<span style="cursor:pointer;opacity:0.4;font-size:10px" onclick="peekAgent('${esc(a.id)}')" title="Peek terminal">&#x1F441;</span>` : '';
+    const lastMsg = getLastMsgTime(state, a.id);
+    const lastMsgAgo = lastMsg ? timeAgo(lastMsg) : null;
+    const quietMins = lastMsg ? Math.round((Date.now() - new Date(lastMsg).getTime()) / 60000) : Infinity;
+    const quietCls = quietMins > 30 ? ' quiet' : '';
+    const msgText = lastMsgAgo || '-';
+    const renameBtn = `<span class="rename-btn" onclick="event.stopPropagation();renameAgent('${esc(a.id)}','${esc(a.friendly_name || a.name || '')}')" title="Rename">&#x270E;</span>`;
+    const labelsHtml = renderAgentLabels(a);
+    const addLabelBtn = `<span class="add-label-btn" onclick="event.stopPropagation();addLabelToAgent('${esc(a.id)}')" title="Add label">+</span>`;
+    return `<tr${dimStyle}>
+      <td>${agentLink(state, a.id)}${renameBtn} ${badges.join('')} ${labelsHtml}${addLabelBtn}</td>
+      <td>${spark}</td>
+      <td class="col-msg${quietCls}">${msgText}</td>
+      <td class="col-seen">${seen}</td>
+      <td class="col-peek">${peekBtn}</td>
+    </tr>`;
+  }).join('');
+  $('agents').innerHTML = `<table class="agents-table">${header}<tbody>${rows}</tbody></table>`;
+}
+
+function renderTasks(state) {
+  const tasks = (state.tasks || []);
+  const labelIds = getLabelFilteredAgentIds(state);
+  const active = tasks.filter(t => t.status !== 'done' && (!labelIds || labelIds.has(t.agent)));
+  const done = tasks.filter(t => t.status === 'done' && (!labelIds || labelIds.has(t.agent)));
+
+  if (active.length === 0) {
+    $('tasks').innerHTML = '<div class="empty">No active tasks</div>';
+  } else {
+    $('tasks').innerHTML = active.map(t => {
+      const blocked = t.status === 'blocked' && t.blockedBy
+        ? ' (' + t.blockedBy.join(', ') + ')' : '';
+      return `<div class="task-row">
+        <div class="task-header">
+          <span class="task-status status-${t.status}">${t.status}${blocked}</span>
+          <span class="task-desc" onclick="selectAgent('${esc(t.agent)}')" title="Filter to this agent">${esc(t.description)}</span>
+        </div>
+        <div class="task-meta">
+          ${agentLink(state, t.agent)}
+          &middot; <span class="task-id">${t.id}</span>
+          &middot; ${timeAgo(t.delegated_at)}
+        </div>
+      </div>`;
+    }).join('');
+  }
+
+  if (done.length === 0) {
+    $('done').innerHTML = '<div class="empty">None</div>';
+  } else {
+    $('done').innerHTML = done.slice().reverse().map(t => `<div class="task-row">
+      <div class="task-header">
+        <span class="task-status status-done">done</span>
+        <span class="task-desc">${esc(t.description)}</span>
+      </div>
+      <div class="task-meta">
+        ${agentLink(state, t.agent)}
+        &middot; ${t.completed_at ? timeAgo(t.completed_at) : ''}
+      </div>
+    </div>`).join('');
+  }
+}
+
+// --- Pinned messages ---
+function getPins() {
+  try { return JSON.parse(localStorage.getItem('dashboard-pins') || '[]'); } catch { return []; }
+}
+function savePins(pins) { localStorage.setItem('dashboard-pins', JSON.stringify(pins)); }
+
+function pinMsg(ts, nick, text) {
+  const pins = getPins();
+  if (pins.find(p => p.ts === ts && p.nick === nick)) return; // already pinned
+  pins.push({ ts, nick, text: text.substring(0, 500), pinned_at: Date.now() });
+  savePins(pins);
+  renderPins();
+}
+
+function unpinMsg(idx) {
+  const pins = getPins();
+  pins.splice(idx, 1);
+  savePins(pins);
+  renderPins();
+}
+
+function renderPins() {
+  const pins = getPins();
+  const bar = $('pinnedBar');
+  if (pins.length === 0) { bar.innerHTML = ''; bar.style.display = 'none'; return; }
+  bar.style.display = 'block';
+  bar.innerHTML = pins.map((p, i) => `
+    <div class="pinned-msg">
+      <span class="pin-icon">\u{1F4CC}</span>
+      <span><span class="chat-ts">${esc(p.ts)}</span> <strong>${esc(p.nick)}</strong> ${esc(p.text).substring(0, 200)}</span>
+      <span class="unpin" onclick="unpinMsg(${i})">&times;</span>
+    </div>
+  `).join('');
+}
+renderPins(); // on load
+
+// --- Chat search ---
+let chatSearchQuery = '';
+let chatSearchHits = [];
+let chatSearchIdx = -1;
+
+function openChatSearch() {
+  $('chatSearchBar').className = 'chat-search-bar active';
+  $('chatSearchInput').focus();
+}
+
+function closeChatSearch() {
+  $('chatSearchBar').className = 'chat-search-bar';
+  chatSearchQuery = '';
+  chatSearchHits = [];
+  chatSearchIdx = -1;
+  $('chatSearchCount').textContent = '';
+  // Remove highlights
+  chatLog.querySelectorAll('.search-hit, .search-current').forEach(el => {
+    el.classList.remove('search-hit', 'search-current');
+  });
+}
+
+function doChatSearch() {
+  const q = $('chatSearchInput').value.trim().toLowerCase();
+  if (q === chatSearchQuery) return;
+  chatSearchQuery = q;
+  chatSearchHits = [];
+  chatSearchIdx = -1;
+
+  const lines = chatLog.querySelectorAll('.chat-line');
+  lines.forEach(el => {
+    el.classList.remove('search-hit', 'search-current');
+    if (q && el.textContent.toLowerCase().includes(q)) {
+      el.classList.add('search-hit');
+      chatSearchHits.push(el);
+    }
+  });
+
+  if (chatSearchHits.length > 0) {
+    chatSearchIdx = chatSearchHits.length - 1; // start at most recent
+    chatSearchHits[chatSearchIdx].classList.add('search-current');
+    chatSearchHits[chatSearchIdx].scrollIntoView({ block: 'center' });
+    shouldAutoScroll = false;
+  }
+  $('chatSearchCount').textContent = chatSearchHits.length > 0
+    ? `${chatSearchIdx + 1}/${chatSearchHits.length}`
+    : q ? 'no matches' : '';
+}
+
+function chatSearchNav(dir) {
+  if (chatSearchHits.length === 0) return;
+  chatSearchHits[chatSearchIdx]?.classList.remove('search-current');
+  chatSearchIdx = (chatSearchIdx + dir + chatSearchHits.length) % chatSearchHits.length;
+  chatSearchHits[chatSearchIdx].classList.add('search-current');
+  chatSearchHits[chatSearchIdx].scrollIntoView({ block: 'center' });
+  $('chatSearchCount').textContent = `${chatSearchIdx + 1}/${chatSearchHits.length}`;
+}
+
+$('chatSearchInput').addEventListener('input', doChatSearch);
+$('chatSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { e.preventDefault(); chatSearchNav(e.shiftKey ? -1 : 1); }
+  if (e.key === 'Escape') closeChatSearch();
+});
+
+// --- Command palette ---
+const COMMANDS = [
+  { name: '/peek', args: '<agent>', desc: 'View agent terminal snapshot' },
+  { name: '/spawn', args: '[cwd]', desc: 'Launch a new agent' },
+  { name: '/delegate', args: '<agent> <task>', desc: 'Assign a task to agent' },
+  { name: '/done', args: '<agent>', desc: 'Mark agent task done' },
+  { name: '/kick', args: '<agent>', desc: 'Send notification kick' },
+  { name: '/interrupt', args: '<agent> [message]', desc: 'Interrupt agent (kitty ESC)' },
+  { name: '/export', args: '<agent>', desc: 'Download agent thread as markdown' },
+  { name: '/reindex', args: '', desc: 'Rebuild search index' },
+  { name: '/stats', args: '', desc: 'Show search index stats' },
+];
+let cmdSelected = -1;
+
+function updatePalette() {
+  const input = $('chatInput');
+  const palette = $('cmdPalette');
+  const val = input.value;
+  if (!val.startsWith('/')) { palette.className = 'cmd-palette'; return; }
+  const query = val.split(' ')[0].toLowerCase();
+  const matches = COMMANDS.filter(c => c.name.startsWith(query));
+  if (matches.length === 0 || (matches.length === 1 && matches[0].name === query && val.includes(' '))) {
+    palette.className = 'cmd-palette';
+    return;
+  }
+  cmdSelected = Math.min(cmdSelected, matches.length - 1);
+  if (cmdSelected < 0) cmdSelected = 0;
+  palette.className = 'cmd-palette active';
+  palette.innerHTML = matches.map((c, i) => `
+    <div class="cmd-item${i === cmdSelected ? ' selected' : ''}" onclick="completeCommand('${c.name}')">
+      <span class="cmd-name">${c.name} ${c.args}</span>
+      <span class="cmd-desc">${c.desc}</span>
+    </div>
+  `).join('');
+}
+
+function completeCommand(name) {
+  const input = $('chatInput');
+  const parts = input.value.split(' ');
+  parts[0] = name;
+  input.value = parts.join(' ') + (parts.length === 1 ? ' ' : '');
+  $('cmdPalette').className = 'cmd-palette';
+  input.focus();
+}
+
+async function executeCommand(text) {
+  const parts = text.split(/\s+/);
+  const cmd = parts[0].toLowerCase();
+  const args = parts.slice(1).join(' ');
+
+  switch (cmd) {
+    case '/peek': {
+      if (!args) { appendSystemMsg('Usage: /peek <agent name or id>'); return true; }
+      try {
+        const res = await fetch('/api/peek?' + new URLSearchParams({ agent: args }));
+        const data = await res.json();
+        if (data.error) { appendSystemMsg('Error: ' + data.error); return true; }
+        appendSystemMsg(`--- ${data.label} (win ${data.win}) ---\n${data.text}\n---`);
+      } catch (e) { appendSystemMsg('Peek failed: ' + e.message); }
+      return true;
+    }
+    case '/spawn': {
+      try {
+        const body = args ? { cwd: args } : {};
+        const res = await fetch('/api/spawn', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Spawned in kitty window ' + data.win);
+      } catch (e) { appendSystemMsg('Spawn failed: ' + e.message); }
+      return true;
+    }
+    case '/delegate': {
+      const m = args.match(/^(\S+)\s+(.+)$/);
+      if (!m) { appendSystemMsg('Usage: /delegate <agent> <task description>'); return true; }
+      try {
+        const res = await fetch('/api/delegate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: m[1], message: m[2], description: m[2].substring(0, 60) }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Delegated: ' + data.taskId);
+      } catch (e) { appendSystemMsg('Delegate failed: ' + e.message); }
+      return true;
+    }
+    case '/done': {
+      if (!args) { appendSystemMsg('Usage: /done <agent>'); return true; }
+      try {
+        const res = await fetch('/api/done', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: args }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Marked done');
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/kick': {
+      if (!args) { appendSystemMsg('Usage: /kick <agent>'); return true; }
+      try {
+        const res = await fetch('/api/kick', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: args }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg('Kicked ' + args);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/interrupt': {
+      if (!args) { appendSystemMsg('Usage: /interrupt <agent> [message]'); return true; }
+      const iparts = args.split(/\s+/);
+      const iagent = iparts[0];
+      const imsg = iparts.slice(1).join(' ') || undefined;
+      try {
+        const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: iagent, message: imsg }) });
+        const data = await res.json();
+        if (data.error) appendSystemMsg('Error: ' + data.error);
+        else appendSystemMsg(data.result || 'Interrupted ' + iagent);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/export': {
+      if (!args) { appendSystemMsg('Usage: /export <agent name or id>'); return true; }
+      window.open('/api/export?agent=' + encodeURIComponent(args) + '&format=markdown', '_blank');
+      appendSystemMsg('Downloading thread for ' + args);
+      return true;
+    }
+    case '/reindex': {
+      appendSystemMsg('Reindexing...');
+      try {
+        const res = await fetch('/api/reindex', { method: 'POST' });
+        const data = await res.json();
+        appendSystemMsg(`Indexed ${data.entriesAdded} entries from ${data.filesIndexed} files in ${data.elapsed}s`);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    case '/stats': {
+      try {
+        const res = await fetch('/api/logs/stats');
+        const data = await res.json();
+        appendSystemMsg(`Index: ${data.totalEntries} entries, ${data.totalFiles} files, ${data.totalBytes}`);
+      } catch (e) { appendSystemMsg('Failed: ' + e.message); }
+      return true;
+    }
+    default:
+      return false; // not a command, send as chat
+  }
+}
+
+function appendSystemMsg(text) {
+  const line = document.createElement('div');
+  line.className = 'chat-line';
+  line.style.color = 'var(--text-dim)';
+  line.style.fontFamily = "'SF Mono','Menlo',monospace";
+  line.style.fontSize = '11px';
+  line.innerHTML = renderMarkdown(esc(text));
+  chatLog.appendChild(line);
+  scrollToBottom();
+}
+
+// --- Terminal tab ---
+let terminalAgent = null;
+let terminalAutoTimer = null;
+let terminalVerbatim = false;
+let terminalRawText = ''; // store raw for toggling
+
+async function peekAgent(agent) {
+  terminalAgent = agent;
+  localStorage.setItem('fleet-terminal-agent', agent);
+  switchTab('terminal');
+  await refreshTerminal();
+}
+
+function toggleTerminalVerbatim() {
+  terminalVerbatim = !terminalVerbatim;
+  const btn = $('terminalVerbatim');
+  btn.textContent = terminalVerbatim ? 'raw' : 'folded';
+  btn.classList.toggle('active', terminalVerbatim);
+  renderTerminalContent(terminalRawText);
+}
+
+function renderTerminalContent(raw) {
+  const output = $('terminalOutput');
+  const wasAtBottom = output.scrollTop + output.clientHeight >= output.scrollHeight - 20;
+  if (terminalVerbatim) {
+    output.innerHTML = ansiToHtml(raw);
+  } else {
+    output.innerHTML = foldTerminalOutput(raw);
+  }
+  if (wasAtBottom) output.scrollTop = output.scrollHeight;
+}
+
+// Strip ANSI escape sequences for pattern matching
+function stripAnsi(text) {
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function foldTerminalOutput(raw) {
+  const plain = stripAnsi(raw);
+  const lines = plain.split('\n');
+  const chunks = [];
+  let i = 0;
+
+  while (i < lines.length) {
+    const line = lines[i];
+    const trimmed = line.trim();
+
+    // Detect keepalive / mailbox emoji noise
+    if (isKeepaliveNoise(trimmed)) {
+      const start = i;
+      while (i < lines.length && isKeepaliveNoise(lines[i].trim())) i++;
+      const count = i - start;
+      chunks.push({ type: 'fold', label: `keepalive/notification × ${count}`, lines: lines.slice(start, i) });
+      continue;
+    }
+
+    // Detect fleet MCP tool calls (fleet - my_task, fleet - chat, etc.)
+    const fleetMatch = isFleetMcpCall(trimmed);
+    if (fleetMatch) {
+      const start = i;
+      i++;
+      // Consume result lines (⎿ prefix, indented, continuation, … +N lines)
+      // Allow blank lines if followed by more result content
+      const resultLines = [];
+      while (i < lines.length) {
+        if (isFleetResultLine(lines[i])) {
+          resultLines.push(lines[i]);
+          i++;
+        } else if (!lines[i].trim()) {
+          // Blank line — peek ahead to see if more result follows
+          let peek = i + 1;
+          while (peek < lines.length && !lines[peek].trim()) peek++;
+          if (peek < lines.length && isFleetResultLine(lines[peek])) {
+            resultLines.push(lines[i]);
+            i++;
+          } else {
+            break;
+          }
+        } else {
+          break;
+        }
+      }
+      const fleetResult = parseFleetResult(fleetMatch.tool, resultLines, fleetMatch.full);
+      chunks.push(fleetResult);
+      continue;
+    }
+
+    // Detect tool call sequences (Read, Edit, Grep, Glob, Write, Bash)
+    if (isToolCallStart(trimmed)) {
+      const start = i;
+      const tools = [];
+      while (i < lines.length && isToolCallStart(lines[i].trim())) {
+        tools.push(parseToolCall(lines[i].trim()));
+        // Consume the tool call line and any immediate result lines until next tool or blank
+        i++;
+        while (i < lines.length && isToolResultLine(lines[i], lines, i)) i++;
+      }
+      if (tools.length > 0) {
+        const summary = summarizeToolChain(tools);
+        chunks.push({ type: 'fold', label: summary, lines: lines.slice(start, i) });
+        continue;
+      }
+      i = start; // fallback if parsing failed
+    }
+
+    // Chat messages — highlight them
+    if (isChatMessage(trimmed)) {
+      chunks.push({ type: 'chat', text: line });
+      i++;
+      continue;
+    }
+
+    // Agent decisions / thinking
+    if (isAgentDecision(trimmed)) {
+      chunks.push({ type: 'decision', text: line });
+      i++;
+      continue;
+    }
+
+    // Everything else passes through
+    chunks.push({ type: 'line', text: line });
+    i++;
+  }
+
+  return renderChunks(chunks);
+}
+
+// --- Fleet MCP detection & parsing ---
+
+function isFleetMcpCall(line) {
+  // Match patterns like "⏺ fleet - my_task (MCP)", "⏺ fleet - task_check (MCP)(win: 61)"
+  const m = line.match(/^[⏺●◆▶]?\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|unregister_manager|search_logs|label_agent)\b/i);
+  if (m) return { tool: m[1].toLowerCase(), full: line };
+  // Also match "Tool: fleet - chat" or "Using: mcp__fleet__chat"
+  const m2 = line.match(/^(?:Tool|Using):\s*(?:fleet\s*[-–—]\s*|mcp__fleet__)(register|my_task|chat|delegate|task_list|task_done|task_check|wait_for_task|name_agent|respawn|spawn|interrupt|register_manager|search_logs|label_agent)\b/i);
+  if (m2) return { tool: m2[1].toLowerCase(), full: line };
+  return null;
+}
+
+function isFleetResultLine(line) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  // ⎿ prefix = tool result continuation
+  if (/^\s*⎿/.test(line)) return true;
+  // Indented content (at least 2+ spaces)
+  if (/^\s{2,}\S/.test(line)) return true;
+  // "… +N lines (ctrl+o to expand)" truncation markers
+  if (/…\s*\+\d+\s*lines/.test(line)) return true;
+  // Stop at next bullet point, prompt, or separator
+  if (/^[⏺●◆▶❯✻]/.test(trimmed)) return false;
+  if (/^[─━═]+/.test(trimmed)) return false;
+  if (/^(Human|Assistant|>):/i.test(trimmed)) return false;
+  return false;
+}
+
+function parseFleetResult(toolName, resultLines, fullCallLine) {
+  const rawText = resultLines.map(l => l.replace(/^\s*⎿\s*/, '').trim()).join('\n').trim();
+  const allLines = resultLines;
+  // Extract parenthesized args from the call line, e.g. "(win: 61)"
+  const argsMatch = fullCallLine && fullCallLine.match(/\(MCP\)\s*\(([^)]+)\)/);
+  const callArgs = argsMatch ? argsMatch[1] : '';
+
+  switch (toolName) {
+    case 'register':
+    case 'register_manager': {
+      const isManager = /manager/i.test(rawText) || /manager/i.test(fullCallLine);
+      const label = isManager ? 'fleet: registered as manager' : 'fleet: registered';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'my_task': {
+      // Check for messages section (📬 Messages:)
+      const msgSection = rawText.match(/📬\s*Messages?:\s*([\s\S]*)/i);
+      if (msgSection) {
+        const messages = parseFleetMessages(msgSection[1]);
+        if (messages.length > 0) {
+          return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} msg${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
+        }
+      }
+      // "Nothing new" with possible truncated messages
+      if (/nothing new/i.test(rawText)) {
+        const hasTruncated = /\+\d+\s*lines/.test(rawText);
+        const label = hasTruncated ? 'fleet: my_task — has messages (truncated)' : 'fleet: my_task → nothing new';
+        return { type: 'fleet', label, lines: allLines };
+      }
+      // Try parsing any messages in the full text
+      const messages = parseFleetMessages(rawText);
+      if (messages.length > 0) {
+        return { type: 'fleet-mytask', label: `fleet: my_task — ${messages.length} msg${messages.length > 1 ? 's' : ''}`, messages, lines: allLines };
+      }
+      const hasTask = rawText.length > 30;
+      const label = hasTask ? 'fleet: my_task — has task' : 'fleet: my_task → nothing new';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'chat': {
+      const toMatch = rawText.match(/(?:"to"|to)\s*[:=]\s*"?([^",}\n]+)/i);
+      const msgMatch = rawText.match(/(?:"(?:message|text)"|message|text)\s*[:=]\s*"([^"]{0,80})/i);
+      const to = toMatch ? toMatch[1].trim() : 'manager';
+      const preview = msgMatch ? msgMatch[1].substring(0, 50) : '';
+      const label = `fleet: chat → ${to}${preview ? ': "' + preview + (preview.length >= 50 ? '…' : '') + '"' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'delegate': {
+      const agentMatch = rawText.match(/(?:"agent"|agent)\s*[:=]\s*"?([^",}\n]+)/i);
+      const descMatch = rawText.match(/(?:"description"|description)\s*[:=]\s*"([^"]{0,60})/i);
+      const agent = agentMatch ? agentMatch[1].trim() : '?';
+      const desc = descMatch ? descMatch[1] : '';
+      const label = `fleet: delegate → ${agent}${desc ? ': "' + desc + '"' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'task_list': {
+      const agentCount = (rawText.match(/agent|registered/gi) || []).length;
+      const taskCount = (rawText.match(/"status"\s*:/gi) || []).length;
+      const label = `fleet: task_list — ${taskCount || '?'} task${taskCount !== 1 ? 's' : ''}, ${agentCount || '?'} agent${agentCount !== 1 ? 's' : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'task_done': {
+      return { type: 'fleet', label: 'fleet: task_done ✓', lines: allLines };
+    }
+    case 'task_check': {
+      const winInfo = callArgs ? ` (${callArgs})` : '';
+      // Extract status from result like "win 61 WORKING"
+      const statusMatch = rawText.match(/win\s+\d+\s+(WORKING|IDLE|waiting)/i);
+      const status = statusMatch ? statusMatch[1].toLowerCase() : '';
+      const label = `fleet: task_check${winInfo}${status ? ' — ' + status : ''}`;
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'wait_for_task': {
+      const hasResult = rawText.length > 20;
+      const label = hasResult ? 'fleet: wait_for_task — woke up' : 'fleet: wait_for_task (waiting…)';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'name_agent': {
+      const nameMatch = rawText.match(/(?:friendly_name|name)\s*[:=]\s*"?([^",}\n]+)/i);
+      const label = nameMatch ? `fleet: named agent "${nameMatch[1].trim()}"` : 'fleet: name_agent';
+      return { type: 'fleet', label, lines: allLines };
+    }
+    case 'search_logs': {
+      return { type: 'fleet', label: 'fleet: search_logs', lines: allLines };
+    }
+    default: {
+      return { type: 'fleet', label: `fleet: ${toolName}`, lines: allLines };
+    }
+  }
+}
+
+function parseFleetMessages(text) {
+  // Parse messages from my_task output — various formats:
+  // JSON arrays, "from: X\ntext: Y" blocks, or "X said: Y" patterns
+  const messages = [];
+
+  // Try JSON array of messages
+  try {
+    const jsonMatch = text.match(/\[[\s\S]*\]/);
+    if (jsonMatch) {
+      const arr = JSON.parse(jsonMatch[0]);
+      if (Array.isArray(arr)) {
+        for (const msg of arr) {
+          if (msg.text || msg.message) {
+            messages.push({
+              from: msg.from || msg.sender || 'unknown',
+              text: unescapeFleetText(msg.text || msg.message),
+              direction: msg.from === 'self' ? 'out' : 'in'
+            });
+          }
+        }
+        if (messages.length > 0) return messages;
+      }
+    }
+  } catch (e) { /* not JSON */ }
+
+  // Try line-by-line "from: X" / "text: Y" blocks
+  const lines = text.split('\n');
+  let currentFrom = null;
+  for (const line of lines) {
+    const fromMatch = line.match(/^\s*(?:"?from"?\s*[:=]|From:)\s*"?([^",}\n]+)/i);
+    if (fromMatch) { currentFrom = fromMatch[1].trim(); continue; }
+    const textMatch = line.match(/^\s*(?:"?text"?\s*[:=]|Message:)\s*"?(.*)/i);
+    if (textMatch && currentFrom) {
+      messages.push({ from: currentFrom, text: unescapeFleetText(textMatch[1].replace(/"$/, '')), direction: 'in' });
+      currentFrom = null;
+    }
+  }
+  if (messages.length > 0) return messages;
+
+  // Try "agent_name: message text" or "[agent_name] message text"
+  for (const line of lines) {
+    const chatMatch = line.match(/^\s*(?:\[([^\]]+)\]|([a-z0-9_-]+):)\s+(.+)/i);
+    if (chatMatch) {
+      const from = chatMatch[1] || chatMatch[2];
+      const txt = chatMatch[3];
+      if (from && txt && txt.length > 5) {
+        messages.push({ from, text: unescapeFleetText(txt), direction: 'in' });
+      }
+    }
+  }
+
+  return messages;
+}
+
+function unescapeFleetText(text) {
+  // Unescape JSON string escapes (\n, \t, \\, \")
+  return text
+    .replace(/\\n/g, '\n')
+    .replace(/\\t/g, '\t')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+function renderFleetBubbles(messages) {
+  let html = '<span class="term-minichat">';
+  for (const msg of messages) {
+    const cls = msg.direction === 'out' ? 'term-bubble-out' : 'term-bubble-in';
+    html += `<span class="term-bubble ${cls}">`;
+    html += `<span class="term-bubble-from">${escHtml(String(msg.from))}</span> `;
+    html += escHtml(msg.text);
+    html += `</span>`;
+  }
+  html += '</span>';
+  return html;
+}
+
+function isKeepaliveNoise(line) {
+  if (!line) return false;
+  // Mailbox emoji in all forms: "📬", "❯ 📬", "> 📬", "Human: 📬"
+  if (/^📬\s*$/.test(line)) return true;
+  if (/^[❯>]\s*📬\s*$/.test(line)) return true;
+  if (/^Human:\s*📬\s*$/.test(line)) return true;
+  if (/keepalive/i.test(line) && line.length < 120) return true;
+  // Separator lines (─── ... ─── or with ▪▪▪)
+  if (/^[─━═▪\s]{10,}$/.test(line)) return true;
+  // "✻ Crunched for Ns" status lines
+  if (/^✻\s*(Crunched|Processed|Thinking)/i.test(line)) return true;
+  return false;
+}
+
+function isToolCallStart(line) {
+  // Skip fleet MCP calls — those are handled separately
+  if (/fleet\s*[-–—]/i.test(line) || /mcp__fleet__/i.test(line)) return false;
+  // Match Claude Code tool patterns:
+  // "⏺ Bash(sleep 180 && ...)", "⏺ Read(file.js)", "⏺ Edit(file.js)"
+  if (/^[⏺●◆▶]\s*(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch|ListMcpResourcesTool)\s*[\(]/i.test(line)) return true;
+  // Collapsed tool output: "⏺ Read 3 files (ctrl+o to expand)", "⏺ Searched for 2 patterns"
+  if (/^[⏺●◆▶]\s*(Read|Searched|Edited|Wrote|Grepped)\s+(?:for\s+)?\d+\s/i.test(line)) return true;
+  // "Tool: Read" or "Using: Read"
+  if (/^(Tool|Using):\s*(Read|Edit|Grep|Glob|Write|Bash)\b/i.test(line)) return true;
+  return false;
+}
+
+function parseToolCall(line) {
+  // "⏺ Read 3 files (ctrl+o to expand)" — collapsed summary (check first)
+  const m2 = line.match(/^[⏺●◆▶]\s*(Read|Searched|Edited|Wrote|Grepped)\s+(?:for\s+)?(\d+)\s+(files?|patterns?|lines?)/i);
+  if (m2) {
+    return { tool: m2[1], arg: `${m2[2]} ${m2[3]}` };
+  }
+  // "⏺ Bash(sleep 180 && echo ...)" — tool with args in parens
+  const m = line.match(/(?:^[⏺●◆▶]\s*|^(?:Tool|Using):\s*)(Read|Edit|Grep|Glob|Write|Bash|Search|ToolSearch)\s*(?:\(([^)]*)\))?/i);
+  if (m) {
+    return { tool: m[1], arg: m[2] || '' };
+  }
+  return { tool: 'unknown', arg: '' };
+}
+
+function isToolResultLine(line, allLines, idx) {
+  const trimmed = line.trim();
+  if (!trimmed) return false;
+  // ⎿ prefix = tool result continuation (primary pattern)
+  if (/^\s*⎿/.test(line)) return true;
+  // Indented content (continuation of tool output)
+  if (/^\s{2,}\S/.test(line)) return true;
+  // "… +N lines (ctrl+o to expand)" truncation markers
+  if (/…\s*\+\d+\s*lines/.test(line)) return true;
+  // Line-numbered output from file reads
+  if (/^\d+[│|:]/.test(trimmed)) return true;
+  // Stop at next bullet, prompt, separator, or new tool
+  if (/^[⏺●◆▶❯✻]/.test(trimmed)) return false;
+  if (/^[─━═]+/.test(trimmed)) return false;
+  if (/^(Human|Assistant|>):/i.test(trimmed)) return false;
+  if (isToolCallStart(trimmed)) return false;
+  return false;
+}
+
+function isChatMessage(line) {
+  // Fleet chat messages
+  if (/^(chat|message|📨|💬)\b/i.test(line)) return true;
+  if (/^\[chat\]/i.test(line)) return true;
+  return false;
+}
+
+function isAgentDecision(line) {
+  // Agent thinking/decisions — lines starting with bullet + prose (not tool calls, not fleet calls)
+  if (/^[⏺●◆▶]\s+\S/.test(line) && !isToolCallStart(line) && !isFleetMcpCall(line) && line.length > 15) return true;
+  // Background command notifications
+  if (/^[⏺●◆▶]\s+Background command/i.test(line)) return true;
+  return false;
+}
+
+function summarizeToolChain(tools) {
+  const counts = {};
+  const filesByTool = {};
+  for (const t of tools) {
+    const name = t.tool.charAt(0).toUpperCase() + t.tool.slice(1).toLowerCase();
+    counts[name] = (counts[name] || 0) + 1;
+    if (t.arg) {
+      if (!filesByTool[name]) filesByTool[name] = [];
+      // Extract filename from path
+      const short = t.arg.split('/').pop().replace(/["']/g, '');
+      if (short && !filesByTool[name].includes(short)) filesByTool[name].push(short);
+    }
+  }
+  const parts = [];
+  for (const [tool, count] of Object.entries(counts)) {
+    const files = filesByTool[tool];
+    if (files && files.length > 0) {
+      if (files.length <= 2) {
+        parts.push(`${tool} ${files.join(', ')}`);
+      } else {
+        parts.push(`${tool} ${count} files`);
+      }
+    } else {
+      parts.push(`${tool}${count > 1 ? ' ×' + count : ''}`);
+    }
+  }
+  return parts.join(', ');
+}
+
+function renderChunks(chunks) {
+  let html = '';
+  let foldId = 0;
+  for (const chunk of chunks) {
+    switch (chunk.type) {
+      case 'fold': {
+        const id = 'tf' + (foldId++);
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fold" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        break;
+      }
+      case 'fleet': {
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fleet" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        break;
+      }
+      case 'fleet-mytask': {
+        const escapedLines = chunk.lines.map(l => escHtml(l)).join('\n');
+        html += `<span class="term-fleet" onclick="this.classList.toggle('expanded')">${escHtml(chunk.label)}</span>`;
+        html += `<span class="term-fold-body">${escapedLines}</span>\n`;
+        if (chunk.messages && chunk.messages.length > 0) {
+          html += renderFleetBubbles(chunk.messages) + '\n';
+        }
+        break;
+      }
+      case 'chat':
+        html += `<span class="term-chat-msg">${escHtml(chunk.text)}</span>\n`;
+        break;
+      case 'decision':
+        html += `<span class="term-decision">${escHtml(chunk.text)}</span>\n`;
+        break;
+      case 'line':
+        html += escHtml(chunk.text) + '\n';
+        break;
+    }
+  }
+  return html;
+}
+
+function escHtml(s) {
+  return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function ansiToHtml(text) {
+  const colorNames = ['black','red','green','yellow','blue','magenta','cyan','white'];
+  let result = '';
+  let openSpans = 0;
+  let i = 0;
+  while (i < text.length) {
+    if (text[i] === '\x1b' && text[i+1] === '[') {
+      // Parse CSI sequence
+      let j = i + 2;
+      while (j < text.length && text[j] !== 'm' && j - i < 20) j++;
+      if (j < text.length && text[j] === 'm') {
+        const params = text.slice(i+2, j).split(';').map(Number);
+        i = j + 1;
+        const classes = [];
+        for (let p = 0; p < params.length; p++) {
+          const c = params[p];
+          if (c === 0) { // reset
+            while (openSpans > 0) { result += '</span>'; openSpans--; }
+          } else if (c === 1) classes.push('ansi-bold');
+          else if (c === 2) classes.push('ansi-dim');
+          else if (c === 3) classes.push('ansi-italic');
+          else if (c === 4) classes.push('ansi-underline');
+          else if (c >= 30 && c <= 37) classes.push('ansi-' + colorNames[c - 30]);
+          else if (c >= 90 && c <= 97) classes.push('ansi-bright-' + colorNames[c - 90]);
+        }
+        if (classes.length > 0) {
+          result += `<span class="${classes.join(' ')}">`;
+          openSpans++;
+        }
+        continue;
+      }
+    }
+    // Escape HTML chars
+    if (text[i] === '<') result += '&lt;';
+    else if (text[i] === '>') result += '&gt;';
+    else if (text[i] === '&') result += '&amp;';
+    else result += text[i];
+    i++;
+  }
+  while (openSpans > 0) { result += '</span>'; openSpans--; }
+  return result;
+}
+
+async function refreshTerminal() {
+  if (!terminalAgent) return;
+  const output = $('terminalOutput');
+  try {
+    const res = await fetch('/api/peek?' + new URLSearchParams({ agent: terminalAgent }));
+    const data = await res.json();
+    if (data.error) {
+      $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(terminalAgent)}</span> — error`;
+      output.textContent = data.error;
+      return;
+    }
+    $('terminalLabel').innerHTML = `<span class="term-agent-name">${esc(data.label)}</span> <span class="term-win-id">win ${data.win}</span>`;
+    terminalRawText = data.text;
+    renderTerminalContent(terminalRawText);
+  } catch (e) {
+    output.textContent = 'Failed: ' + e.message;
+  }
+}
+
+function startTerminalAuto() {
+  if (terminalAutoTimer) return;
+  terminalAutoTimer = setInterval(refreshTerminal, 3000);
+  const btn = $('terminalFreeze');
+  btn.innerHTML = '&#x23f8; freeze';
+  btn.classList.remove('frozen');
+}
+
+function stopTerminalAuto() {
+  clearInterval(terminalAutoTimer);
+  terminalAutoTimer = null;
+  const btn = $('terminalFreeze');
+  btn.innerHTML = '&#x25b6; resume';
+  btn.classList.add('frozen');
+}
+
+function toggleTerminalFreeze() {
+  if (terminalAutoTimer) stopTerminalAuto();
+  else startTerminalAuto();
+}
+
+let interruptMode = false;
+
+function toggleInterrupt() {
+  interruptMode = !interruptMode;
+  $('interruptToggle').classList.toggle('active', interruptMode);
+  const bar = $('interruptToggle').closest('.chat-input-bar');
+  bar.classList.toggle('interrupt-mode', interruptMode);
+  const input = $('chatInput');
+  if (interruptMode) {
+    const target = chatSendTarget || (currentState && currentState.manager);
+    const label = target && currentState ? agentLabel(currentState, target) : '';
+    input.placeholder = label ? 'Interrupt ' + label + '...' : 'Interrupt (select an agent)...';
+  } else {
+    if (chatSendTarget) {
+      const label = currentState ? agentLabel(currentState, chatSendTarget) : chatSendTarget.slice(0, 8);
+      input.placeholder = 'Message to ' + label + '...';
+    } else {
+      input.placeholder = 'Message (to manager)...';
+    }
+  }
+  input.focus();
+}
+
+async function interruptAgent(agentId) {
+  const label = currentState ? agentLabel(currentState, agentId) : agentId.slice(0, 8);
+  try {
+    const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: agentId }) });
+    const data = await res.json();
+    if (data.error) appendSystemMsg('Interrupt error: ' + data.error);
+    else appendSystemMsg('Interrupted ' + label);
+  } catch (e) { appendSystemMsg('Interrupt failed: ' + e.message); }
+}
+
+// --- Chat attachments (drag-to-chat) ---
+let chatAttachments = [];
+
+function addChatAttachment(item) {
+  // Deduplicate by source
+  if (chatAttachments.some(a => a.source === item.source)) return;
+  chatAttachments.push(item);
+  renderChatAttachments();
+}
+
+function removeChatAttachment(idx) {
+  chatAttachments.splice(idx, 1);
+  renderChatAttachments();
+}
+
+function renderChatAttachments() {
+  const container = $('chatAttachments');
+  if (!chatAttachments.length) {
+    container.className = 'chat-attachments';
+    container.innerHTML = '';
+    return;
+  }
+  container.className = 'chat-attachments active';
+  container.innerHTML = chatAttachments.map((a, i) => {
+    const typeClass = 'chip-type-' + (a.type || 'session');
+    const label = (a.snippet || '').substring(0, 60) || a.source || 'attachment';
+    return `<span class="chat-attach-chip">
+      <span class="chip-type ${typeClass}">${esc(a.type || '?')}</span>
+      <span class="chip-label" title="${esc(a.snippet || '')}">${esc(label)}</span>
+      <span class="chip-del" onclick="removeChatAttachment(${i})">&times;</span>
+    </span>`;
+  }).join('');
+}
+
+// Delegated dragstart for search results and pinned refs
+document.addEventListener('dragstart', e => {
+  const el = e.target.closest('[data-drag-idx]');
+  if (!el) return;
+  const container = el.closest('#logResults, #pinnedRefsBar');
+  if (!container || !container._dragItems) return;
+  const item = container._dragItems[parseInt(el.dataset.dragIdx)];
+  if (!item) return;
+  e.dataTransfer.setData('application/x-chat-attachment', JSON.stringify(item));
+  // Also set tlda format so items can be dropped into tlda
+  const tldaPayload = { _tlda: true, text: item.snippet || '', color: 'yellow', sourceDoc: 'fleet', sourceShapeId: item.source || '' };
+  e.dataTransfer.setData('application/x-tlda-note', JSON.stringify(tldaPayload));
+  // text/plain with JSON for cross-window Safari compatibility
+  e.dataTransfer.setData('text/plain', JSON.stringify({ _fleet: true, ...item, _tlda: true, text: item.snippet || '', color: 'yellow', sourceDoc: 'fleet' }));
+  e.dataTransfer.effectAllowed = 'copy';
+});
+
+// --- Send ---
+async function sendChat() {
+  const input = $('chatInput');
+  const msg = input.value.trim();
+  if (!msg && !chatAttachments.length) return;
+  $('cmdPalette').className = 'cmd-palette';
+  if (msg.startsWith('/')) {
+    input.value = '';
+    const handled = await executeCommand(msg);
+    if (handled) return;
+    // Not a known command — send as chat
+    input.value = msg;
+  }
+  const btn = $('chatSend');
+  btn.disabled = true;
+  input.value = '';
+  input.style.height = 'auto';
+  const target = chatSendTarget || lastConversationPartner || undefined;
+  try {
+    if (interruptMode && target) {
+      const res = await fetch('/api/interrupt', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ agent: target, message: msg }),
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const data = await res.json();
+      if (data.error) appendSystemMsg('Interrupt error: ' + data.error);
+      toggleInterrupt(); // auto-disable after sending
+    } else {
+      const payload = { message: msg, to: target };
+      if (chatAttachments.length) {
+        payload.attachments = chatAttachments.slice();
+      }
+      const res = await fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (!res.ok) throw new Error(await res.text());
+    }
+    shouldAutoScroll = true;
+    chatAttachments = [];
+    renderChatAttachments();
+  } catch (e) {
+    input.value = msg;
+    alert('Failed: ' + e.message);
+  }
+  btn.disabled = false;
+  input.focus();
+}
+
+$('chatInput').addEventListener('input', function() {
+  this.style.height = 'auto';
+  this.style.height = Math.min(this.scrollHeight, 120) + 'px';
+  updatePalette();
+});
+$('chatInput').addEventListener('keydown', e => {
+  const palette = $('cmdPalette');
+  if (palette.classList.contains('active')) {
+    const items = palette.querySelectorAll('.cmd-item');
+    if (e.key === 'ArrowUp') { e.preventDefault(); cmdSelected = Math.max(0, cmdSelected - 1); updatePalette(); return; }
+    if (e.key === 'ArrowDown') { e.preventDefault(); cmdSelected = Math.min(items.length - 1, cmdSelected + 1); updatePalette(); return; }
+    if (e.key === 'Tab' && items.length > 0) { e.preventDefault(); items[cmdSelected]?.click(); return; }
+    if (e.key === 'Escape') { palette.className = 'cmd-palette'; return; }
+  }
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendChat(); }
+});
+$('chatInput').addEventListener('paste', async e => {
+  const items = [...(e.clipboardData?.items || [])];
+  const imgItem = items.find(i => i.type.startsWith('image/'));
+  if (!imgItem) return;
+  e.preventDefault();
+  const blob = imgItem.getAsFile();
+  if (!blob) return;
+  appendSystemMsg('Uploading image...');
+  try {
+    const buf = await blob.arrayBuffer();
+    const res = await fetch('/api/upload', { method: 'POST', body: buf });
+    const data = await res.json();
+    if (data.error) { appendSystemMsg('Upload failed: ' + data.error); return; }
+    // Insert image markdown into input and send
+    const input = $('chatInput');
+    const caption = input.value.trim();
+    input.value = (caption ? caption + ' ' : '') + `![img](${data.url})`;
+    sendChat();
+  } catch (err) { appendSystemMsg('Upload failed: ' + err.message); }
+});
+
+// Drop image or search result onto chat
+const chatArea = $('chatInput').closest('.chat-input-bar');
+chatArea.addEventListener('dragover', e => { e.preventDefault(); chatArea.classList.add('drag-over'); });
+chatArea.addEventListener('dragleave', e => { if (!chatArea.contains(e.relatedTarget)) chatArea.classList.remove('drag-over'); });
+chatArea.addEventListener('drop', async e => {
+  e.preventDefault();
+  chatArea.classList.remove('drag-over');
+  // Check for search result attachment
+  const jsonData = e.dataTransfer?.getData('application/x-chat-attachment');
+  if (jsonData) {
+    try { addChatAttachment(JSON.parse(jsonData)); } catch {}
+    $('chatInput').focus();
+    return;
+  }
+  // Check for tlda annotation drop (custom MIME or text/plain with marker)
+  let tldaData = e.dataTransfer?.getData('application/x-tlda-note');
+  if (!tldaData) {
+    const plain = e.dataTransfer?.getData('text/plain');
+    if (plain) try { const p = JSON.parse(plain); if (p._tlda) tldaData = plain; } catch {}
+  }
+  if (tldaData) {
+    try {
+      const note = JSON.parse(tldaData);
+      if (!note._fleet) { // don't re-attach our own items via text/plain round-trip
+        addChatAttachment({
+          type: 'tlda',
+          snippet: (note.tabs ? note.tabs[note.activeTab || 0] : note.text || '').substring(0, 200),
+          source: note.sourceDoc ? `tlda:${note.sourceDoc}/${note.sourceShapeId || ''}` : 'tlda',
+          timestamp: ''
+        });
+        $('chatInput').focus();
+        return;
+      }
+    } catch {}
+  }
+  const file = [...(e.dataTransfer?.files || [])].find(f => f.type.startsWith('image/'));
+  if (!file) return;
+  appendSystemMsg('Uploading image...');
+  try {
+    const buf = await file.arrayBuffer();
+    const res = await fetch('/api/upload', { method: 'POST', body: buf });
+    const data = await res.json();
+    if (data.error) { appendSystemMsg('Upload failed: ' + data.error); return; }
+    const input = $('chatInput');
+    const caption = input.value.trim();
+    input.value = (caption ? caption + ' ' : '') + `![img](${data.url})`;
+    sendChat();
+  } catch (err) { appendSystemMsg('Upload failed: ' + err.message); }
+});
+
+function toggle(id) { $(id).classList.toggle('collapsed'); }
+
+// --- Tab switching ---
+function switchTab(tab) {
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === tab));
+  document.querySelectorAll('.tab-view').forEach(v => v.classList.toggle('active', v.id === 'tab-' + tab));
+  localStorage.setItem('fleet-tab', tab);
+  if (tab === 'timeline' && currentState) drawGantt(currentState);
+  if (tab === 'search') {
+    if (!projectsLoaded) loadProjects();
+    loadRefs(); // refresh pinned refs
+    if (!$('logSearchInput').value.trim()) loadTimeline();
+  }
+  if (tab === 'terminal' && terminalAgent) startTerminalAuto();
+  if (tab !== 'terminal') stopTerminalAuto();
+}
+
+// --- Log search ---
+let projectsLoaded = false;
+let logSearchTimer = null;
+let timelineEvents = []; // stored globally for filtering
+
+async function loadProjects() {
+  try {
+    const res = await fetch('/api/logs/projects');
+    const projects = await res.json();
+    const sel = $('logProjectFilter');
+    for (const p of projects) {
+      const opt = document.createElement('option');
+      opt.value = p.id;
+      // Show just the last path component
+      const parts = p.path.split('/');
+      opt.textContent = parts[parts.length - 1] || p.id;
+      sel.appendChild(opt);
+    }
+    projectsLoaded = true;
+  } catch {}
+}
+
+async function loadTimeline() {
+  const statusEl = $('logStatus');
+  statusEl.textContent = 'Loading timeline...';
+  try {
+    const res = await fetch('/api/logs/timeline?limit=200');
+    const data = await res.json();
+    if (data.error) { statusEl.textContent = 'Error: ' + data.error; return; }
+    timelineEvents = data.events;
+    renderTimelineEvents();
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderTimelineEvents() {
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  // Don't overwrite search results
+  if ($('logSearchInput') && $('logSearchInput').value.trim().length >= 2) return;
+  let events = timelineEvents;
+  if (chatFilterSet.size > 0) {
+    events = events.filter(e =>
+      chatFilterSet.has(e.from) || chatFilterSet.has(e.to) || chatFilterSet.has(e.agent)
+    );
+    statusEl.textContent = events.length + ' of ' + timelineEvents.length + ' events (filtered)';
+  } else {
+    statusEl.textContent = events.length + ' events';
+  }
+  resultsEl.innerHTML = events.map(renderTimelineEvent).join('');
+}
+
+// Make a clickable agent span for timeline events — uses raw ID for hover, label for display
+function evtAgentLink(id, label) {
+  const uuid = (id && typeof id === 'string' && id.length > 8) ? id : '';
+  const tip = uuid ? `<span class="agent-tip">${uuid}</span>` : '';
+  const name = label || (uuid ? uuid.slice(0, 8) : String(id || ''));
+  const agent = currentState ? (currentState.agents || []).find(a => a.id === id || a.name === id) : null;
+  const alive = agent && isActive(agent);
+  const cls = alive ? 'agent-name' : 'agent-name agent-dead';
+  const click = alive && uuid ? ` onclick="selectAgent('${esc(id)}')"` : '';
+  return `<span class="${cls}"${click}>${esc(name)}${tip}</span>`;
+}
+
+function renderTimelineEvent(e) {
+  const ts = e.timestamp ? timeShort(e.timestamp) : '';
+  const fromHtml = evtAgentLink(e.from, e.fromLabel);
+  const toHtml = evtAgentLink(e.to || e.agent, e.toLabel);
+  const evtClass = 'evt-' + (e.type || 'chat');
+
+  if (e.type === 'delegate') {
+    const desc = esc(e.description || '');
+    const msg = esc((e.message || '').substring(0, 200));
+    return `<div class="timeline-event ${evtClass}">
+      <span class="chat-ts">${ts}</span>
+      <span class="evt-from nick-manager">${fromHtml}</span>
+      <span class="evt-arrow">&rarr;</span>
+      <span class="evt-to">${toHtml}</span>
+      <span class="log-role role-delegate">delegate</span>
+      <strong>${desc}</strong>
+      ${msg ? `<div class="evt-text">${msg}${(e.message||'').length > 200 ? '...' : ''}</div>` : ''}
+    </div>`;
+  }
+
+  if (e.type === 'task_done') {
+    return `<div class="timeline-event ${evtClass}">
+      <span class="chat-ts">${ts}</span>
+      ${toHtml}
+      <span class="log-role role-task_done">done</span>
+      ${e.description ? '<span>' + esc(e.description) + '</span>' : ''}
+      ${e.task_id ? '<span class="log-session">' + esc(e.task_id) + '</span>' : ''}
+    </div>`;
+  }
+
+  // chat
+  const text = esc((e.message || e.text || '').substring(0, 300));
+  return `<div class="timeline-event ${evtClass}">
+    <span class="chat-ts">${ts}</span>
+    <span class="evt-from">${fromHtml}</span>
+    <span class="evt-arrow">&rarr;</span>
+    <span class="evt-to">${toHtml}</span>
+    ${text ? `<div class="evt-text">${text}${(e.message||e.text||'').length > 300 ? '...' : ''}</div>` : ''}
+  </div>`;
+}
+
+function highlightSnippet(snippet, query) {
+  // FTS5 snippets use ⟨⟨...⟩⟩ markers for matches
+  if (snippet.includes('⟨⟨')) {
+    return esc(snippet).replace(/⟨⟨(.*?)⟩⟩/g, '<mark>$1</mark>');
+  }
+  // Fallback: client-side highlight
+  const escaped = esc(snippet);
+  const queryEsc = esc(query);
+  const re = new RegExp(queryEsc.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi');
+  return escaped.replace(re, '<mark>$&</mark>');
+}
+
+function projectShort(proj) {
+  // proj is like "-Users-skip-work-bregman-lower-bound" or "Users-skip-work-foo"
+  // Extract the meaningful part after the last "work-" or "projects-" segment
+  const m = proj.match(/work-(.+)$/);
+  if (m) return m[1].replace(/-/g, '/');
+  // Fallback: last 2 segments
+  const parts = proj.replace(/^-/, '').split('-');
+  return parts.slice(-2).join('-') || proj;
+}
+
+async function searchLogs() {
+  const query = $('logSearchInput').value.trim();
+  const project = $('logProjectFilter').value;
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  const typeFilter = $('logTypeFilter').value;
+  const pinnedOnly = $('pinnedOnlyCheck').checked;
+
+  // "pinned only" mode — show refs matching the query (or all refs if no query)
+  if (pinnedOnly || typeFilter === 'refs') {
+    renderRefsAsResults(query);
+    return;
+  }
+
+  if (query.length < 2) {
+    loadTimeline();
+    return;
+  }
+
+  statusEl.textContent = 'Searching...';
+  resultsEl.innerHTML = '';
+
+  try {
+    const params = new URLSearchParams({ q: query, limit: '50' });
+    if (project) params.set('project', project);
+    const role = $('logRoleFilter').value;
+    if (role) params.set('role', role);
+    const agent = $('logAgentFilter').value;
+    if (agent) params.set('agent', agent);
+    const res = await fetch('/api/logs/search?' + params);
+    const data = await res.json();
+
+    if (data.error) {
+      statusEl.textContent = 'Error: ' + data.error;
+      return;
+    }
+
+    // Client-side type filtering
+    let results = data.results;
+    if (typeFilter) {
+      results = results.filter(r => r.source === typeFilter);
+    }
+
+    statusEl.textContent = results.length + ' result' + (results.length !== 1 ? 's' : '') +
+      (typeFilter ? ` (${typeFilter})` : '');
+
+    const HOME = '/Users/skip';
+    const PROJECTS = HOME + '/.claude/projects/';
+    const EVENTS_FILE = HOME + '/.claude/agent-messages.jsonl';
+
+    const dragItems = [];
+    resultsEl.innerHTML = results.map(r => {
+      let filePath, roleClass, ts;
+      const typeBadge = `<span class="type-badge type-${r.source}">${r.source === 'session' ? 'conv' : r.source === 'events' ? 'event' : r.source}</span>`;
+
+      if (r.source === 'tlda') {
+        return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'tlda', snippet:(r.snippet||'').substring(0,200), source:'tlda/' + (r.project||''), timestamp:r.timestamp||''})-1}">
+          <div class="log-result-header">
+            ${typeBadge}
+            <span class="log-role" style="background:rgba(106,175,176,0.2);color:var(--cyan)">${esc(r.role || 'note')}</span>
+            <span class="log-project">${esc(r.project || '')}</span>
+          </div>
+          <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+        </div>`;
+      }
+
+      if (r.source === 'events') {
+        filePath = EVENTS_FILE + ':' + r.line;
+        const zedUrl = 'zed://file' + EVENTS_FILE + ':' + r.line;
+        roleClass = 'role-' + (r.role || 'chat');
+        ts = r.timestamp ? timeShort(r.timestamp) : '';
+        return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'events', snippet:(r.snippet||'').substring(0,200), source:filePath, timestamp:r.timestamp||''})-1}">
+          <div class="log-result-header">
+            ${typeBadge}
+            <span class="log-role ${roleClass}">${esc(r.role)}</span>
+            ${ts ? `<span class="log-session">${ts}</span>` : ''}
+            <a class="log-src-btn" href="${zedUrl}" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
+          </div>
+          <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+        </div>`;
+      }
+      // JSONL session result
+      const fullPath = PROJECTS + r.project + '/' + r.sessionId + '.jsonl';
+      filePath = fullPath + ':' + r.line;
+      const zedUrl = 'zed://file' + fullPath + ':' + r.line;
+      return `<div class="log-result" draggable="true" data-drag-idx="${dragItems.push({type:'session', snippet:(r.snippet||'').substring(0,200), source:r.project+'/'+r.sessionId+':'+r.line, timestamp:''})-1}" onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})">
+        <div class="log-result-header">
+          ${typeBadge}
+          <span class="log-role ${r.role === 'user' ? 'role-user' : 'role-assistant'}">${r.role}</span>
+          <span class="log-project">${esc(projectShort(r.project))}</span>
+          <a class="log-src-btn" href="${zedUrl}" onclick="event.stopPropagation()" title="${esc(filePath)}"><span class="src-tip">${esc(filePath)}</span>#</a>
+        </div>
+        <div class="log-snippet">${highlightSnippet(r.snippet, query)}</div>
+      </div>`;
+    }).join('');
+    resultsEl._dragItems = dragItems;
+  } catch (e) {
+    statusEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderRefsAsResults(query) {
+  const statusEl = $('logStatus');
+  const resultsEl = $('logResults');
+  let refs = refsData || [];
+  if (query && query.length >= 2) {
+    const ql = query.toLowerCase();
+    refs = refs.filter(r => (r.label || '').toLowerCase().includes(ql) ||
+      (r.preview || '').toLowerCase().includes(ql) ||
+      (r.path || '').toLowerCase().includes(ql) ||
+      (r.note || '').toLowerCase().includes(ql));
+  }
+  statusEl.textContent = refs.length + ' pinned ref' + (refs.length !== 1 ? 's' : '');
+  if (refs.length === 0) {
+    resultsEl.innerHTML = '<div class="empty">No pinned references' + (query ? ' matching "' + esc(query) + '"' : '') + '</div>';
+    return;
+  }
+  const dragItems = [];
+  resultsEl.innerHTML = refs.map(r => {
+    const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
+    const label = esc(r.label || 'untitled');
+    const meta = r.type === 'conversation'
+      ? `${esc(projectShort(r.project))} / ${(r.sessionId || '').slice(0, 8)} lines ${r.startLine}-${r.endLine}`
+      : esc(r.path || '');
+    const preview = r.preview ? `<div class="log-snippet" style="margin-top:2px">${esc(r.preview).substring(0, 200)}</div>` : '';
+    const clickAttr = r.type === 'conversation'
+      ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
+      : '';
+    const dragIdx = dragItems.push({type:'refs', snippet:(r.label||'untitled')+': '+(r.preview||'').substring(0,150), source:r.type==='conversation'?r.project+'/'+r.sessionId+':'+r.line:(r.path||''), timestamp:''}) - 1;
+    return `<div class="log-result" draggable="true" data-drag-idx="${dragIdx}" ${clickAttr}>
+      <div class="log-result-header">
+        <span class="type-badge type-refs">ref</span>
+        <span style="font-size:12px">${icon}</span>
+        <span style="font-weight:600;color:var(--yellow)">${label}</span>
+        <span class="log-session">${meta}</span>
+        <span style="cursor:pointer;opacity:0.3;font-size:14px;padding:0 4px;margin-left:auto" onclick="event.stopPropagation();deleteRef('${r.id}');searchLogs()">&times;</span>
+      </div>
+      ${preview}
+    </div>`;
+  }).join('');
+  resultsEl._dragItems = dragItems;
+}
+
+let currentContext = null; // tracks what's shown in the context modal
+
+async function showContext(project, sessionId, line) {
+  const overlay = $('contextOverlay');
+  const body = $('contextBody');
+  const title = $('contextTitle');
+
+  title.textContent = projectShort(project) + ' / ' + sessionId.substring(0, 8) + '...';
+  body.innerHTML = '<div class="empty">Loading...</div>';
+  overlay.classList.add('active');
+  currentContext = { project, sessionId, line };
+
+  try {
+    const params = new URLSearchParams({ project, session: sessionId, line: String(line), radius: '10' });
+    const res = await fetch('/api/logs/context?' + params);
+    const data = await res.json();
+
+    if (data.error) {
+      body.innerHTML = '<div class="empty">Error: ' + esc(data.error) + '</div>';
+      return;
+    }
+
+    currentContext.messages = data.messages;
+    currentContext.startLine = data.messages[0]?.line || line - 10;
+    currentContext.endLine = data.messages[data.messages.length - 1]?.line || line + 10;
+
+    body.innerHTML = data.messages.map(m => `
+      <div class="context-msg${m.isTarget ? ' target' : ''}">
+        <div class="context-msg-role ${m.role}">${m.role}</div>
+        <div class="context-msg-text">${esc(m.text)}</div>
+      </div>
+    `).join('');
+
+    // Scroll to target
+    const target = body.querySelector('.target');
+    if (target) target.scrollIntoView({ block: 'center' });
+  } catch (e) {
+    body.innerHTML = '<div class="empty">Error: ' + e.message + '</div>';
+  }
+}
+
+function closeContext() {
+  $('contextOverlay').classList.remove('active');
+}
+
+// --- References ---
+let refsData = [];
+
+async function loadRefs() {
+  try {
+    const res = await fetch('/api/refs');
+    refsData = await res.json();
+    renderRefs();
+  } catch {}
+}
+
+function renderRefs() {
+  renderPinnedRefsBar();
+}
+
+function renderPinnedRefsBar() {
+  const bar = $('pinnedRefsBar');
+  if (!bar) return;
+  if (!refsData.length) {
+    bar.classList.remove('active');
+    return;
+  }
+  // Only show the bar when on the search tab and not in "pinned only" mode (those show in main results)
+  const pinnedOnly = $('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked;
+  const typeFilter = $('logTypeFilter') && $('logTypeFilter').value;
+  if (pinnedOnly || typeFilter === 'refs') {
+    bar.classList.remove('active');
+    return;
+  }
+  bar.classList.add('active');
+  const barDragItems = [];
+  bar.innerHTML = refsData.map(r => {
+    const icon = r.type === 'file' ? '&#x1F4C4;' : '&#x1F4CC;';
+    const label = esc(r.label || 'untitled');
+    const meta = r.type === 'conversation'
+      ? `${esc(projectShort(r.project))} / ${(r.sessionId || '').slice(0, 8)}`
+      : esc(r.path || '');
+    const clickAttr = r.type === 'conversation'
+      ? `onclick="showContext('${esc(r.project)}','${esc(r.sessionId)}',${r.line})"`
+      : '';
+    const dragIdx = barDragItems.push({type:'refs', snippet:(r.label||'untitled')+': '+(r.preview||'').substring(0,150), source:r.type==='conversation'?r.project+'/'+r.sessionId+':'+r.line:(r.path||''), timestamp:''}) - 1;
+    return `<div class="pinned-ref-item" draggable="true" data-drag-idx="${dragIdx}" ${clickAttr}>
+      <span class="pinned-ref-icon">${icon}</span>
+      <div style="min-width:0;flex:1;">
+        <span class="pinned-ref-label">${label}</span>
+        <div class="pinned-ref-meta">${meta}</div>
+      </div>
+      <span class="pinned-ref-del" onclick="event.stopPropagation();deleteRef('${r.id}')">&times;</span>
+    </div>`;
+  }).join('');
+  bar._dragItems = barDragItems;
+}
+
+async function updateRefLabel(id, newLabel) {
+  const ref = refsData.find(r => r.id === id);
+  if (!ref || ref.label === newLabel.trim()) return;
+  ref.label = newLabel.trim();
+  try {
+    await fetch('/api/refs/update', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id, label: ref.label }) });
+  } catch {}
+}
+
+async function pinContext() {
+  if (!currentContext) return;
+  // Auto-generate label from first user message or target
+  const userMsg = currentContext.messages?.find(m => m.role === 'user');
+  const label = userMsg ? userMsg.text.slice(0, 80).replace(/\n/g, ' ') : projectShort(currentContext.project) + ' / ' + currentContext.sessionId?.slice(0, 8);
+  const ref = {
+    type: 'conversation',
+    label,
+    note: '',
+    project: currentContext.project,
+    sessionId: currentContext.sessionId,
+    line: currentContext.line,
+    startLine: currentContext.startLine,
+    endLine: currentContext.endLine,
+    preview: currentContext.messages?.slice(0, 3).map(m => m.role + ': ' + m.text.slice(0, 100)).join('\n'),
+  };
+  try {
+    const res = await fetch('/api/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ref) });
+    const saved = await res.json();
+    await loadRefs();
+    $('contextPinBtn').textContent = 'pinned';
+    $('contextPinBtn').disabled = true;
+    setTimeout(() => { $('contextPinBtn').textContent = 'pin as reference'; $('contextPinBtn').disabled = false; }, 2000);
+  } catch {}
+}
+
+async function addFileRef(filePath) {
+  const p = filePath || (prompt('File path to pin:') || '').trim();
+  if (!p) return;
+  const ref = { type: 'file', label: p.split('/').pop(), note: '', path: p };
+  try {
+    await fetch('/api/refs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ref) });
+    await loadRefs();
+    if ($('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked) searchLogs();
+  } catch {}
+}
+
+async function deleteRef(id) {
+  await fetch('/api/refs?id=' + encodeURIComponent(id), { method: 'DELETE' });
+  await loadRefs();
+  const pinnedOnly = $('pinnedOnlyCheck') && $('pinnedOnlyCheck').checked;
+  const typeFilter = $('logTypeFilter') && $('logTypeFilter').value;
+  if (pinnedOnly || typeFilter === 'refs') searchLogs();
+}
+
+loadRefs();
+
+$('logSearchInput').addEventListener('input', () => {
+  clearTimeout(logSearchTimer);
+  logSearchTimer = setTimeout(searchLogs, 400);
+});
+
+$('logSearchInput').addEventListener('keydown', e => {
+  if (e.key === 'Enter') { clearTimeout(logSearchTimer); searchLogs(); }
+});
+
+$('logProjectFilter').addEventListener('change', () => {
+  if ($('logSearchInput').value.trim().length >= 2) searchLogs();
+});
+
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') { closeContext(); closeCmdK(); $('cmdPalette').className = 'cmd-palette'; }
+  // Cmd+K — unified search (works from anywhere)
+  if (e.key === 'k' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openCmdK(); return; }
+  // Keyboard shortcuts (only when not typing in an input)
+  if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+  if (e.key === 'f' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); openChatSearch(); return; }
+  if (e.key === '/') { e.preventDefault(); $('chatInput').focus(); $('chatInput').value = '/'; updatePalette(); }
+  if (e.key === 'c' && !e.metaKey && !e.ctrlKey) { e.preventDefault(); $('chatInput').focus(); }
+  if (e.key === '1') switchTab('dashboard');
+  if (e.key === '2') switchTab('timeline');
+  if (e.key === '3') switchTab('search');
+  if (e.key === '4') switchTab('terminal');
+});
+
+// --- Agent search ---
+const searchInput = $('agentSearch');
+const searchResults = $('searchResults');
+
+searchInput.addEventListener('input', () => {
+  const q = searchInput.value.trim().toLowerCase();
+  if (!q || !currentState) {
+    searchResults.className = 'search-results';
+    searchResults.innerHTML = '';
+    return;
+  }
+  const agents = (currentState.agents || []).filter(a => {
+    const name = (a.friendly_name || a.name || String(a.id)).toLowerCase();
+    const id = String(a.id);
+    return name.includes(q) || id.includes(q);
+  });
+  if (agents.length === 0) {
+    searchResults.className = 'search-results active';
+    searchResults.innerHTML = '<div class="empty">No matches</div>';
+    return;
+  }
+  searchResults.className = 'search-results active';
+  searchResults.innerHTML = agents.map(a => {
+    const name = a.friendly_name || a.name || String(a.id);
+    const alive = isActive(a);
+    const status = alive ? timeAgo(a.last_seen) : 'off';
+    const tagged = chatFilterSet.has(a.id);
+    return `<div class="search-result${tagged ? ' tagged' : ''}" onclick="selectAgent('${a.id}')">
+      <span class="agent-name">${esc(name)}</span>
+      <span class="agent-id">${String(a.id).slice(0, 8)} ${status}</span>
+      ${tagged ? '<span class="chat-btn" style="opacity:0.5">added</span>' : '<span class="chat-btn">+ add</span>'}
+    </div>`;
+  }).join('');
+});
+
+searchInput.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    searchInput.value = '';
+    searchResults.className = 'search-results';
+    searchResults.innerHTML = '';
+  }
+});
+
+function selectAgent(id) {
+  const sid = String(id);
+  if (!chatFilterSet.has(sid)) {
+    chatFilterSet.add(sid);
+    renderChat(currentState);
+  }
+  chatSendTarget = sid;
+  renderFilterBar();
+  renderTimelineEvents();
+  searchInput.value = '';
+  searchResults.className = 'search-results';
+  searchResults.innerHTML = '';
+  $('chatInput').focus();
+}
+
+// --- Gantt timeline ---
+const ganttColors = ['#7a9ec8', '#9370db', '#c8956a', '#6aafb0', '#b87a95', '#c8b060'];
+
+function drawGantt(state) {
+  const canvas = $('ganttCanvas');
+  const container = $('tab-timeline');
+  const dpr = window.devicePixelRatio || 1;
+  const W = container.clientWidth;
+
+  const tasks = (state.tasks || []).filter(t => t.delegated_at);
+  if (tasks.length === 0) {
+    canvas.style.height = '60px';
+    canvas.width = W * dpr;
+    canvas.height = 60 * dpr;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = '#6b6b88';
+    ctx.font = '12px Helvetica Neue, sans-serif';
+    ctx.fillText('No tasks with timestamps', 20, 35);
+    return;
+  }
+
+  // Group tasks by agent
+  const agentTasks = new Map();
+  for (const t of tasks) {
+    const aid = t.agent;
+    if (!agentTasks.has(aid)) agentTasks.set(aid, []);
+    agentTasks.get(aid).push(t);
+  }
+
+  const agents = [...agentTasks.keys()];
+  const ROW_H = 32;
+  const LABEL_W = 120;
+  const PAD_TOP = 40;
+  const PAD_BOTTOM = 10;
+  const H = PAD_TOP + agents.length * ROW_H + PAD_BOTTOM;
+
+  canvas.style.height = H + 'px';
+  canvas.width = W * dpr;
+  canvas.height = H * dpr;
+  const ctx = canvas.getContext('2d');
+  ctx.scale(dpr, dpr);
+
+  // Time range
+  const now = Date.now();
+  let tMin = now, tMax = now;
+  for (const t of tasks) {
+    const s = new Date(t.delegated_at).getTime();
+    const e = t.completed_at ? new Date(t.completed_at).getTime() : now;
+    if (s < tMin) tMin = s;
+    if (e > tMax) tMax = e;
+  }
+  // Add 5% padding
+  const range = tMax - tMin || 1;
+  tMin -= range * 0.02;
+  tMax += range * 0.03;
+
+  const chartW = W - LABEL_W - 10;
+  function tToX(t) { return LABEL_W + ((t - tMin) / (tMax - tMin)) * chartW; }
+
+  // Background
+  ctx.fillStyle = '#0f0f1a';
+  ctx.fillRect(0, 0, W, H);
+
+  // Time axis
+  ctx.strokeStyle = '#1e1e32';
+  ctx.lineWidth = 1;
+  const tickCount = Math.floor(chartW / 80);
+  const tickInterval = (tMax - tMin) / tickCount;
+  ctx.fillStyle = '#6b6b88';
+  ctx.font = '10px Helvetica Neue, sans-serif';
+  ctx.textAlign = 'center';
+  for (let i = 0; i <= tickCount; i++) {
+    const t = tMin + i * tickInterval;
+    const x = tToX(t);
+    ctx.beginPath();
+    ctx.moveTo(x, PAD_TOP - 5);
+    ctx.lineTo(x, H);
+    ctx.stroke();
+    const d = new Date(t);
+    const label = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    ctx.fillText(label, x, PAD_TOP - 10);
+  }
+
+  // Draw rows
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  agents.forEach((aid, i) => {
+    const y = PAD_TOP + i * ROW_H;
+    const color = ganttColors[i % ganttColors.length];
+
+    // Alternating row bg
+    if (i % 2 === 0) {
+      ctx.fillStyle = 'rgba(255,255,255,0.02)';
+      ctx.fillRect(0, y, W, ROW_H);
+    }
+
+    // Agent label
+    const label = agentLabel(state, aid);
+    ctx.fillStyle = color;
+    ctx.font = '11px Helvetica Neue, sans-serif';
+    ctx.fillText(label, LABEL_W - 8, y + ROW_H / 2);
+
+    // Task bars
+    const rowTasks = agentTasks.get(aid);
+    for (const t of rowTasks) {
+      const s = new Date(t.delegated_at).getTime();
+      const e = t.completed_at ? new Date(t.completed_at).getTime() : now;
+      const x1 = tToX(s);
+      const x2 = tToX(e);
+      const barH = 18;
+      const barY = y + (ROW_H - barH) / 2;
+
+      // Bar
+      const alpha = t.status === 'done' ? 0.5 : 0.8;
+      ctx.fillStyle = color;
+      ctx.globalAlpha = alpha;
+      ctx.beginPath();
+      ctx.roundRect(x1, barY, Math.max(x2 - x1, 3), barH, 3);
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
+      // Pulsing right edge for active tasks
+      if (t.status !== 'done') {
+        ctx.fillStyle = color;
+        ctx.globalAlpha = 0.3;
+        ctx.fillRect(x2 - 2, barY, 4, barH);
+        ctx.globalAlpha = 1;
+      }
+
+      // Task description inside bar if wide enough
+      const barW = x2 - x1;
+      if (barW > 50) {
+        ctx.fillStyle = '#0f0f1a';
+        ctx.font = '10px Helvetica Neue, sans-serif';
+        ctx.textAlign = 'left';
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(x1 + 4, barY, barW - 8, barH);
+        ctx.clip();
+        ctx.fillText(t.description || '', x1 + 5, barY + barH / 2 + 1);
+        ctx.restore();
+        ctx.textAlign = 'right';
+      }
+    }
+  });
+
+  // "Now" line
+  const nowX = tToX(now);
+  ctx.strokeStyle = 'rgba(122,184,160,0.6)';
+  ctx.setLineDash([4, 4]);
+  ctx.beginPath();
+  ctx.moveTo(nowX, PAD_TOP - 5);
+  ctx.lineTo(nowX, H);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.fillStyle = '#7ab8a0';
+  ctx.font = '10px Helvetica Neue, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.fillText('now', nowX, PAD_TOP - 10);
+}
+
+// --- Rename agent ---
+async function renameAgent(agentId, currentName) {
+  const newName = prompt('Rename agent:', currentName);
+  if (newName === null || newName === currentName) return;
+  try {
+    const res = await fetch('/api/rename', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent: agentId, name: newName }),
+    });
+    const data = await res.json();
+    if (data.error) appendSystemMsg('Rename error: ' + data.error);
+  } catch (e) { appendSystemMsg('Rename failed: ' + e.message); }
+}
+
+// --- Cmd+K unified search ---
+let cmdkTimer = null;
+let cmdkSelected = -1;
+let cmdkItems = [];
+
+function openCmdK() {
+  const overlay = $('cmdkOverlay');
+  overlay.classList.add('active');
+  const input = $('cmdkInput');
+  input.value = '';
+  input.focus();
+  $('cmdkResults').innerHTML = '<div class="cmdk-empty">Type to search across all sources</div>';
+  cmdkSelected = -1;
+  cmdkItems = [];
+}
+
+function closeCmdK() {
+  $('cmdkOverlay').classList.remove('active');
+  cmdkItems = [];
+  cmdkSelected = -1;
+}
+
+$('cmdkInput').addEventListener('input', () => {
+  clearTimeout(cmdkTimer);
+  cmdkTimer = setTimeout(doCmdKSearch, 300);
+});
+
+$('cmdkInput').addEventListener('keydown', e => {
+  if (e.key === 'Escape') { e.preventDefault(); closeCmdK(); return; }
+  if (e.key === 'ArrowDown') { e.preventDefault(); cmdkNav(1); return; }
+  if (e.key === 'ArrowUp') { e.preventDefault(); cmdkNav(-1); return; }
+  if (e.key === 'Enter') { e.preventDefault(); cmdkActivate(); return; }
+});
+
+function cmdkNav(dir) {
+  if (cmdkItems.length === 0) return;
+  const els = $('cmdkResults').querySelectorAll('.cmdk-item');
+  if (cmdkSelected >= 0 && els[cmdkSelected]) els[cmdkSelected].classList.remove('selected');
+  cmdkSelected = Math.max(0, Math.min(cmdkItems.length - 1, cmdkSelected + dir));
+  if (els[cmdkSelected]) {
+    els[cmdkSelected].classList.add('selected');
+    els[cmdkSelected].scrollIntoView({ block: 'nearest' });
+  }
+}
+
+function cmdkActivate() {
+  if (cmdkSelected >= 0 && cmdkSelected < cmdkItems.length) {
+    const item = cmdkItems[cmdkSelected];
+    closeCmdK();
+    if (item.action) item.action();
+  }
+}
+
+async function doCmdKSearch() {
+  const q = $('cmdkInput').value.trim();
+  const results = $('cmdkResults');
+  if (q.length < 2) {
+    results.innerHTML = '<div class="cmdk-empty">Type to search across all sources</div>';
+    cmdkItems = [];
+    cmdkSelected = -1;
+    return;
+  }
+
+  results.innerHTML = '<div class="cmdk-empty">Searching...</div>';
+  const ql = q.toLowerCase();
+
+  // Search all three sources in parallel
+  const [chatResults, logResults, termResults] = await Promise.all([
+    searchChatMessages(ql),
+    searchLogEntries(q),
+    searchTerminalOutput(ql),
+  ]);
+
+  cmdkItems = [];
+  let html = '';
+
+  if (chatResults.length > 0) {
+    html += '<div class="cmdk-group-label">Chat Messages</div>';
+    for (const r of chatResults.slice(0, 8)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-chat">chat</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  const tldaResults = logResults.filter(r => r.source === 'tlda');
+  const pureLogResults = logResults.filter(r => r.source !== 'tlda');
+
+  if (tldaResults.length > 0) {
+    html += '<div class="cmdk-group-label">Annotations</div>';
+    for (const r of tldaResults.slice(0, 6)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-tlda">${esc(r.role || 'note')}</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (pureLogResults.length > 0) {
+    html += '<div class="cmdk-group-label">Event Logs</div>';
+    for (const r of pureLogResults.slice(0, 8)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-logs">log</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (termResults.length > 0) {
+    html += '<div class="cmdk-group-label">Terminal Output</div>';
+    for (const r of termResults.slice(0, 5)) {
+      const idx = cmdkItems.length;
+      cmdkItems.push(r);
+      html += `<div class="cmdk-item" onclick="cmdkSelected=${idx};cmdkActivate()" onmouseenter="cmdkHover(${idx})">
+        <span class="cmdk-source src-term">term</span>
+        <span class="cmdk-text">${r.html}</span>
+        <span class="cmdk-meta">${r.meta}</span>
+      </div>`;
+    }
+  }
+
+  if (cmdkItems.length === 0) {
+    html = '<div class="cmdk-empty">No results</div>';
+  }
+
+  results.innerHTML = html;
+  cmdkSelected = cmdkItems.length > 0 ? 0 : -1;
+  if (cmdkSelected >= 0) {
+    const els = results.querySelectorAll('.cmdk-item');
+    if (els[0]) els[0].classList.add('selected');
+  }
+}
+
+function cmdkHover(idx) {
+  const els = $('cmdkResults').querySelectorAll('.cmdk-item');
+  if (cmdkSelected >= 0 && els[cmdkSelected]) els[cmdkSelected].classList.remove('selected');
+  cmdkSelected = idx;
+  if (els[idx]) els[idx].classList.add('selected');
+}
+
+function searchChatMessages(ql) {
+  if (!currentState) return [];
+  const msgs = currentState.messages || [];
+  const results = [];
+  for (let i = msgs.length - 1; i >= 0 && results.length < 10; i--) {
+    const m = msgs[i];
+    const text = m.text || '';
+    if (!text.toLowerCase().includes(ql)) continue;
+    const nick = m.from === 'web' ? 'skip' : agentLabel(currentState, m.from);
+    const toNick = m.to === 'web' ? 'skip' : agentLabel(currentState, m.to);
+    // Highlight match in snippet
+    const pos = text.toLowerCase().indexOf(ql);
+    const start = Math.max(0, pos - 40);
+    const end = Math.min(text.length, pos + ql.length + 60);
+    const snippet = (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
+    const highlighted = esc(snippet).replace(new RegExp(ql.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<mark>$&</mark>');
+    const fromId = m.from;
+    results.push({
+      html: `<strong>${esc(nick)}</strong> ${highlighted}`,
+      meta: timeShort(m.timestamp),
+      action: () => {
+        // Filter chat to show this agent's messages and scroll
+        if (fromId !== 'web') selectAgent(fromId);
+      }
+    });
+  }
+  return results;
+}
+
+async function searchLogEntries(q) {
+  try {
+    const params = new URLSearchParams({ q, limit: '20' });
+    const res = await fetch('/api/logs/search?' + params);
+    const data = await res.json();
+    if (data.error || !data.results) return [];
+    return data.results.map(r => {
+      const snippet = r.snippet || '';
+      const highlighted = highlightSnippet(snippet, q);
+      const isTlda = r.source === 'tlda';
+      return {
+        source: r.source,
+        role: isTlda ? (r.role || 'note') : (r.role || ''),
+        html: isTlda ? `<strong>${esc(r.project || '')}</strong> ${highlighted}` : highlighted,
+        meta: isTlda ? (r.project || '') : (r.role || ''),
+        action: () => {
+          closeCmdK();
+          if (r.source !== 'events' && r.source !== 'tlda' && r.project && r.sessionId) {
+            showContext(r.project, r.sessionId, r.line);
+          } else {
+            switchTab('search');
+            $('logSearchInput').value = q;
+            searchLogs();
+          }
+        }
+      };
+    });
+  } catch { return []; }
+}
+
+async function searchTerminalOutput(ql) {
+  if (!currentState) return [];
+  const agents = (currentState.agents || []).filter(a => isActive(a) && a.kitty_win);
+  const results = [];
+  // Fetch terminal output for active agents (limit to 5 agents to avoid overload)
+  const toCheck = agents.slice(0, 5);
+  const fetches = toCheck.map(async a => {
+    try {
+      const res = await fetch('/api/peek?' + new URLSearchParams({ agent: a.id }));
+      const data = await res.json();
+      if (data.error || !data.text) return;
+      const text = data.text;
+      const lines = text.split('\n');
+      for (let li = lines.length - 1; li >= 0 && results.length < 10; li--) {
+        const line = lines[li];
+        if (line.toLowerCase().includes(ql)) {
+          const pos = line.toLowerCase().indexOf(ql);
+          const start = Math.max(0, pos - 30);
+          const end = Math.min(line.length, pos + ql.length + 50);
+          const snippet = (start > 0 ? '...' : '') + line.slice(start, end) + (end < line.length ? '...' : '');
+          const highlighted = esc(snippet).replace(new RegExp(ql.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'gi'), '<mark>$&</mark>');
+          const agentName = data.label || name;
+          const agentId = a.id;
+          results.push({
+            html: `<strong>${esc(agentName)}</strong> ${highlighted}`,
+            meta: 'terminal',
+            action: () => {
+              terminalAgent = a.id;
+              localStorage.setItem('fleet-terminal-agent', terminalAgent);
+              switchTab('terminal');
+              refreshTerminal();
+            }
+          });
+          break; // one match per agent
+        }
+      }
+    } catch {}
+  });
+  await Promise.all(fetches);
+  return results;
+}
+
+// --- Docs tab ---
+let docsProjectsLoaded = false;
+let currentDocsProject = null;
+let currentAnnotations = [];
+
+async function loadDocsProjects() {
+  if (docsProjectsLoaded) return;
+  try {
+    const res = await fetch('/api/tlda/projects');
+    const data = await res.json();
+    const sel = $('docsProjectSelect');
+    if (!sel) return;
+    const projects = (data.projects || data || [])
+      .filter(p => !p.archived && p.format !== 'book')
+      .sort((a, b) => {
+        // Sort by last build, most recent first
+        const ta = a.lastBuild || a.createdAt || '';
+        const tb = b.lastBuild || b.createdAt || '';
+        return tb.localeCompare(ta);
+      });
+    for (const p of projects) {
+      const opt = document.createElement('option');
+      opt.value = p.name;
+      opt.textContent = p.title || p.name;
+      if (p.pages) opt.textContent += ` (${p.pages}p)`;
+      sel.appendChild(opt);
+    }
+    docsProjectsLoaded = true;
+    // Restore last selection
+    const saved = localStorage.getItem('fleet-docs-project');
+    if (saved && [...sel.options].some(o => o.value === saved)) {
+      sel.value = saved;
+      loadAnnotations();
+    }
+  } catch (e) {
+    $('docsList').innerHTML = `<div class="cmdk-empty">tlda server unreachable</div>`;
+  }
+}
+
+async function loadAnnotations() {
+  if (!$('docsProjectSelect')) return;
+  const project = $('docsProjectSelect').value;
+  if (!project) {
+    $('docsList').innerHTML = '<div class="cmdk-empty">Select a document to see annotations</div>';
+    return;
+  }
+  currentDocsProject = project;
+  localStorage.setItem('fleet-docs-project', project);
+  $('docsList').innerHTML = '<div class="cmdk-empty">Loading...</div>';
+
+  try {
+    const res = await fetch('/api/tlda/' + encodeURIComponent(project) + '/annotations');
+    const data = await res.json();
+    currentAnnotations = data.annotations || [];
+
+    if (currentAnnotations.length === 0) {
+      $('docsList').innerHTML = '<div class="cmdk-empty">No annotations</div>';
+      return;
+    }
+
+    // Sort by y position (page order)
+    currentAnnotations.sort((a, b) => a.y - b.y);
+
+    $('docsList').innerHTML = currentAnnotations.map((ann, i) => {
+      const colorMap = { red: '#c85050', orange: '#c8956a', yellow: '#c8b060', green: '#7ab8a0', blue: '#7a9ec8', violet: '#9370db', grey: '#6b6b88', black: '#c8c8d8', white: '#f0f0f0', 'light-red': '#d88888', 'light-green': '#a0d8b8', 'light-blue': '#a0c0e0', 'light-violet': '#b8a0d8' };
+      const dotColor = colorMap[ann.color] || 'var(--text-dim)';
+      const anchor = ann.anchor ? `${ann.anchor.file || ''}:${ann.anchor.line || ''}` : '';
+      const doneClass = ann.done ? ' ann-done' : '';
+
+      // Show active tab text, or main text
+      let displayText = ann.text;
+      if (ann.tabs && ann.tabs.length > 1) {
+        displayText = ann.tabs[ann.activeTab || 0] || ann.text;
+      }
+
+      const tabsHtml = ann.tabs && ann.tabs.length > 1
+        ? `<div class="ann-tabs">${ann.tabs.map((t, ti) => `<span class="ann-tab${ti === (ann.activeTab || 0) ? ' active' : ''}" onclick="switchAnnTab(${i},${ti})">${ti + 1}</span>`).join('')}</div>`
+        : '';
+
+      return `<div class="ann-card${doneClass}" data-idx="${i}">
+        <div class="ann-header">
+          <span class="ann-color" style="background:${dotColor}"></span>
+          ${anchor ? `<span class="ann-anchor" onclick="scrollToAnnotation(${i})" title="Jump to location">${esc(anchor)}</span>` : ''}
+          ${ann.createdBy ? `<span style="font-size:10px;color:var(--text-dim)">${esc(ann.createdBy)}</span>` : ''}
+          <span style="margin-left:auto;font-size:10px;color:var(--text-dim)">${ann.createdAt ? timeAgo(ann.createdAt) : ''}</span>
+        </div>
+        <div class="ann-text" contenteditable="true" data-idx="${i}" onblur="saveAnnotation(${i}, this.textContent)">${esc(displayText)}</div>
+        ${tabsHtml}
+        <div class="ann-actions">
+          <button class="ann-action-btn" onclick="shareAnnotation(${i})" title="Share in chat">share</button>
+          <button class="ann-action-btn" onclick="toggleAnnDone(${i})" title="${ann.done ? 'Mark undone' : 'Mark done'}">${ann.done ? 'undone' : 'done'}</button>
+          <button class="ann-action-btn danger" onclick="deleteAnnotation(${i})" title="Delete">delete</button>
+        </div>
+      </div>`;
+    }).join('');
+  } catch (e) {
+    $('docsList').innerHTML = `<div class="cmdk-empty">Error: ${e.message}</div>`;
+  }
+}
+
+async function saveAnnotation(idx, newText) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  const oldText = ann.tabs && ann.tabs.length > 1
+    ? ann.tabs[ann.activeTab || 0]
+    : ann.text;
+  if (newText === oldText) return;
+
+  const shapeId = ann.id;
+  const updates = {};
+  if (ann.tabs && ann.tabs.length > 1) {
+    const newTabs = [...ann.tabs];
+    newTabs[ann.activeTab || 0] = newText;
+    updates.tabs = newTabs;
+  } else {
+    updates.text = newText;
+  }
+
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(shapeId), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(updates),
+    });
+  } catch (e) {
+    appendSystemMsg('Failed to save annotation: ' + e.message);
+  }
+}
+
+async function deleteAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(ann.id), {
+      method: 'DELETE',
+    });
+    loadAnnotations();
+  } catch (e) {
+    appendSystemMsg('Failed to delete annotation: ' + e.message);
+  }
+}
+
+async function toggleAnnDone(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/annotations/' + encodeURIComponent(ann.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ done: !ann.done }),
+    });
+    loadAnnotations();
+  } catch (e) {
+    appendSystemMsg('Failed to update annotation: ' + e.message);
+  }
+}
+
+async function scrollToAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann || !currentDocsProject) return;
+  try {
+    await fetch('/api/tlda/' + encodeURIComponent(currentDocsProject) + '/scroll', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ x: ann.x, y: ann.y }),
+    });
+  } catch (e) {
+    appendSystemMsg('Failed to scroll: ' + e.message);
+  }
+}
+
+function shareAnnotation(idx) {
+  const ann = currentAnnotations[idx];
+  if (!ann) return;
+  const anchor = ann.anchor ? ` (${ann.anchor.file}:${ann.anchor.line})` : '';
+  const text = `[${currentDocsProject}${anchor}] ${ann.text}`;
+  $('chatInput').value = text;
+  $('chatInput').focus();
+}
+
+function switchAnnTab(annIdx, tabIdx) {
+  const ann = currentAnnotations[annIdx];
+  if (!ann || !ann.tabs) return;
+  ann.activeTab = tabIdx;
+  loadAnnotations(); // re-render
+}
+</script>
+</body>
+</html>

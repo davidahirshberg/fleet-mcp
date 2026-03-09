@@ -97,7 +97,9 @@ function detectSessionId() {
   return null;
 }
 
-const ME = detectSessionId();
+const MY_SESSION = detectSessionId();
+let MY_FLEET_ID = null;
+let ME = MY_SESSION;
 
 // ---- State helpers ----
 
@@ -137,7 +139,7 @@ function saveState(state) {
   if (!state.messages) state.messages = [];
   if (!state.agents) state.agents = [];
 
-  // Heartbeat: update last_seen for this agent on every save
+  // Heartbeat: update last_seen and session tracking for this agent on every save
   if (ME) {
     const me = state.agents.find(a => a.id === ME);
     if (me) {
@@ -145,6 +147,13 @@ function saveState(state) {
       // Clear compacting flag — agent is alive and making MCP calls
       delete me.compacting;
       delete me.compacting_since;
+      // Track session history
+      if (MY_SESSION) {
+        if (!me.session_ids) me.session_ids = [];
+        if (me.session_id && !me.session_ids.includes(me.session_id)) me.session_ids.push(me.session_id);
+        if (!me.session_ids.includes(MY_SESSION)) me.session_ids.push(MY_SESSION);
+        me.session_id = MY_SESSION;
+      }
     }
   }
 
@@ -215,8 +224,11 @@ function requireAuthOver(state, targetId) {
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  // Exact match on id, name, or friendly_name
-  const exact = state.agents.find(a => a.id === id || a.name === id || a.friendly_name === id);
+  // Exact match on id, name, friendly_name, or session_id
+  const exact = state.agents.find(a =>
+    a.id === id || a.name === id || a.friendly_name === id ||
+    a.session_id === id || (a.session_ids && a.session_ids.includes(id))
+  );
   if (exact) return exact;
   // Prefix match on id (must be unambiguous)
   const prefixMatches = state.agents.filter(a => a.id.startsWith(id));
@@ -652,50 +664,84 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agentName = args.name || null;
 
     // Need either a session UUID or a name
-    if (!ME && !agentName) {
+    if (!MY_SESSION && !agentName) {
       return { content: [{ type: 'text', text: 'No session ID detected and no name provided. Pass session_id or name for headless agents.' }], isError: true };
     }
 
     const state = loadState();
     if (!state.agents) state.agents = [];
 
-    const id = ME || agentName;
+    const sessionId = args.session_id || MY_SESSION;
 
-    // Upsert: preserve friendly_name and labels from old entry, then remove
-    const oldEntry = getAgent(state, id);
-    const oldFriendlyName = oldEntry?.friendly_name;
-    const oldLabels = oldEntry?.labels;
-    removeAgent(state, id);
-
-    // Deregister any OTHER agent on the same kitty window — prevents stale
-    // registrations from lingering after session restart/compaction
-    if (KITTY_WIN) {
-      const stale = state.agents.filter(a => a.kitty_win === KITTY_WIN && a.id !== id);
-      for (const s of stale) {
-        logEvent({ type: 'deregister', agent: s.id, reason: `kitty window ${KITTY_WIN} claimed by ${id}` });
-        removeAgent(state, s.id);
+    // 3-way identity matching:
+    // 1. Match by session_id → same agent, known session
+    let existingAgent = null;
+    if (sessionId) {
+      existingAgent = state.agents.find(a =>
+        a.session_id === sessionId ||
+        (a.session_ids && a.session_ids.includes(sessionId))
+      );
+    }
+    // 2. Match by kitty_win (active <30min) → post-compaction same window
+    if (!existingAgent && KITTY_WIN) {
+      const candidate = state.agents.find(a => a.kitty_win === KITTY_WIN);
+      if (candidate?.last_seen) {
+        const seenAgo = Date.now() - new Date(candidate.last_seen).getTime();
+        if (seenAgo < 30 * 60 * 1000) {
+          existingAgent = candidate;
+          logEvent({ type: 'identity_match', agent: candidate.id, reason: `kitty_win ${KITTY_WIN} match (${Math.round(seenAgo/1000)}s ago), new session ${sessionId}` });
+        }
       }
     }
+    // 3. Match by name (headless agents)
+    if (!existingAgent && agentName) {
+      existingAgent = state.agents.find(a => a.name === agentName);
+    }
 
-    const entry = {
-      id,
-      registered_at: now(),
-    };
-    if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
-    if (agentName) entry.name = agentName;
-    // session_id is the same as id for session-based agents; explicit arg overrides
-    if (args.session_id) entry.session_id = args.session_id;
-    else if (ME) entry.session_id = ME;
-    if (oldFriendlyName) entry.friendly_name = oldFriendlyName;
+    let entry;
+    if (existingAgent) {
+      // Update existing agent — preserve identity, update session
+      entry = existingAgent;
+      entry.registered_at = now();
+      if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
+      if (agentName) entry.name = agentName;
+      // Track session history
+      if (sessionId) {
+        if (!entry.session_ids) entry.session_ids = [];
+        if (entry.session_id && !entry.session_ids.includes(entry.session_id)) {
+          entry.session_ids.push(entry.session_id);
+        }
+        if (!entry.session_ids.includes(sessionId)) {
+          entry.session_ids.push(sessionId);
+        }
+        entry.session_id = sessionId;
+      }
+    } else {
+      // New agent — fleet ID = first session ID (or name for headless)
+      const fleetId = sessionId || agentName;
+      entry = {
+        id: fleetId,
+        registered_at: now(),
+      };
+      if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
+      if (agentName) entry.name = agentName;
+      if (sessionId) {
+        entry.session_id = sessionId;
+        entry.session_ids = [sessionId];
+      }
+      state.agents.push(entry);
+    }
+
     entry.last_seen = now();
     // Clear compacting flag (set by PreCompact hook) — agent is back
-    // (don't carry over from oldEntry)
+    delete entry.compacting;
+    delete entry.compacting_since;
     // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
 
-    // Labels: preserve old labels, add auto-labels
-    const labels = new Set(oldLabels || []);
+    // Labels: preserve existing, add auto-labels
+    const labels = new Set(entry.labels || []);
     if (isManager) labels.add('manager');
     if (entry.cwd) {
       const project = path.basename(entry.cwd);
@@ -703,7 +749,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
-    state.agents.push(entry);
+    // Deregister any OTHER agent on the same kitty window — prevents stale
+    // registrations from lingering after session restart
+    if (KITTY_WIN) {
+      const stale = state.agents.filter(a => a.kitty_win === KITTY_WIN && a.id !== entry.id);
+      for (const s of stale) {
+        logEvent({ type: 'deregister', agent: s.id, reason: `kitty window ${KITTY_WIN} claimed by ${entry.id}` });
+        removeAgent(state, s.id);
+      }
+    }
 
     // Remove legacy top-of-chain singleton — all managers are peers
     delete state.manager;
@@ -718,11 +772,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
+    // Set this process's fleet identity
+    MY_FLEET_ID = entry.id;
+    ME = MY_FLEET_ID;
+
     saveState(state);
 
     const agentCount = state.agents.length;
     const role = isManager ? 'manager' : 'agent';
-    let msg = `Registered ${id} as ${role}. ${agentCount} agent(s) registered.`;
+    let msg = `Registered ${entry.id} as ${role}. ${agentCount} agent(s) registered.`;
 
     const refPath = `${os.homedir()}/.claude/reference/managing-agents.md`;
     const repoRefPath = path.join(__dirname, 'managing-agents.md');
@@ -927,9 +985,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Show registered agents
     if (agents.length > 0) {
       const agentLines = agents.map(a => {
-        let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id.slice(0, 8));
+        let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id);
         if (a.friendly_name && a.name) label += ` (${a.name})`;
-        if (a.friendly_name) label += ` [${a.id.slice(0, 8)}]`;
+        if (a.friendly_name) label += ` [${a.id}]`;
         if (a.is_manager) label += ' [manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
@@ -1465,7 +1523,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!agent) return { content: [{ type: 'text', text: `Agent "${args.agent}" not registered.` }], isError: true };
     agent.labels = args.labels || [];
     saveState(state);
-    const label = agent.friendly_name || agent.name || agent.id.slice(0, 8);
+    const label = agent.friendly_name || agent.name || agent.id;
     return { content: [{ type: 'text', text: `Labels for ${label}: ${agent.labels.join(', ') || '(none)'}` }] };
   }
 
@@ -1493,7 +1551,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!kick.ok) {
       return { content: [{ type: 'text', text: `Agent "${agent}" — kick failed: ${kick.error}. Message delivered via state file.` }] };
     }
-    return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id.slice(0, 8)} (${kick.result})${message ? ' (with message)' : ''}.` }] };
+    return { content: [{ type: 'text', text: `Interrupted ${entry.friendly_name || entry.id} (${kick.result})${message ? ' (with message)' : ''}.` }] };
   }
 
   // ---- restart_mcp ----
@@ -1516,9 +1574,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         // Send /mcp + Enter via kitty to trigger Claude Code's MCP restart
         const sock = execSync(`ls -t /tmp/kitty-sock-* 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 3000 }).trim();
         execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${t.kitty_win}" '/mcp\n'`, { timeout: 5000 });
-        results.push(`${t.friendly_name || t.id.slice(0, 8)}: sent`);
+        results.push(`${t.friendly_name || t.id}: sent`);
       } catch {
-        results.push(`${t.friendly_name || t.id.slice(0, 8)}: failed`);
+        results.push(`${t.friendly_name || t.id}: failed`);
       }
     }
     return { content: [{ type: 'text', text: `MCP restart → ${targets.length} agent(s):\n${results.join('\n')}` }] };
