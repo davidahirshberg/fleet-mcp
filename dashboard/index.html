@@ -635,6 +635,50 @@
   .chat-line .katex { font-size: 1em; }
   .chat-line .katex-display { margin: 4px 0; text-align: center; }
 
+  /* Inline markdown file cards */
+  .md-file-card {
+    display: inline;
+  }
+  .md-file-chip {
+    font-family: 'SF Mono','Menlo',monospace;
+    font-size: 11px; color: var(--blue); cursor: pointer;
+    border-bottom: 1px dotted var(--blue); opacity: 0.8;
+  }
+  .md-file-chip:hover { opacity: 1; }
+  .md-file-card.expanded .md-file-chip { opacity: 1; }
+  .md-file-body {
+    display: none;
+  }
+  .md-file-card.expanded .md-file-body {
+    display: block;
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    padding: 8px 10px;
+    margin: 4px 0;
+    font-size: 12px;
+    line-height: 1.5;
+    max-height: 400px;
+    overflow: auto;
+    background: rgba(255,255,255,0.02);
+    position: relative;
+  }
+  .md-file-info {
+    float: right; font-size: 10px; color: var(--text-dim); opacity: 0.6;
+    font-family: 'SF Mono','Menlo',monospace; margin-left: 12px;
+  }
+  .md-file-body h1, .md-file-body h2, .md-file-body h3 { font-weight: 500; margin: 8px 0 4px; color: var(--text); }
+  .md-file-body h1 { font-size: 15px; }
+  .md-file-body h2 { font-size: 13px; }
+  .md-file-body h3 { font-size: 12px; }
+  .md-file-body p { margin: 4px 0; }
+  .md-file-body ul, .md-file-body ol { padding-left: 16px; margin: 4px 0; }
+  .md-file-body li { margin: 2px 0; }
+  .md-file-body code { font-family: 'SF Mono','Menlo',monospace; font-size: 11px; background: rgba(255,255,255,0.06); padding: 1px 4px; border-radius: 2px; }
+  .md-file-body pre { background: rgba(255,255,255,0.04); padding: 6px 8px; border-radius: 3px; overflow-x: auto; margin: 4px 0; }
+  .md-file-body blockquote { border-left: 2px solid var(--accent); padding-left: 8px; color: var(--text-dim); margin: 4px 0; }
+  .md-file-body strong { font-weight: 500; }
+  .md-file-body a { color: var(--cyan); }
+
   /* Agent list widget */
   .agents-table { width: 100%; border-collapse: collapse; font-size: 12px; }
   .agents-table th {
@@ -3362,10 +3406,19 @@ function renderMarkdown(html) {
       return `<div style="display:flex;gap:4px;margin:1px 0"><span style="color:var(--text-dim);font-size:11px;flex-shrink:0">${g.marker}</span><span>${g.text}${countHint}</span></div>${nested}`
     }).join('')
   })
-  // File paths: shorten absolute paths to smart relative form
+  // Explicit file sharing: [file:/path/to/doc.md] → expandable card
+  html = html.replace(/\[file:(\/[\w/._-]+\.md)\]/g, (_, filePath) => {
+    const name = filePath.split('/').pop()
+    return `<span class="md-file-card" data-path="${filePath}"><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
+  })
+  // File paths: shorten absolute paths, make .md files into expandable cards
   html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
     if (segment.startsWith('<')) return segment
     return segment.replace(/\/Users\/\w+\/([\w/._-]+)/g, (fullPath, rel) => {
+      if (fullPath.endsWith('.md')) {
+        const name = rel.split('/').pop()
+        return `<span class="md-file-card" data-path="${fullPath}"><span class="md-file-chip">${name}</span><span class="md-file-body"></span></span>`
+      }
       return `<span class="file-path" title="${fullPath}">~/${rel}</span>`
     })
   })
@@ -4855,12 +4908,48 @@ function updateChatWidget(container, params, state) {
     })
   })
 
+  // Markdown file cards: click chip to fetch and render inline
+  log.querySelectorAll('.md-file-chip').forEach(chip => {
+    chip.addEventListener('click', async e => {
+      e.stopPropagation()
+      const card = chip.closest('.md-file-card')
+      if (!card) return
+      if (card.classList.contains('expanded')) {
+        card.classList.remove('expanded')
+        return
+      }
+      const body = card.querySelector('.md-file-body')
+      if (body._loaded) {
+        card.classList.add('expanded')
+        return
+      }
+      body.textContent = 'Loading...'
+      card.classList.add('expanded')
+      try {
+        const res = await fetch(`/api/file?path=${encodeURIComponent(card.dataset.path)}`)
+        const data = await res.json()
+        if (data.error) { body.textContent = data.error; return }
+        // File info: short path + sender (from parent chat-line)
+        const filePath = card.dataset.path
+        const shortPath = filePath.replace(/^\/Users\/\w+\//, '~/')
+        const chatLine = card.closest('.chat-line')
+        const sender = chatLine?.dataset.msgFrom
+        const senderName = sender && state ? agentLabel(state, sender) : ''
+        const infoHtml = `<span class="md-file-info">${esc(shortPath)}${senderName ? ' · ' + esc(senderName) : ''}</span>`
+        body.innerHTML = infoHtml + renderMarkdown(esc(data.content))
+        body._loaded = true
+      } catch (err) {
+        body.textContent = 'Failed to load: ' + err.message
+      }
+    })
+  })
+
   // Click any message with nested lists to toggle abbreviated/full
   log.querySelectorAll('.chat-line').forEach(line => {
     if (!line.querySelector('.nested-folded')) return
     line.style.cursor = 'pointer'
     line.addEventListener('click', e => {
-      if (e.target.closest('a, code, .chat-ts, .chat-retract, .tool-ref, .shared-doc')) return
+      if (e.target.closest('a, code, .chat-ts, .chat-retract, .tool-ref, .shared-doc, .md-file-card')) return
       line.classList.toggle('expanded')
     })
   })
