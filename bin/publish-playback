@@ -1,0 +1,178 @@
+#!/usr/bin/env node
+/**
+ * Publish a playback for static hosting (GH Pages / Fly).
+ *
+ * Usage:
+ *   publish-playback <playback-id> [--deploy]
+ *   publish-playback --list
+ *
+ * Builds the dashboard with vite, copies the playback JSON into the output,
+ * and optionally deploys to GH Pages.
+ *
+ * Output: dist/ directory ready for static hosting.
+ * URL: https://<user>.github.io/fleet/?playback=<id>
+ */
+
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+import { execSync } from 'child_process';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FLEET_ROOT = path.resolve(__dirname, '..');
+const DIST_DIR = path.join(FLEET_ROOT, 'dist');
+const PLAYBACKS_DIR = path.join(os.homedir(), '.claude', 'playbacks');
+const PUBLISHED_DIR = path.join(DIST_DIR, 'playbacks');
+
+// Parse args
+const args = process.argv.slice(2);
+
+if (args.length === 0 || args[0] === '--help') {
+  console.log(`Usage:
+  publish-playback <id>          Build & add playback to dist/
+  publish-playback --list        List available playbacks
+  publish-playback --deploy      Deploy dist/ to GH Pages
+  publish-playback <id> --deploy Build, add, and deploy in one step
+`);
+  process.exit(0);
+}
+
+if (args[0] === '--list') {
+  const files = fs.readdirSync(PLAYBACKS_DIR).filter(f => f.endsWith('.json'));
+  for (const f of files) {
+    try {
+      const pb = JSON.parse(fs.readFileSync(path.join(PLAYBACKS_DIR, f), 'utf8'));
+      const dur = Math.round(pb.duration_ms / 60000);
+      console.log(`  ${pb.id.slice(0, 8)}  ${pb.title}  (${pb.events.length} events, ${dur} min)`);
+    } catch {}
+  }
+  process.exit(0);
+}
+
+const shouldDeploy = args.includes('--deploy');
+const playbackId = args.find(a => !a.startsWith('--'));
+
+// Step 1: Build dashboard if dist/ doesn't exist or --force
+if (!fs.existsSync(path.join(DIST_DIR, 'index.html')) || args.includes('--force')) {
+  // Detect GH Pages base path from git remote
+  let base = '/';
+  try {
+    const remote = execSync('git remote get-url origin', { cwd: FLEET_ROOT, encoding: 'utf8' }).trim();
+    const m = remote.match(/github\.com[:/][^/]+\/([^/.]+)/);
+    if (m) base = `/${m[1]}/`;
+  } catch {}
+  console.log(`Building dashboard (base: ${base})...`);
+  execSync(`FLEET_BASE=${base} npx vite build`, { cwd: FLEET_ROOT, stdio: 'inherit' });
+}
+
+// Step 2: Copy playback JSON to dist/playbacks/
+if (playbackId) {
+  const files = fs.readdirSync(PLAYBACKS_DIR).filter(f => f.endsWith('.json'));
+  const match = files.find(f => f.startsWith(playbackId));
+  if (!match) {
+    console.error(`Playback not found: ${playbackId}`);
+    process.exit(1);
+  }
+
+  fs.mkdirSync(PUBLISHED_DIR, { recursive: true });
+
+  const playback = JSON.parse(fs.readFileSync(path.join(PLAYBACKS_DIR, match), 'utf8'));
+  const outPath = path.join(PUBLISHED_DIR, `${playback.id}.json`);
+  fs.copyFileSync(path.join(PLAYBACKS_DIR, match), outPath);
+  console.log(`Added: ${playback.title} (${playback.id.slice(0, 8)})`);
+
+  // Update playbacks/index.json (listing of all published playbacks)
+  const published = fs.readdirSync(PUBLISHED_DIR).filter(f => f.endsWith('.json') && f !== 'index.json');
+  const index = published.map(f => {
+    try {
+      const pb = JSON.parse(fs.readFileSync(path.join(PUBLISHED_DIR, f), 'utf8'));
+      const counts = {};
+      for (const e of pb.events) counts[e.type] = (counts[e.type] || 0) + 1;
+      return {
+        id: pb.id,
+        title: pb.title,
+        created: pb.created,
+        duration_ms: pb.duration_ms,
+        event_count: pb.events.length,
+        event_types: counts,
+        sources: pb.sources,
+      };
+    } catch { return null; }
+  }).filter(Boolean).sort((a, b) => new Date(b.created) - new Date(a.created));
+  fs.writeFileSync(path.join(PUBLISHED_DIR, 'index.json'), JSON.stringify(index, null, 2));
+  console.log(`Index: ${index.length} playback(s)`);
+
+  const sizeMB = (fs.statSync(outPath).size / 1024 / 1024).toFixed(1);
+  console.log(`Size: ${sizeMB} MB`);
+}
+
+// Step 3: Deploy to GH Pages
+if (shouldDeploy) {
+  console.log('\nDeploying to GH Pages...');
+  try {
+    // Check if gh-pages branch exists; create if not (without switching branches!)
+    try {
+      execSync('git rev-parse --verify gh-pages', { cwd: FLEET_ROOT, stdio: 'pipe' });
+    } catch {
+      // Create orphan gh-pages branch using a temp worktree to avoid switching branches
+      // (switching branches wipes uncommitted changes in the working tree!)
+      const tmpInit = path.join(os.tmpdir(), 'fleet-init-ghpages-' + Date.now());
+      execSync(`git worktree add --detach ${tmpInit}`, { cwd: FLEET_ROOT, stdio: 'pipe' });
+      if (!fs.existsSync(path.join(tmpInit, '.git'))) {
+        throw new Error(`Worktree creation failed — refusing to run reset outside temp dir`);
+      }
+      execSync('git checkout --orphan gh-pages && git reset --hard && git commit --allow-empty -m "Init gh-pages"', {
+        cwd: tmpInit, stdio: 'pipe'
+      });
+      execSync(`git worktree remove ${tmpInit}`, { cwd: FLEET_ROOT, stdio: 'pipe' });
+    }
+
+    // Use git worktree for clean deploy
+    const deployDir = path.join(os.tmpdir(), 'fleet-deploy-' + Date.now());
+    execSync(`git worktree add ${deployDir} gh-pages`, { cwd: FLEET_ROOT, stdio: 'pipe' });
+
+    // Clean and copy dist contents
+    const deployFiles = fs.readdirSync(deployDir).filter(f => f !== '.git');
+    for (const f of deployFiles) fs.rmSync(path.join(deployDir, f), { recursive: true, force: true });
+
+    // Copy dist/ to deploy dir
+    execSync(`cp -R ${DIST_DIR}/* ${deployDir}/`, { stdio: 'pipe' });
+
+    // Add .nojekyll for GH Pages
+    fs.writeFileSync(path.join(deployDir, '.nojekyll'), '');
+
+    // Commit and push
+    execSync('git add -A && git commit -m "Deploy playback" --allow-empty', {
+      cwd: deployDir, stdio: 'pipe'
+    });
+    execSync('git push origin gh-pages', { cwd: deployDir, stdio: 'inherit' });
+
+    // Cleanup worktree
+    execSync(`git worktree remove ${deployDir}`, { cwd: FLEET_ROOT, stdio: 'pipe' });
+
+    // Get repo URL for GH Pages
+    const remote = execSync('git remote get-url origin', { cwd: FLEET_ROOT, encoding: 'utf8' }).trim();
+    const repoMatch = remote.match(/github\.com[:/]([^/]+)\/([^/.]+)/);
+    if (repoMatch) {
+      const [, user, repo] = repoMatch;
+      const baseUrl = `https://${user}.github.io/${repo}`;
+      console.log(`\nDeployed!`);
+      if (playbackId) {
+        const files = fs.readdirSync(PLAYBACKS_DIR).filter(f => f.endsWith('.json'));
+        const match = files.find(f => f.startsWith(playbackId));
+        const pb = JSON.parse(fs.readFileSync(path.join(PLAYBACKS_DIR, match), 'utf8'));
+        console.log(`URL: ${baseUrl}/?playback=${pb.id}`);
+      } else {
+        console.log(`URL: ${baseUrl}/`);
+      }
+    }
+  } catch (e) {
+    console.error('Deploy failed:', e.message);
+    process.exit(1);
+  }
+}
+
+if (!shouldDeploy && playbackId) {
+  console.log(`\nReady in dist/. Deploy with: publish-playback --deploy`);
+}

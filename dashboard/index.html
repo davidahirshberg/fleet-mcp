@@ -5,7 +5,6 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
-<script type="module" src="https://cdn.jsdelivr.net/npm/ninja-keys@1.2.2/dist/ninja-keys.min.js"></script>
 <title>Agent Dashboard v2</title>
 <style>
   :root {
@@ -2274,44 +2273,13 @@
   body.demo-mode .chat-input-bar textarea,
   body.demo-mode .chat-send { pointer-events: none; }
 
-  /* ninja-keys command palette theming */
-  ninja-keys {
-    --ninja-accent-color: var(--accent);
-    --ninja-secondary-background-color: var(--surface);
-    --ninja-secondary-text-color: var(--text-dim);
-    --ninja-text-color: var(--text);
-    --ninja-font-size: 13px;
-    --ninja-z-index: 9999;
-  }
-  ninja-keys::part(ninja-modal-header) {
-    background: var(--bg);
-    border-bottom: 1px solid var(--border);
-  }
-  ninja-keys::part(ninja-modal) {
-    background: var(--bg);
-    border: 1px solid var(--border);
-  }
-  ninja-keys::part(ninja-input) {
-    color: var(--text);
-    background: var(--surface);
-  }
-  ninja-keys::part(ninja-action) {
-    color: var(--text);
-    border-left: 2px solid transparent;
-  }
-  ninja-keys::part(ninja-selected) {
-    background: rgba(147,112,219,0.15);
-    border-left-color: var(--accent);
-  }
 </style>
 </head>
 <body>
 <div id="app"></div>
-<ninja-keys class="dark" id="command-palette"></ninja-keys>
 <script type="module">
 import { DockviewComponent } from 'dockview-core'
 import 'dockview-core/dist/styles/dockview.css'
-import { tinykeys } from 'https://cdn.jsdelivr.net/npm/tinykeys@3.0.0/+esm'
 
 
 // --- Config ---
@@ -4263,6 +4231,7 @@ function createChatWidget(container, params) {
     if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
   }
   input.addEventListener('keydown', e => {
+    e.stopPropagation() // prevent dockview tab bar from intercepting keystrokes
     if (!container._terminalMode) {
       const enterMode = localStorage.getItem('fleet-enter-mode') || (window._fleetSendKey === 'Cmd+Enter' ? 'cmd-enter' : 'enter')
       if (e.key === 'Enter') {
@@ -7937,19 +7906,17 @@ function createPlaybackWidget(container, params) {
     let html = ''
     for (const pb of list) {
       const isLoaded = pbState.playback && pbState.playback.id === pb.id
-      // Recording name — clicking loads at constant speed (no warp)
-      html += `<div class="pb-result" data-id="${pb.id}" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:${isLoaded && pbState.timewarps.length ? 'none' : '1px solid var(--border)'}">
+      const cuts = isLoaded ? pbState.timewarps.map(t => t.name) : (pb.timewarps || [])
+      const hasCuts = cuts.length > 0
+      html += `<div class="pb-result" data-id="${pb.id}" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:${hasCuts ? 'none' : '1px solid var(--border)'}">
         <div style="color:${isLoaded ? 'var(--accent)' : 'var(--text)'}">${esc(pb.title)}</div>
         <div style="color:var(--text-dim);font-size:10px">${pb.event_count} events, ${fmtTime(pb.duration_ms)}</div>
       </div>`
-      // If this recording is loaded, show its cuts indented below
-      if (isLoaded && pbState.timewarps.length > 0) {
-        for (const tw of pbState.timewarps) {
-          const active = tw === pbState.timewarp
-          html += `<div class="pb-cut" data-cut="${esc(tw.name)}" style="padding:3px 8px 3px 24px;cursor:pointer;font-size:11px;color:${active ? 'var(--accent)' : 'var(--text-dim)'};border-bottom:1px solid var(--border);${active ? 'background:rgba(147,112,219,0.08)' : ''}">
-            ${active ? '▸ ' : '  '}${esc(tw.name)}
-          </div>`
-        }
+      for (const cutName of cuts) {
+        const active = isLoaded && pbState.timewarp && pbState.timewarp.name === cutName
+        html += `<div class="pb-cut" data-id="${pb.id}" data-cut="${esc(cutName)}" style="padding:3px 8px 3px 24px;cursor:pointer;font-size:11px;color:${active ? 'var(--accent)' : 'var(--text-dim)'};border-bottom:1px solid var(--border);${active ? 'background:rgba(147,112,219,0.08)' : ''}">
+          ${active ? '▸ ' : '  '}${esc(cutName)}
+        </div>`
       }
     }
     dropdown.innerHTML = html
@@ -7969,19 +7936,24 @@ function createPlaybackWidget(container, params) {
     dropdown.querySelectorAll('.pb-cut').forEach(el => {
       el.addEventListener('mouseenter', () => { if (!el.style.background.includes('147')) el.style.background = 'rgba(255,255,255,0.05)' })
       el.addEventListener('mouseleave', () => { if (!el.style.background.includes('147')) el.style.background = '' })
-      el.addEventListener('mousedown', (e) => {
+      el.addEventListener('mousedown', async (e) => {
         e.preventDefault()
+        const cutId = el.dataset.id
         const cutName = el.dataset.cut
+        dropdown.style.display = 'none'
+        searchInput.blur()
+        // Load recording first if not already loaded
+        if (!pbState.playback || pbState.playback.id !== cutId) {
+          await loadRecording(cutId)
+        }
         if (cutName) {
           const tw = pbState.timewarps.find(t => t.name === cutName)
           if (tw) pbState.timewarp = tw
         } else {
-          pbState.timewarp = null // "Raw" option
+          pbState.timewarp = null
         }
         drawTimewarpOverlay()
         updatePlaybackUI()
-        dropdown.style.display = 'none'
-        searchInput.blur()
       })
     })
   }
@@ -9316,137 +9288,7 @@ function focusWidget(name) {
   }
 }
 
-function toggleCommandPalette() {
-  const ninja = document.getElementById('command-palette')
-  if (ninja) {
-    updateCommandPaletteActions()
-    ninja.open()
-  }
-}
 
-// Default keymap — overridden by ~/.fleet/keymap.json
-const DEFAULT_KEYMAP = {
-  '$mod+Shift+KeyS': 'split-chat',
-  '$mod+Shift+KeyV': 'vsplit-terminal',
-  '$mod+KeyW': 'close-panel',
-  '$mod+KeyK': 'command-palette',
-  'g g': 'focus-agents',
-  'g c': 'focus-chat',
-  'g s': 'focus-search',
-  'g t': 'focus-terminal',
-}
-
-const ACTIONS = {
-  'split-chat': () => executeCommand('/sp chat'),
-  'vsplit-terminal': () => executeCommand('/vsp terminal'),
-  'close-panel': () => executeCommand('/close'),
-  'command-palette': () => toggleCommandPalette(),
-  'focus-agents': () => focusWidget('agents'),
-  'focus-chat': () => focusWidget('chat'),
-  'focus-search': () => focusWidget('search'),
-  'focus-terminal': () => focusWidget('terminal'),
-  'focus-tasks': () => focusWidget('tasks'),
-  'focus-timeline': () => focusWidget('timeline'),
-  'reset-layout': () => executeCommand('/reset'),
-  'only': () => executeCommand('/only'),
-}
-
-let _keymapUnsubscribe = null
-
-function initKeymap() {
-  if (_keymapUnsubscribe) _keymapUnsubscribe()
-
-  const userBindings = fleetConfig._keymap?.bindings || {}
-  const timeout = fleetConfig._keymap?.timeout || 300
-  const merged = { ...DEFAULT_KEYMAP, ...userBindings }
-
-  const bindings = {}
-  for (const [keys, action] of Object.entries(merged)) {
-    const handler = typeof action === 'string' ? ACTIONS[action] : null
-    if (handler) {
-      bindings[keys] = (e) => {
-        // Don't intercept if typing in an input/textarea (unless it's a $mod combo)
-        const tag = document.activeElement?.tagName
-        if ((tag === 'INPUT' || tag === 'TEXTAREA') && !keys.includes('$mod')) return
-        e.preventDefault()
-        handler()
-      }
-    }
-  }
-
-  _keymapUnsubscribe = tinykeys(window, bindings, { timeout })
-}
-
-// Init keymap after config loads
-loadFleetConfig().then(() => initKeymap())
-
-// --- Command Palette (ninja-keys) ---
-
-function updateCommandPaletteActions() {
-  const ninja = document.getElementById('command-palette')
-  if (!ninja) return
-
-  const actions = []
-
-  // Panel actions
-  for (const name of WIDGET_NAMES) {
-    const title = name.charAt(0).toUpperCase() + name.slice(1)
-    actions.push({ id: `open-${name}`, title: `Open ${title}`, section: 'Panels',
-      handler: () => executeCommand(`/sp ${name}`) })
-    actions.push({ id: `vsplit-${name}`, title: `VSplit ${title}`, section: 'Panels',
-      handler: () => executeCommand(`/vsp ${name}`) })
-    actions.push({ id: `tab-${name}`, title: `Tab ${title}`, section: 'Panels',
-      handler: () => executeCommand(`/tab ${name}`) })
-  }
-
-  // Agent actions
-  for (const a of (currentState?.agents || [])) {
-    const label = a.friendly_name || a.name || a.id?.substring(0, 8)
-    actions.push({ id: `chat-${a.id}`, title: `Chat with ${label}`, section: 'Agents',
-      handler: () => {
-        selectedAgent = a.id
-        localStorage.setItem('fleet-selected-agent', a.id)
-        if (currentState) broadcastUpdate(currentState)
-      }
-    })
-    actions.push({ id: `terminal-${a.id}`, title: `Terminal: ${label}`, section: 'Agents',
-      handler: () => {
-        const id = `terminal-${Date.now()}`
-        const panel = dv.addPanel({ id, component: 'terminal', title: `Terminal: ${label}`,
-          params: { agentId: a.id } })
-      }
-    })
-    if (a.kitty_win) {
-      actions.push({ id: `interrupt-${a.id}`, title: `Interrupt ${label}`, section: 'Agents',
-        handler: () => fetch('/api/interrupt', { method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ agent: a.id }) })
-      })
-    }
-  }
-
-  // Layout commands
-  actions.push({ id: 'layout-reset', title: 'Reset layout', section: 'Layout',
-    handler: () => executeCommand('/reset') })
-  actions.push({ id: 'layout-only', title: 'Close other panels', section: 'Layout',
-    handler: () => executeCommand('/only') })
-
-  const savedLayouts = JSON.parse(localStorage.getItem('fleet-layouts') || '{}')
-  for (const name of Object.keys(savedLayouts)) {
-    actions.push({ id: `layout-${name}`, title: `Load layout: ${name}`, section: 'Layout',
-      handler: () => executeCommand(`/load ${name}`) })
-  }
-
-  // Focus actions
-  actions.push({ id: 'focus-search', title: 'Focus search', section: 'Navigation', hotkey: 'g s',
-    handler: () => focusWidget('search') })
-  actions.push({ id: 'focus-agents', title: 'Focus agents', section: 'Navigation', hotkey: 'g g',
-    handler: () => focusWidget('agents') })
-  actions.push({ id: 'focus-chat', title: 'Focus chat', section: 'Navigation', hotkey: 'g c',
-    handler: () => focusWidget('chat') })
-
-  ninja.data = actions
-}
 
 // --- Apply config settings ---
 loadFleetConfig().then(() => {
