@@ -24,6 +24,51 @@ const LOG_FILE = path.join(os.homedir(), '.claude', 'agent-messages.jsonl');
 const DB_PATH = path.join(os.homedir(), '.claude', 'search-index.sqlite');
 const TLDA_PROJECTS_DIR = path.join(os.homedir(), 'work', 'claude-tldraw', 'server', 'projects');
 
+/**
+ * Shared JSONL→event transform. Parses a single JSONL line into the
+ * normalized event format used by /api/session and SSE broadcasts.
+ * Returns null for lines that should be skipped.
+ */
+export function parseSessionLine(jsonStr) {
+  let obj;
+  try { obj = JSON.parse(jsonStr); } catch { return null; }
+  const t = obj.type;
+  if (t === 'progress' || t === 'file-history-snapshot') return null;
+  const msg = obj.message || {};
+  const ev = { type: t, timestamp: obj.timestamp };
+
+  if (t === 'assistant' && msg.content) {
+    const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+    ev.blocks = content.map(c => {
+      if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input, id: c.id };
+      if (c.type === 'text') return { type: 'text', text: c.text };
+      return { type: c.type };
+    });
+    if (msg.usage) {
+      const u = msg.usage;
+      ev.usage = {
+        input: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
+        output: u.output_tokens || 0,
+      };
+    }
+  } else if (t === 'user' && msg.content) {
+    const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
+    ev.blocks = content.map(c => {
+      if (c.type === 'tool_result') {
+        const text = typeof c.content === 'string' ? c.content :
+          Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content);
+        return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false };
+      }
+      if (c.type === 'text') return { type: 'text', text: c.text };
+      return { type: c.type };
+    });
+  } else {
+    return null;
+  }
+
+  return ev;
+}
+
 export class SearchIndex {
   constructor(dbPath = DB_PATH) {
     this.db = new Database(dbPath);
@@ -70,6 +115,35 @@ export class SearchIndex {
         line_offset INTEGER NOT NULL DEFAULT 0,
         mtime_ms REAL NOT NULL DEFAULT 0
       );
+
+      -- Session events (derived from JSONL, same format as /api/session)
+      CREATE TABLE IF NOT EXISTS session_events (
+        id INTEGER PRIMARY KEY,
+        agent_id TEXT NOT NULL,
+        session_id TEXT NOT NULL,
+        type TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        blocks TEXT NOT NULL,
+        usage_input INTEGER,
+        usage_output INTEGER,
+        line_num INTEGER NOT NULL,
+        file_path TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_session_events_agent ON session_events(agent_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
+      CREATE INDEX IF NOT EXISTS idx_session_events_file ON session_events(file_path, line_num);
+
+      -- UI events for playback/UX analysis
+      CREATE TABLE IF NOT EXISTS ui_events (
+        id INTEGER PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        detail TEXT NOT NULL
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_ui_events_ts ON ui_events(timestamp);
+      CREATE INDEX IF NOT EXISTS idx_ui_events_type ON ui_events(event_type, timestamp);
     `);
   }
 
@@ -85,6 +159,38 @@ export class SearchIndex {
       ON CONFLICT(file_path) DO UPDATE SET byte_offset=excluded.byte_offset, line_offset=excluded.line_offset, mtime_ms=excluded.mtime_ms
     `);
     // Search queries are built dynamically to support optional agent/role/project filters
+
+    // Session events statements
+    this._insertSessionEvent = this.db.prepare(`
+      INSERT INTO session_events (agent_id, session_id, type, timestamp, blocks, usage_input, usage_output, line_num, file_path)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._insertSessionEventMany = this.db.transaction((rows) => {
+      for (const r of rows) this._insertSessionEvent.run(...r);
+    });
+    this._queryEvents = this.db.prepare(`
+      SELECT blocks, type, timestamp, usage_input, usage_output
+      FROM session_events
+      WHERE agent_id = ?
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._queryEventsAfter = this.db.prepare(`
+      SELECT blocks, type, timestamp, usage_input, usage_output
+      FROM session_events
+      WHERE agent_id = ? AND timestamp > ?
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._countEvents = this.db.prepare(`
+      SELECT COUNT(*) as c FROM session_events WHERE agent_id = ?
+    `);
+
+    // UI events statements
+    this._insertUIEvent = this.db.prepare(`
+      INSERT INTO ui_events (timestamp, event_type, detail) VALUES (?, ?, ?)
+    `);
+    this._insertUIEventMany = this.db.transaction((rows) => {
+      for (const r of rows) this._insertUIEvent.run(r.timestamp, r.event_type, JSON.stringify(r.detail));
+    });
   }
 
   // --- Indexing ---
@@ -329,6 +435,95 @@ export class SearchIndex {
     };
     walk(doc);
     return texts.length > 0 ? texts.join(' ') : null;
+  }
+
+  // --- Session Events ---
+
+  queryEvents(agentId, { after, limit = 200 } = {}) {
+    const rows = after
+      ? this._queryEventsAfter.all(agentId, after, limit)
+      : this._queryEvents.all(agentId, limit);
+    rows.reverse(); // chronological
+    return rows.map(r => ({
+      type: r.type,
+      timestamp: r.timestamp,
+      blocks: JSON.parse(r.blocks),
+      usage: r.usage_input != null ? { input: r.usage_input, output: r.usage_output } : undefined,
+    }));
+  }
+
+  countEvents(agentId) {
+    return this._countEvents.get(agentId).c;
+  }
+
+  insertEvents(rows) {
+    if (rows.length > 0) this._insertSessionEventMany(rows);
+  }
+
+  insertUIEvents(events) {
+    if (events.length > 0) this._insertUIEventMany(events);
+  }
+
+  indexSessionEvents(filePath, agentId, sessionId) {
+    let stat;
+    try { stat = fs.statSync(filePath); } catch { return 0; }
+    const offset = this._getOffset.get(filePath + ':events');
+    if (offset && offset.byte_offset >= stat.size) return 0;
+
+    const startByte = offset?.byte_offset || 0;
+    let lineNum = offset?.line_offset || 0;
+
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(stat.size - startByte);
+    fs.readSync(fd, buf, 0, buf.length, startByte);
+    fs.closeSync(fd);
+
+    const chunk = buf.toString('utf8');
+    const lines = chunk.split('\n');
+    const rows = [];
+
+    for (const line of lines) {
+      lineNum++;
+      if (!line.trim()) continue;
+      const ev = parseSessionLine(line);
+      if (!ev) continue;
+      rows.push([agentId, sessionId, ev.type, ev.timestamp, JSON.stringify(ev.blocks),
+                  ev.usage?.input ?? null, ev.usage?.output ?? null, lineNum, filePath]);
+    }
+
+    if (rows.length > 0) this._insertSessionEventMany(rows);
+    this._setOffset.run(filePath + ':events', stat.size, lineNum, stat.mtimeMs);
+    return rows.length;
+  }
+
+  indexAllSessions(state) {
+    const agents = state?.agents || [];
+    let total = 0;
+    for (const agent of agents) {
+      const cwd = agent.cwd || '';
+      const projectHash = cwd.replace(/\//g, '-');
+      const candidateIds = [];
+      if (agent.session_id) candidateIds.push(agent.session_id);
+      if (agent.session_ids) {
+        for (const sid of agent.session_ids) {
+          if (!candidateIds.includes(sid)) candidateIds.push(sid);
+        }
+      }
+      if (candidateIds.length === 0) candidateIds.push(agent.id);
+      for (const sid of candidateIds) {
+        const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
+        try {
+          fs.statSync(p);
+          total += this.indexSessionEvents(p, agent.id, sid);
+        } catch {}
+      }
+    }
+    return total;
+  }
+
+  rebuildEventsIndex() {
+    this.db.exec('DELETE FROM session_events');
+    this.db.exec("DELETE FROM file_offsets WHERE file_path LIKE '%:events'");
   }
 
   // --- Search ---

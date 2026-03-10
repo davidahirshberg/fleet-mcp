@@ -2715,8 +2715,10 @@ function applyLabelFilter(container, label, andGroupIdx) {
 
 function applyChatTarget(container, agentId) {
   if (!agentId) return
+  const prev = container._chatTarget
   container._chatTarget = agentId
   if (container._panelId) savePanelState(container._panelId, 'chatTarget', agentId)
+  trackUI('chat_target', { panelId: container._panelId, agentId, prev })
 }
 
 function onLabelDragEnd(e) {
@@ -2813,6 +2815,7 @@ function onLabelDragEnd(e) {
     // Keep current target, just add filter
     applyLabelFilter(container, label, andIdx)
   }
+  trackUI('drag_drop', { type: 'label', target: container._panelId, zone: action, label })
 
   if (currentState) updateChatWidget(container, container._widgetParams || {}, currentState)
   cleanupDrag()
@@ -2870,6 +2873,7 @@ document.addEventListener('drop', (e) => {
     dv.addPanel({ id, component: 'chat', title,
       params: { agent: agentId },
       position: refPanel ? { referencePanel: refPanel, direction: 'within' } : undefined })
+    trackUI('drag_drop', { type: 'agent', target: id, zone: 'tab' })
   } catch {}
 })
 
@@ -3796,6 +3800,7 @@ function createChatWidget(container, params) {
         if (failed.length) {
           log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Broadcast: ${failed.length}/${results.length} failed</div>`
         }
+        trackUI('chat_send', { panelId: container._panelId, to: 'broadcast', textLength: msg.length, hasAttachments: !!attachments })
       } catch (e) { console.error('Broadcast send failed:', e) }
       container._chatAttachments = []
       renderChatAttachments()
@@ -3836,11 +3841,14 @@ function createChatWidget(container, params) {
         if (!res.ok) {
           const err = await res.text()
           log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Send failed: ${esc(err)}</div>`
-        } else if (currentState) {
+        } else {
+          trackUI('chat_send', { panelId: container._panelId, to: target, textLength: msg.length, hasAttachments: !!(container._chatAttachments.length) })
           // Check if target agent is compacting — show voicemail notice
-          const targetAgent = (currentState.agents || []).find(a => a.id === target)
-          if (targetAgent?.compacting) {
-            log.innerHTML += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.7">voicemail — ${esc(targetAgent.friendly_name || targetAgent.name || target.substring(0, 8))} is compacting</div>`
+          if (currentState) {
+            const targetAgent = (currentState.agents || []).find(a => a.id === target)
+            if (targetAgent?.compacting) {
+              log.innerHTML += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.7">voicemail — ${esc(targetAgent.friendly_name || targetAgent.name || target.substring(0, 8))} is compacting</div>`
+            }
           }
         }
       } catch (e) { console.error('Send failed:', e) }
@@ -7551,6 +7559,7 @@ function syncStreamSources() {
 // Clear tab dot when panel becomes active + restore chat scroll
 dv.onDidActivePanelChange(({ panel }) => {
   if (!panel) return
+  trackUI('tab_switch', { panelId: panel.id })
   try {
     const inst = panelInstances.get(panel.id)
     if (!inst) return
@@ -7740,6 +7749,7 @@ function executeCommand(cmd) {
     const title = widget.charAt(0).toUpperCase() + widget.slice(1)
     dv.addPanel({ id, component: widget, title,
       position: active ? { referencePanel: active, direction: 'below' } : undefined })
+    trackUI('panel_add', { panelId: id, widget, position: 'below' })
     return null
   }
 
@@ -7749,6 +7759,7 @@ function executeCommand(cmd) {
     const title = widget.charAt(0).toUpperCase() + widget.slice(1)
     dv.addPanel({ id, component: widget, title,
       position: active ? { referencePanel: active, direction: 'right' } : undefined })
+    trackUI('panel_add', { panelId: id, widget, position: 'right' })
     return null
   }
 
@@ -7758,11 +7769,15 @@ function executeCommand(cmd) {
     const title = widget.charAt(0).toUpperCase() + widget.slice(1)
     dv.addPanel({ id, component: widget, title,
       position: active ? { referencePanel: active, direction: 'within' } : undefined })
+    trackUI('panel_add', { panelId: id, widget, position: 'within' })
     return null
   }
 
   if (name === '/close') {
-    if (active) dv.removePanel(active)
+    if (active) {
+      trackUI('panel_close', { panelId: active.id })
+      dv.removePanel(active)
+    }
     return null
   }
 
@@ -7968,6 +7983,17 @@ document.addEventListener('keydown', e => {
     executeCommand('/close')
   }
 })
+
+// --- UI Event Collector ---
+const _uiEventBuffer = [];
+function trackUI(eventType, detail) {
+  _uiEventBuffer.push({ timestamp: new Date().toISOString(), event_type: eventType, detail: detail || {} });
+}
+setInterval(() => {
+  if (!_uiEventBuffer.length) return;
+  const batch = _uiEventBuffer.splice(0);
+  fetch('/api/ui-events', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(batch) }).catch(() => {});
+}, 3000);
 </script>
 </body>
 </html>
