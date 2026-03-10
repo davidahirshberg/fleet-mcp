@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.css">
 <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.9/dist/katex.min.js"></script>
+<script type="module" src="https://cdn.jsdelivr.net/npm/ninja-keys@1.2.2/dist/ninja-keys.min.js"></script>
 <title>Agent Dashboard v2</title>
 <style>
   :root {
@@ -2109,14 +2110,56 @@
   body.demo-mode .chat-input-bar textarea,
   body.demo-mode .chat-send,
   body.demo-mode .chat-interrupt-btn { pointer-events: none; }
+
+  /* ninja-keys command palette theming */
+  ninja-keys {
+    --ninja-accent-color: var(--accent);
+    --ninja-secondary-background-color: var(--surface);
+    --ninja-secondary-text-color: var(--text-dim);
+    --ninja-text-color: var(--text);
+    --ninja-font-size: 13px;
+    --ninja-z-index: 9999;
+  }
+  ninja-keys::part(ninja-modal-header) {
+    background: var(--bg);
+    border-bottom: 1px solid var(--border);
+  }
+  ninja-keys::part(ninja-modal) {
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+  ninja-keys::part(ninja-input) {
+    color: var(--text);
+    background: var(--surface);
+  }
+  ninja-keys::part(ninja-action) {
+    color: var(--text);
+    border-left: 2px solid transparent;
+  }
+  ninja-keys::part(ninja-selected) {
+    background: rgba(147,112,219,0.15);
+    border-left-color: var(--accent);
+  }
 </style>
 </head>
 <body>
 <div id="app"></div>
+<ninja-keys class="dark" id="command-palette"></ninja-keys>
 <script type="module">
 import { DockviewComponent } from 'dockview-core'
 import 'dockview-core/dist/styles/dockview.css'
+import { tinykeys } from 'https://cdn.jsdelivr.net/npm/tinykeys@3.0.0/+esm'
 
+
+// --- Config ---
+let fleetConfig = {}
+async function loadFleetConfig() {
+  try {
+    fleetConfig = await fetch('/api/config').then(r => r.json())
+  } catch {}
+}
+// Fire and forget — config used when available
+loadFleetConfig()
 
 // --- State ---
 let currentState = null
@@ -3851,7 +3894,12 @@ function createChatWidget(container, params) {
   }
   input.addEventListener('keydown', e => {
     if (!container._terminalMode) {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+      const sendKey = window._fleetSendKey || 'Enter'
+      if (sendKey === 'Cmd+Enter' || sendKey === 'Meta+Enter') {
+        if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.shiftKey) { e.preventDefault(); send() }
+      } else {
+        if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+      }
       return
     }
     // Terminal mode: buffered input
@@ -5089,6 +5137,7 @@ function updateChatWidget(container, params, state) {
 
 function createAgentsWidget(container, params) {
   container._agentSort = { col: 'seen', asc: true } // default: most recently seen first
+  container._foldState = new Map() // managerId -> boolean (true = folded)
   container.innerHTML = '<div class="agents-list"></div>'
 }
 
@@ -5103,7 +5152,8 @@ function updateAgentsWidget(container, params, state) {
   const taskHash = (state.tasks || []).filter(t => t.status !== 'done').map(t => t.agent + ':' + t.status + ':' + (t.description || '').slice(0, 30)).join('|')
   const seenHash = Object.keys(chatSeenByAgent).sort().map(k => k.slice(0,8) + ':' + chatSeenByAgent[k]).join(',')
   const msgHash = (state.messages || []).length + ':' + selectedAgent + ':' + seenHash
-  const fullHash = agentHash + '||' + taskHash + '||' + msgHash
+  const foldHash = [...(container._foldState || new Map()).entries()].map(([k,v]) => k.slice(0,8) + ':' + v).join(',')
+  const fullHash = agentHash + '||' + taskHash + '||' + msgHash + '||' + foldHash
   if (list._agentsHash === fullHash) return
   list._agentsHash = fullHash
   const sort = container._agentSort || { col: 'seen', asc: true }
@@ -5130,6 +5180,63 @@ function updateAgentsWidget(container, params, state) {
   }
   agents.sort(cmp)
 
+  // Build team relationships from delegated_by
+  const foldState = container._foldState || new Map()
+  const teams = new Map() // managerId -> [agent enriched objects]
+  const assigned = new Set()
+  const activeTasks = (state.tasks || []).filter(t => t.status !== 'done')
+  for (const t of activeTasks) {
+    if (!t.delegated_by) continue
+    const manager = agents.find(a => a.id === t.delegated_by && a.is_manager)
+    if (!manager) continue
+    const member = agents.find(a => a.id === t.agent)
+    if (!member || member.id === manager.id) continue
+    if (!teams.has(manager.id)) teams.set(manager.id, [])
+    if (!teams.get(manager.id).find(m => m.id === member.id)) {
+      teams.get(manager.id).push(member)
+      assigned.add(member.id)
+    }
+  }
+
+  // Re-sort with team grouping: managers first, then their teams, then unaffiliated
+  const sorted = []
+  const managersWithTeams = agents.filter(a => teams.has(a.id))
+  const unaffiliated = agents.filter(a => !teams.has(a.id) && !assigned.has(a.id))
+  for (const mgr of managersWithTeams) {
+    mgr._isTeamLead = true
+    mgr._isFolded = foldState.get(mgr.id) || false
+    sorted.push(mgr)
+    const members = teams.get(mgr.id) || []
+    members.sort(cmp)
+    for (const m of members) {
+      m._isTeamMember = true
+      m._teamLeadId = mgr.id
+      m._hidden = mgr._isFolded
+      sorted.push(m)
+    }
+  }
+  // Managers without teams
+  for (const a of agents) {
+    if (a.is_manager && !teams.has(a.id) && !assigned.has(a.id) && !sorted.includes(a)) {
+      sorted.push(a)
+    }
+  }
+  for (const a of unaffiliated) {
+    if (!sorted.includes(a)) sorted.push(a)
+  }
+
+  // When a manager is folded, sum up team member unseen counts
+  for (const mgr of managersWithTeams) {
+    if (mgr._isFolded) {
+      const members = teams.get(mgr.id) || []
+      const teamUnseen = members.reduce((sum, m) => sum + m._unseen, 0)
+      if (teamUnseen > 0) mgr._teamUnseen = teamUnseen
+    }
+  }
+
+  // Use sorted order for rendering
+  const displayAgents = sorted
+
   // Check for duplicate kitty windows (stale registrations)
   const winMap = new Map()
   for (const a of agents) {
@@ -5147,7 +5254,7 @@ function updateAgentsWidget(container, params, state) {
 
   const arrow = (col) => sort.col === col ? `<span class="sort-arrow">${sort.asc ? '▲' : '▼'}</span>` : ''
 
-  const rows = agents.map(a => {
+  const rows = displayAgents.filter(a => !a._hidden).map(a => {
     const active = isActive(a)
     const compacting = a.compacting
     const dotClass = compacting ? 'compacting' : a._ago < 120 ? 'fresh' : a._ago < 600 ? 'stale' : 'dead'
@@ -5176,8 +5283,12 @@ function updateAgentsWidget(container, params, state) {
     }).join('')
     const sel = selectedAgent === a.id ? 'background:rgba(147,112,219,0.1);' : ''
     const dim = active ? '' : 'opacity:0.45;'
-    return `<tr class="agent-item" style="${sel}${dim}" data-agent-id="${esc(a.id)}">
-      <td><span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
+    const indent = a._isTeamMember ? 'padding-left:16px;' : ''
+    const foldToggle = a._isTeamLead ? `<span class="team-fold-toggle" data-manager-id="${esc(a.id)}" style="cursor:pointer;opacity:0.4;margin-right:3px;font-size:10px">${a._isFolded ? '▸' : '▾'}</span>` : ''
+    const teamUnseenBadge = a._teamUnseen ? `<span class="agent-msg-badge" style="opacity:0.6;margin-left:2px" title="${a._teamUnseen} unseen from team">+${a._teamUnseen}</span>` : ''
+    const memberOpacity = a._isTeamMember ? 'opacity:0.85;' : ''
+    return `<tr class="agent-item${a._isTeamMember ? ' team-member' : ''}${a._isTeamLead ? ' team-lead' : ''}" style="${sel}${dim}${memberOpacity}" data-agent-id="${esc(a.id)}"${a._teamLeadId ? ` data-team-lead="${esc(a._teamLeadId)}"` : ''}>
+      <td style="${indent}">${foldToggle}<span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${teamUnseenBadge}${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
         const t = new Date(m.timestamp)
         const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
         const fromNick = agentLabel(state, m.from)
@@ -5251,6 +5362,19 @@ function updateAgentsWidget(container, params, state) {
       if (sort.col === col) sort.asc = !sort.asc
       else { sort.col = col; sort.asc = true }
       container._agentSort = sort
+      updateAgentsWidget(container, params, state)
+    })
+  })
+
+  // Team fold toggles
+  list.querySelectorAll('.team-fold-toggle').forEach(toggle => {
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation()
+      const managerId = toggle.dataset.managerId
+      const current = foldState.get(managerId) || false
+      foldState.set(managerId, !current)
+      container._foldState = foldState
+      list._agentsHash = '' // force re-render
       updateAgentsWidget(container, params, state)
     })
   })
@@ -7953,19 +8077,167 @@ function executeCommand(cmd) {
   return null // not a command, send as chat
 }
 
-// Keyboard shortcuts
-document.addEventListener('keydown', e => {
-  if (e.metaKey && e.shiftKey && e.key === 's') {
-    e.preventDefault()
-    executeCommand('/sp chat')
+// --- Keymap Engine (tinykeys) ---
+
+function focusWidget(name) {
+  for (const panel of dv.panels) {
+    if (panel.id === name || panel.id.startsWith(name + '-')) {
+      panel.api.setActive()
+      // Focus first input if exists
+      const inst = panelInstances.get(panel.id)
+      if (inst) {
+        const input = inst.container.querySelector('input, textarea')
+        if (input) setTimeout(() => input.focus(), 50)
+      }
+      return
+    }
   }
-  if (e.metaKey && e.shiftKey && e.key === 'v') {
-    e.preventDefault()
-    executeCommand('/vsp terminal')
+}
+
+function toggleCommandPalette() {
+  const ninja = document.getElementById('command-palette')
+  if (ninja) {
+    updateCommandPaletteActions()
+    ninja.open()
   }
-  if (e.metaKey && e.key === 'w') {
-    e.preventDefault()
-    executeCommand('/close')
+}
+
+// Default keymap — overridden by ~/.fleet/keymap.json
+const DEFAULT_KEYMAP = {
+  '$mod+Shift+KeyS': 'split-chat',
+  '$mod+Shift+KeyV': 'vsplit-terminal',
+  '$mod+KeyW': 'close-panel',
+  '$mod+KeyK': 'command-palette',
+  'g g': 'focus-agents',
+  'g c': 'focus-chat',
+  'g s': 'focus-search',
+  'g t': 'focus-terminal',
+}
+
+const ACTIONS = {
+  'split-chat': () => executeCommand('/sp chat'),
+  'vsplit-terminal': () => executeCommand('/vsp terminal'),
+  'close-panel': () => executeCommand('/close'),
+  'command-palette': () => toggleCommandPalette(),
+  'focus-agents': () => focusWidget('agents'),
+  'focus-chat': () => focusWidget('chat'),
+  'focus-search': () => focusWidget('search'),
+  'focus-terminal': () => focusWidget('terminal'),
+  'focus-tasks': () => focusWidget('tasks'),
+  'focus-timeline': () => focusWidget('timeline'),
+  'reset-layout': () => executeCommand('/reset'),
+  'only': () => executeCommand('/only'),
+}
+
+let _keymapUnsubscribe = null
+
+function initKeymap() {
+  if (_keymapUnsubscribe) _keymapUnsubscribe()
+
+  const userBindings = fleetConfig._keymap?.bindings || {}
+  const timeout = fleetConfig._keymap?.timeout || 300
+  const merged = { ...DEFAULT_KEYMAP, ...userBindings }
+
+  const bindings = {}
+  for (const [keys, action] of Object.entries(merged)) {
+    const handler = typeof action === 'string' ? ACTIONS[action] : null
+    if (handler) {
+      bindings[keys] = (e) => {
+        // Don't intercept if typing in an input/textarea (unless it's a $mod combo)
+        const tag = document.activeElement?.tagName
+        if ((tag === 'INPUT' || tag === 'TEXTAREA') && !keys.includes('$mod')) return
+        e.preventDefault()
+        handler()
+      }
+    }
+  }
+
+  _keymapUnsubscribe = tinykeys(window, bindings, { timeout })
+}
+
+// Init keymap after config loads
+loadFleetConfig().then(() => initKeymap())
+
+// --- Command Palette (ninja-keys) ---
+
+function updateCommandPaletteActions() {
+  const ninja = document.getElementById('command-palette')
+  if (!ninja) return
+
+  const actions = []
+
+  // Panel actions
+  for (const name of WIDGET_NAMES) {
+    const title = name.charAt(0).toUpperCase() + name.slice(1)
+    actions.push({ id: `open-${name}`, title: `Open ${title}`, section: 'Panels',
+      handler: () => executeCommand(`/sp ${name}`) })
+    actions.push({ id: `vsplit-${name}`, title: `VSplit ${title}`, section: 'Panels',
+      handler: () => executeCommand(`/vsp ${name}`) })
+    actions.push({ id: `tab-${name}`, title: `Tab ${title}`, section: 'Panels',
+      handler: () => executeCommand(`/tab ${name}`) })
+  }
+
+  // Agent actions
+  for (const a of (currentState?.agents || [])) {
+    const label = a.friendly_name || a.name || a.id?.substring(0, 8)
+    actions.push({ id: `chat-${a.id}`, title: `Chat with ${label}`, section: 'Agents',
+      handler: () => {
+        selectedAgent = a.id
+        localStorage.setItem('fleet-selected-agent', a.id)
+        if (currentState) broadcastUpdate(currentState)
+      }
+    })
+    actions.push({ id: `terminal-${a.id}`, title: `Terminal: ${label}`, section: 'Agents',
+      handler: () => {
+        const id = `terminal-${Date.now()}`
+        const panel = dv.addPanel({ id, component: 'terminal', title: `Terminal: ${label}`,
+          params: { agentId: a.id } })
+      }
+    })
+    if (a.kitty_win) {
+      actions.push({ id: `interrupt-${a.id}`, title: `Interrupt ${label}`, section: 'Agents',
+        handler: () => fetch('/api/interrupt', { method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ agent: a.id }) })
+      })
+    }
+  }
+
+  // Layout commands
+  actions.push({ id: 'layout-reset', title: 'Reset layout', section: 'Layout',
+    handler: () => executeCommand('/reset') })
+  actions.push({ id: 'layout-only', title: 'Close other panels', section: 'Layout',
+    handler: () => executeCommand('/only') })
+
+  const savedLayouts = JSON.parse(localStorage.getItem('fleet-layouts') || '{}')
+  for (const name of Object.keys(savedLayouts)) {
+    actions.push({ id: `layout-${name}`, title: `Load layout: ${name}`, section: 'Layout',
+      handler: () => executeCommand(`/load ${name}`) })
+  }
+
+  // Focus actions
+  actions.push({ id: 'focus-search', title: 'Focus search', section: 'Navigation', hotkey: 'g s',
+    handler: () => focusWidget('search') })
+  actions.push({ id: 'focus-agents', title: 'Focus agents', section: 'Navigation', hotkey: 'g g',
+    handler: () => focusWidget('agents') })
+  actions.push({ id: 'focus-chat', title: 'Focus chat', section: 'Navigation', hotkey: 'g c',
+    handler: () => focusWidget('chat') })
+
+  ninja.data = actions
+}
+
+// --- Apply config settings ---
+loadFleetConfig().then(() => {
+  // Apply sendKey preference
+  if (fleetConfig.sendKey) {
+    window._fleetSendKey = fleetConfig.sendKey
+  }
+  // Apply theme overrides
+  if (fleetConfig.theme) {
+    const root = document.documentElement
+    for (const [key, val] of Object.entries(fleetConfig.theme)) {
+      if (key && val) root.style.setProperty(`--${key}`, val)
+    }
   }
 })
 </script>
