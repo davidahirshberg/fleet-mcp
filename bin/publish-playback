@@ -146,7 +146,7 @@ if (shouldDeploy) {
     execSync('git add -A && git commit -m "Deploy playback" --allow-empty', {
       cwd: deployDir, stdio: 'pipe'
     });
-    execSync('git push origin gh-pages', { cwd: deployDir, stdio: 'inherit' });
+    execSync('git push --force origin gh-pages', { cwd: deployDir, stdio: 'inherit' });
 
     // Cleanup worktree
     execSync(`git worktree remove ${deployDir}`, { cwd: FLEET_ROOT, stdio: 'pipe' });
