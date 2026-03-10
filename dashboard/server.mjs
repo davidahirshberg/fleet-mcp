@@ -1137,6 +1137,80 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Cluster status: pull latest from cluster watcher
+  if (url.pathname === '/api/cluster-status' && req.method === 'GET') {
+    const host = url.searchParams.get('cluster') || 'qtm';
+    const localDir = path.join(os.homedir(), '.claude', 'cluster-status');
+
+    try {
+      fs.mkdirSync(localDir, { recursive: true });
+      execSync(`scp -q ${host}:~/.cluster-status/status.json ${localDir}/${host}.json`, {
+        encoding: 'utf8', timeout: 15000,
+      });
+    } catch (e) {
+      // Fall through — try to read cached file
+    }
+
+    try {
+      const status = JSON.parse(fs.readFileSync(path.join(localDir, `${host}.json`), 'utf8'));
+      // Also include locally-tracked jobs from fleet state
+      const state = loadState();
+      status.tracked = state.cluster_jobs || [];
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(status));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `No status from ${host}. Is the watcher installed?`, queue: {}, jobs: [], tracked: [] }));
+    }
+    return;
+  }
+
+  // Cluster log: tail SLURM log for a job
+  if (url.pathname === '/api/cluster-log' && req.method === 'GET') {
+    const host = url.searchParams.get('cluster') || 'qtm';
+    const jobId = url.searchParams.get('job_id');
+    const taskId = url.searchParams.get('task_id');
+    const nlines = parseInt(url.searchParams.get('lines') || '80');
+    const stderr = url.searchParams.get('stderr') === 'true';
+    const ext = stderr ? 'err' : 'out';
+
+    if (!jobId) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'job_id required' }));
+      return;
+    }
+
+    let cmd;
+    if (taskId) {
+      cmd = `find ~ -maxdepth 5 -name "*-${jobId}_${taskId}.${ext}" -newer ~/.cluster-status/manifest.tsv 2>/dev/null | head -1`;
+    } else {
+      cmd = `find ~ -maxdepth 5 -name "*-${jobId}_*.${ext}" 2>/dev/null | xargs ls -t 2>/dev/null | head -1`;
+    }
+
+    try {
+      const logFile = execSync(`ssh ${host} '${cmd}'`, {
+        encoding: 'utf8', timeout: 15000,
+      }).trim();
+
+      if (!logFile) {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ log: '', file: null, error: `No log found for job ${jobId}` }));
+        return;
+      }
+
+      const logContent = execSync(`ssh ${host} 'tail -${nlines} "${logFile}"'`, {
+        encoding: 'utf8', timeout: 15000,
+      });
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ log: logContent, file: logFile }));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ log: '', file: null, error: e.message }));
+    }
+    return;
+  }
+
   // Reindex: rebuild search index
   if (url.pathname === '/api/reindex' && req.method === 'POST') {
     try {

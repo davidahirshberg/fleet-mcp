@@ -12,7 +12,8 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
     "better-sqlite3": "^12.6.2",
-    "dockview-core": "^5.1.0"
+    "dockview-core": "^5.1.0",
+    "ninja-keys": "^1.2.2"
   },
   "devDependencies": {
     "vite": "^7.3.1"

@@ -212,12 +212,10 @@ function saveState(state) {
       // Clear compacting flag — agent is alive and making MCP calls
       delete me.compacting;
       delete me.compacting_since;
-      // Track session history
+      // Set session ID (don't accumulate — stale IDs from identity confusion persist otherwise)
       if (MY_SESSION) {
-        if (!me.session_ids) me.session_ids = [];
-        if (me.session_id && !me.session_ids.includes(me.session_id)) me.session_ids.push(me.session_id);
-        if (!me.session_ids.includes(MY_SESSION)) me.session_ids.push(MY_SESSION);
         me.session_id = MY_SESSION;
+        me.session_ids = [MY_SESSION];
       }
     }
   }
@@ -371,6 +369,12 @@ function unblockDependents(state, completedId) {
 
 function now() {
   return new Date().toISOString();
+}
+
+function progressBar(completed, total, width = 20) {
+  if (total <= 0) return '[' + '.'.repeat(width) + ']';
+  const filled = Math.round(width * Math.min(completed / total, 1));
+  return '[' + '#'.repeat(filled) + '.'.repeat(width - filled) + ']';
 }
 
 function requireManager() {
@@ -786,6 +790,60 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         },
       },
     },
+    {
+      name: 'job_register',
+      description: 'Register a cluster job for tracking. Call after sbatch. Adds the job to the manifest on the cluster so the watcher counts its output files.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'SLURM job ID (from sbatch output)' },
+          label: { type: 'string', description: 'Short human-readable label (e.g. "c13 sweep fill")' },
+          output_dir: { type: 'string', description: 'Directory containing output files (on cluster, e.g. ~/work/spinoffs/code/spinoff3)' },
+          output_pattern: { type: 'string', description: 'Glob pattern for output files (e.g. sweep-a_grf1_h05_16-n200-rep*.rds)' },
+          total_reps: { type: 'number', description: 'Total expected output files' },
+          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
+        },
+        required: ['job_id', 'label', 'output_dir', 'output_pattern', 'total_reps'],
+      },
+    },
+    {
+      name: 'job_check',
+      description: 'Check cluster job status. Pulls latest status from the cluster watcher, returns queue state and file counts for tracked jobs. Optionally filter to a single job.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'Filter to a specific job ID. Omit to show all.' },
+          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
+        },
+      },
+    },
+    {
+      name: 'job_log',
+      description: 'Tail the log for a cluster job task. SSHes to the cluster and reads the SLURM output log.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          job_id: { type: 'string', description: 'SLURM job ID' },
+          task_id: { type: 'string', description: 'Array task ID (default: most recent)' },
+          lines: { type: 'number', description: 'Number of lines to tail (default: 50)' },
+          stderr: { type: 'boolean', description: 'Read stderr instead of stdout (default: false)' },
+          cluster: { type: 'string', description: 'Cluster hostname (default: qtm)' },
+        },
+        required: ['job_id'],
+      },
+    },
+    {
+      name: 'sleep',
+      description: 'Instrumented sleep — visible countdown in the dashboard. Use instead of bash sleep when waiting for something.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          seconds: { type: 'number', description: 'Duration in seconds' },
+          reason: { type: 'string', description: 'What you\'re waiting for (shown as "waiting Ns for <reason>")' },
+        },
+        required: ['seconds'],
+      },
+    },
     // ---- Playback tools ----
     {
       name: 'playback_record',
@@ -840,7 +898,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'playback_edit',
-      description: 'Apply editing operations to a playback. Supports: trim (select time range), annotate (add markers), speed (adjust playback speed for regions).',
+      description: 'Apply editing operations to a playback. Supports: trim (select time range), annotate (add markers), speed (adjust playback speed for regions), focus (frost non-focus panels with narration overlay).',
       inputSchema: {
         type: 'object',
         properties: {
@@ -851,12 +909,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
             items: {
               type: 'object',
               properties: {
-                op: { type: 'string', enum: ['trim', 'annotate', 'speed'], description: 'Operation type' },
+                op: { type: 'string', enum: ['trim', 'annotate', 'speed', 'focus'], description: 'Operation type' },
                 start_ms: { type: 'number', description: 'Start time in ms (for trim, speed)' },
                 end_ms: { type: 'number', description: 'End time in ms (for trim, speed)' },
-                t: { type: 'number', description: 'Timestamp in ms (for annotate)' },
+                t: { type: 'number', description: 'Timestamp in ms (for annotate, focus)' },
                 text: { type: 'string', description: 'Annotation text (for annotate)' },
                 factor: { type: 'number', description: 'Speed multiplier (for speed)' },
+                panel: { type: 'string', description: 'Panel to focus on — others get frosted (for focus). Values: chat, terminal, code, agents, tasks' },
+                narration: { type: 'string', description: 'Narration text shown on the frosted panel (for focus)' },
               },
               required: ['op'],
             },
@@ -920,14 +980,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (agentName) entry.name = agentName;
       // Track session history
       if (sessionId) {
-        if (!entry.session_ids) entry.session_ids = [];
-        if (entry.session_id && !entry.session_ids.includes(entry.session_id)) {
-          entry.session_ids.push(entry.session_id);
-        }
-        if (!entry.session_ids.includes(sessionId)) {
-          entry.session_ids.push(sessionId);
-        }
         entry.session_id = sessionId;
+        entry.session_ids = [sessionId];
       }
     } else {
       // New agent — fleet ID is prefixed to distinguish from session UUIDs
@@ -2091,6 +2145,149 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };
+  }
+
+  // ---- job_register ----
+  if (name === 'job_register') {
+    const { job_id, label, output_dir, output_pattern, total_reps, cluster } = input;
+    const host = cluster || 'qtm';
+    const manifestLine = `${job_id}\t${output_dir}\t${output_pattern}\t${total_reps}\t${label}`;
+
+    try {
+      execSync(`ssh ${host} 'echo "${manifestLine}" >> ~/.cluster-status/manifest.tsv'`, {
+        encoding: 'utf8', timeout: 15000,
+      });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Failed to register job on ${host}: ${e.message}` }], isError: true };
+    }
+
+    const state = loadState();
+    if (!state.cluster_jobs) state.cluster_jobs = [];
+    state.cluster_jobs.push({
+      id: job_id, label, output_dir, output_pattern, total_reps,
+      cluster: host, agent: ME, registered_at: now(),
+    });
+    saveState(state);
+
+    logEvent({ type: 'job_register', job_id, label, cluster: host, agent: ME });
+    return { content: [{ type: 'text', text: `Registered job ${job_id} (${label}) on ${host}. Watcher will track ${output_pattern} in ${output_dir}.` }] };
+  }
+
+  // ---- job_check ----
+  if (name === 'job_check') {
+    const host = input.cluster || 'qtm';
+    const localDir = path.join(os.homedir(), '.claude', 'cluster-status');
+
+    try {
+      fs.mkdirSync(localDir, { recursive: true });
+      execSync(`scp -q ${host}:~/.cluster-status/status.json ${localDir}/${host}.json`, {
+        encoding: 'utf8', timeout: 15000,
+      });
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Failed to pull status from ${host}: ${e.message}` }], isError: true };
+    }
+
+    let status;
+    try {
+      status = JSON.parse(fs.readFileSync(path.join(localDir, `${host}.json`), 'utf8'));
+    } catch (e) {
+      return { content: [{ type: 'text', text: `No status file from ${host}. Is the watcher installed? Run: cluster/setup.sh ${host}` }], isError: true };
+    }
+
+    let jobs = status.jobs || [];
+    if (input.job_id) {
+      jobs = jobs.filter(j => j.id === input.job_id);
+    }
+
+    const lines = [];
+    lines.push(`Cluster: ${host} | Updated: ${status.timestamp}`);
+    lines.push('');
+
+    const queueEntries = Object.entries(status.queue || {});
+    if (queueEntries.length > 0) {
+      lines.push('Queue:');
+      for (const [jid, q] of queueEntries) {
+        lines.push(`  ${jid} (${q.name}): ${q.running} running, ${q.pending} pending`);
+      }
+    } else {
+      lines.push('Queue: empty');
+    }
+    lines.push('');
+
+    if (jobs.length > 0) {
+      lines.push('Tracked jobs:');
+      for (const j of jobs) {
+        const pct = j.total > 0 ? Math.round(100 * j.completed / j.total) : 0;
+        const bar = progressBar(j.completed, j.total);
+        const queueStatus = j.in_queue ? ` | ${j.running}R ${j.pending}P` : ' | done';
+        lines.push(`  ${j.id} ${j.label}: ${bar} ${j.completed}/${j.total} (${pct}%)${queueStatus}`);
+      }
+    } else if (input.job_id) {
+      lines.push(`Job ${input.job_id} not found in manifest.`);
+    } else {
+      lines.push('No tracked jobs. Use job_register after sbatch.');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+  }
+
+  // ---- job_log ----
+  if (name === 'job_log') {
+    const { job_id, task_id, stderr } = input;
+    const host = input.cluster || 'qtm';
+    const nlines = input.lines || 50;
+    const ext = stderr ? 'err' : 'out';
+
+    let cmd;
+    if (task_id) {
+      cmd = `find ~ -maxdepth 5 -name "*-${job_id}_${task_id}.${ext}" -newer ~/.cluster-status/manifest.tsv 2>/dev/null | head -1`;
+    } else {
+      cmd = `find ~ -maxdepth 5 -name "*-${job_id}_*.${ext}" 2>/dev/null | xargs ls -t 2>/dev/null | head -1`;
+    }
+
+    try {
+      const logFile = execSync(`ssh ${host} '${cmd}'`, {
+        encoding: 'utf8', timeout: 15000,
+      }).trim();
+
+      if (!logFile) {
+        return { content: [{ type: 'text', text: `No log file found for job ${job_id}${task_id ? ' task ' + task_id : ''} on ${host}.` }] };
+      }
+
+      const logContent = execSync(`ssh ${host} 'tail -${nlines} "${logFile}"'`, {
+        encoding: 'utf8', timeout: 15000,
+      });
+
+      return { content: [{ type: 'text', text: `${logFile}:\n\n${logContent}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Failed to read log: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- sleep (instrumented) ----
+  if (name === 'sleep') {
+    const seconds = Math.min(Math.max(input.seconds || 10, 1), 600);
+    const reason = input.reason || null;
+    const state = loadState();
+    const agent = (state.agents || []).find(a => a.id === ME);
+    if (agent) {
+      agent._sleep = {
+        until: new Date(Date.now() + seconds * 1000).toISOString(),
+        reason,
+        started: new Date().toISOString(),
+      };
+      saveState(state);
+    }
+    await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+    // Clear sleep state
+    const state2 = loadState();
+    const agent2 = (state2.agents || []).find(a => a.id === ME);
+    if (agent2?._sleep) {
+      delete agent2._sleep;
+      saveState(state2);
+    }
+    const label = reason ? `Waited ${seconds}s for ${reason}` : `Waited ${seconds}s`;
+    return { content: [{ type: 'text', text: label }] };
   }
 
   // ---- playback_record ----

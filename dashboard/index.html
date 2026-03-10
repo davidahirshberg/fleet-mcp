@@ -2959,6 +2959,7 @@ function applyChatTarget(container, agentId) {
   if (!agentId) return
   const prev = container._chatTarget
   container._chatTarget = agentId
+  container._autoScroll = true // reset scroll anchor on target switch
   if (container._panelId) savePanelState(container._panelId, 'chatTarget', agentId)
   trackUI('chat_target', { panelId: container._panelId, agentId, prev })
 }
@@ -3769,14 +3770,15 @@ function createChatWidget(container, params) {
   })
   container._autoScroll = true
 
-  // Re-render when panel becomes visible (tab switch) — avoids scroll flicker
-  const visObs = new IntersectionObserver(entries => {
-    if (entries[0]?.isIntersecting && container._pendingUpdate) {
-      container._pendingUpdate = false
-      if (currentState) updateChatWidget(container, container._widgetParams || params, currentState)
+  // ResizeObserver on the chat log — fires AFTER layout settles, so scrollTop is reliable.
+  // This is the belt-and-suspenders for scroll anchoring: whenever the log's size changes
+  // (content update, tab switch, panel resize), pin to bottom if autoScroll is on.
+  const resizeObs = new ResizeObserver(() => {
+    if (container._autoScroll !== false && log.scrollHeight > log.clientHeight) {
+      log.scrollTop = log.scrollHeight
     }
-  }, { threshold: 0.1 })
-  visObs.observe(container)
+  })
+  resizeObs.observe(log)
 
   // Activity polling: refresh session data for chat activity cards every 3s (skip for playback)
   if (!params.playback && !container._streamSource) {
@@ -3874,8 +3876,15 @@ function createChatWidget(container, params) {
   container.addEventListener('focusin', () => { lastFocusedChat = container })
   container.addEventListener('click', () => { lastFocusedChat = container })
 
+  // Track user scroll intent via wheel/touch — not the scroll event (which fires on
+  // programmatic scrolls too and races with rAF suppress logic). Only user-initiated
+  // scrolling should disable autoScroll.
+  let _userScrolled = false
+  log.addEventListener('wheel', () => { _userScrolled = true }, { passive: true })
+  log.addEventListener('touchmove', () => { _userScrolled = true }, { passive: true })
   log.addEventListener('scroll', () => {
-    if (container._suppressScrollEvent) return
+    if (!_userScrolled) return
+    _userScrolled = false
     const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 30
     container._autoScroll = atBottom
     scrollToggle.textContent = atBottom ? '⏸' : '▶'
@@ -5045,6 +5054,25 @@ function updateChatWidget(container, params, state) {
     })
   }
 
+  // Inject compacting/unreachable as inline timeline events (positioned by timestamp)
+  if (!container._streamSource) {
+    const target = container._chatTarget
+    const allAgents = state.agents || []
+    // Compacting agents
+    let compactingAgents = allAgents.filter(a => a.compacting && a.compacting_since)
+    if (target) compactingAgents = compactingAgents.filter(a => a.id === target)
+    for (const a of compactingAgents) {
+      activityEvents.push({ _compacting: true, _chatBreak: true, from: a.id, timestamp: a.compacting_since })
+    }
+    // Unreachable agents (>10min no heartbeat)
+    if (target) {
+      const a = allAgents.find(a => a.id === target)
+      if (a && !a.compacting && a.last_seen && !isActive(a)) {
+        activityEvents.push({ _unreachable: true, _chatBreak: true, from: a.id, timestamp: a.last_seen })
+      }
+    }
+  }
+
   // Combine and sort by timestamp (skip sort in playback — events already ordered)
   const withActivity = activityEvents.length
     ? [...filtered, ...activityEvents].sort((a, b) => {
@@ -5123,6 +5151,20 @@ function updateChatWidget(container, params, state) {
   let i = 0
   while (i < visible.length) {
     const m = visible[i]
+    if (m._compacting) {
+      const nick = agentLabel(state, m.from)
+      const cls = getNickClass(m.from, state)
+      const ts = timeShort(m.timestamp)
+      renderedLines += `<div class="chat-line" style="color:var(--orange);font-style:italic;font-size:11px;opacity:0.6"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> compacting...</div>`
+      i++; continue
+    }
+    if (m._unreachable) {
+      const nick = agentLabel(state, m.from)
+      const cls = getNickClass(m.from, state)
+      const ts = timeShort(m.timestamp)
+      renderedLines += `<div class="chat-line" style="color:var(--red, #e55);font-style:italic;font-size:11px;opacity:0.6"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> unreachable</div>`
+      i++; continue
+    }
     if (m._chatBreak) { i++; continue } // skip break markers (they split activity groups)
     if (m._activity) {
       // Collect consecutive activity groups (possibly from different agents)
@@ -5150,47 +5192,19 @@ function updateChatWidget(container, params, state) {
   }
   const linesHtml = renderedLines
 
-  // Preserve scroll position if prepending (user scrolled up)
-  const wasAtBottom = log.scrollTop + log.clientHeight >= log.scrollHeight - 20
-  const prevScrollHeight = log.scrollHeight
-  const prevScrollTop = log.scrollTop
+  // Status indicators are now injected inline in the timeline (see activityEvents injection above)
 
-  // Append status indicators for compacting / unreachable agents
-  let statusHtml = ''
-  if (!container._streamSource) {
-    const target = container._chatTarget
-    const allAgents = state.agents || []
-    // Compacting agents
-    let compactingAgents = allAgents.filter(a => a.compacting)
-    if (target) compactingAgents = compactingAgents.filter(a => a.id === target)
-    for (const a of compactingAgents) {
-      const name = a.friendly_name || a.name || a.id.substring(0, 8)
-      const cls = getNickClass(a.id, state)
-      statusHtml += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> compacting...</div>`
-    }
-    // Unreachable agents (only when targeting one specifically)
-    if (target) {
-      const a = allAgents.find(a => a.id === target)
-      if (a && !a.compacting && !isActive(a)) {
-        const name = a.friendly_name || a.name || a.id.substring(0, 8)
-        const cls = getNickClass(a.id, state)
-        statusHtml += `<div class="chat-line" style="color:var(--red, #e55);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> unreachable</div>`
-      }
-    }
-  }
-
-  container._suppressScrollEvent = true
   const prevScroll = log.scrollTop
   const wasBottom = container._autoScroll !== false
   const savedTermCard = container._terminalCard && log.contains(container._terminalCard) ? container._terminalCard : null
-  log.innerHTML = linesHtml + statusHtml
+  log.innerHTML = linesHtml
   if (savedTermCard) log.appendChild(savedTermCard)
   if (wasBottom) {
+    // Immediate scroll — ResizeObserver also fires after layout for a reliable second pass
     log.scrollTop = log.scrollHeight
   } else {
     log.scrollTop = prevScroll
   }
-  container._suppressScrollEvent = false
 
   // Set up load-more click handler
   const loadMoreEl = log.querySelector('.chat-load-more')
@@ -5204,7 +5218,7 @@ function updateChatWidget(container, params, state) {
       updateChatWidget(container, params, state)
       // Restore scroll position after prepend
       requestAnimationFrame(() => {
-        log.scrollTop = log.scrollHeight - sh + prevScrollTop
+        log.scrollTop = log.scrollHeight - sh + prevScroll
         container._loadingMore = false
       })
     }
@@ -5267,11 +5281,18 @@ function updateChatWidget(container, params, state) {
     return false
   }
   const cards = log.querySelectorAll('.chat-activity-card')
+  // Build set of last card per agent — these are "live" and shouldn't auto-collapse
+  const lastCardPerAgent = new Map()
+  cards.forEach(card => { lastCardPerAgent.set(card.dataset.agent, card) })
   cards.forEach(card => {
     const agentId = card.dataset.agent
+    const isLast = lastCardPerAgent.get(agentId) === card
     // Restore pinned state
     if (container._pinnedActivityAgents.has(agentId)) {
       card.classList.add('pinned')
+      card.classList.remove('will-fold', 'collapsed')
+    } else if (isLast) {
+      // Latest activity card for this agent — keep expanded (live activity)
       card.classList.remove('will-fold', 'collapsed')
     } else {
       if (hasUserMessageAfter(card)) {
@@ -5531,7 +5552,9 @@ function updateAgentsWidget(container, params, state) {
   if (dragLabel || dragAgent || dragGhost || _preDrag || container._resizing) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
   const agents0 = state.agents || []
-  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '')).join('|')
+  const hasSleep = agents0.some(a => a._sleep)
+  const sleepTick = hasSleep ? Math.floor(Date.now() / 1000) : 0
+  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '') + ':' + (a._sleep?.until || '')).join('|') + ':' + sleepTick
   const taskHash = (state.tasks || []).filter(t => t.status !== 'done').map(t => t.agent + ':' + t.status + ':' + (t.description || '').slice(0, 30)).join('|')
   const seenHash = Object.keys(chatSeenByAgent).sort().map(k => k.slice(0,8) + ':' + chatSeenByAgent[k]).join(',')
   const msgHash = (state.messages || []).length + ':' + selectedAgent + ':' + seenHash
@@ -5654,6 +5677,11 @@ function updateAgentsWidget(container, params, state) {
     const badges = []
     if (compacting) {
       badges.push(`<span class="agent-badge compacting-badge">compacting...</span>`)
+    }
+    if (a._sleep) {
+      const remaining = Math.max(0, Math.ceil((new Date(a._sleep.until) - Date.now()) / 1000))
+      const sleepText = a._sleep.reason ? `waiting ${remaining}s for ${a._sleep.reason}` : `waiting ${remaining}s`
+      badges.push(`<span class="agent-badge" style="color:var(--text-dim);opacity:0.6">${esc(sleepText)}</span>`)
     }
     if (a._task && !a._task.synthetic) {
       const leadsMatch = a._task.description?.match(/^leads?\s+([\w-]+)$/i)
@@ -7406,14 +7434,18 @@ function createPlaybackWidget(container, params) {
       }
     }
     // Check for focus events (frost/narration)
-    if (pbState.playback?.events) {
-      let activeFocus = null
-      for (let i = 0; i < pbState.playback.events.length; i++) {
-        const ev = pbState.playback.events[i]
-        if (ev.t > pbState.currentT) break
-        if (ev.type === 'focus') activeFocus = ev
+    try {
+      if (pbState.playback?.events) {
+        let activeFocus = null
+        for (let i = 0; i < pbState.playback.events.length; i++) {
+          const ev = pbState.playback.events[i]
+          if (ev.t > pbState.currentT) break
+          if (ev.type === 'focus') activeFocus = ev
+        }
+        applyFocusState(activeFocus)
       }
-      applyFocusState(activeFocus)
+    } catch (e) {
+      console.warn('Focus state error:', e)
     }
     // Check for layout edits with timestamps (trailer cuts)
     if (pbState.playback?.edits) {
@@ -7510,7 +7542,14 @@ function createPlaybackWidget(container, params) {
       const component = panel.api.component
       const el = panel.view?.content?.element
       if (!el) continue
-      const viewContainer = el.closest('.dv-view-container') || el.parentElement
+      // Walk up from widget element to find a positioned container we can overlay
+      let viewContainer = el.parentElement
+      while (viewContainer && viewContainer !== innerDvEl) {
+        const pos = getComputedStyle(viewContainer).position
+        if (pos === 'absolute' || pos === 'relative') break
+        viewContainer = viewContainer.parentElement
+      }
+      if (!viewContainer || viewContainer === innerDvEl) viewContainer = el.parentElement
       if (!viewContainer) continue
 
       if (component === focusPanel) continue  // skip the focus panel
@@ -7531,7 +7570,13 @@ function createPlaybackWidget(container, params) {
       if (component === focusPanel) continue
       if (_defrostedPanels.has(component)) continue
 
-      const viewContainer = el.closest('.dv-view-container') || el.parentElement
+      let viewContainer = el.parentElement
+      while (viewContainer && viewContainer !== innerDvEl) {
+        const pos = getComputedStyle(viewContainer).position
+        if (pos === 'absolute' || pos === 'relative') break
+        viewContainer = viewContainer.parentElement
+      }
+      if (!viewContainer || viewContainer === innerDvEl) viewContainer = el.parentElement
       if (!viewContainer) continue
       // Ensure relative positioning for overlay
       if (getComputedStyle(viewContainer).position === 'static') {
@@ -8180,10 +8225,144 @@ function updateCodeWidget(container, params, state) {
   }
 }
 
+// --- Cluster Widget ---
+function createClusterWidget(container, params) {
+  container.innerHTML = `
+    <div class="cluster-panel" style="display:flex;flex-direction:column;height:100%;font-size:12px">
+      <div style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
+        <span style="font-weight:500;color:var(--text);font-size:11px">qtm</span>
+        <span class="cluster-updated" style="color:var(--text-dim);font-size:10px"></span>
+      </div>
+      <div class="cluster-jobs" style="padding:4px 8px;flex:0 0 auto"></div>
+      <div class="cluster-log" style="flex:1;overflow:auto;min-height:0;padding:0 8px 8px">
+        <pre class="cluster-log-content" style="margin:0;font-size:10px;line-height:1.4;color:var(--text-dim);white-space:pre-wrap;word-break:break-all"></pre>
+      </div>
+      <div class="cluster-empty" style="color:var(--text-dim);padding:12px 0;text-align:center">Loading...</div>
+    </div>`
+  container._expandedJob = null
+  container._logInterval = null
+  fetchClusterStatus(container)
+  container._clusterInterval = setInterval(() => fetchClusterStatus(container), 30000)
+}
+
+async function fetchClusterStatus(container) {
+  const panel = container.querySelector('.cluster-panel')
+  if (!panel) return
+  try {
+    const res = await fetch('/api/cluster-status')
+    if (!res.ok) return
+    const data = await res.json()
+    renderClusterPanel(container, panel, data)
+  } catch {}
+}
+
+async function fetchClusterLog(container) {
+  const jobId = container._expandedJob
+  if (!jobId) return
+  const logEl = container.querySelector('.cluster-log-content')
+  if (!logEl) return
+  try {
+    const res = await fetch(`/api/cluster-log?job_id=${encodeURIComponent(jobId)}`)
+    if (!res.ok) return
+    const data = await res.json()
+    if (data.error && !data.log) {
+      logEl.textContent = data.error
+    } else {
+      const header = data.file ? `${data.file}\n${'─'.repeat(40)}\n` : ''
+      logEl.textContent = header + (data.log || '(empty)')
+    }
+    // Auto-scroll to bottom
+    const logWrap = container.querySelector('.cluster-log')
+    if (logWrap) logWrap.scrollTop = logWrap.scrollHeight
+  } catch (e) {
+    logEl.textContent = `Error: ${e.message}`
+  }
+}
+
+function renderClusterPanel(container, panel, data) {
+  const updatedEl = panel.querySelector('.cluster-updated')
+  const jobsEl = panel.querySelector('.cluster-jobs')
+  const logEl = panel.querySelector('.cluster-log')
+  const emptyEl = panel.querySelector('.cluster-empty')
+
+  if (data.error) {
+    emptyEl.textContent = data.error
+    emptyEl.style.display = ''
+    jobsEl.innerHTML = ''
+    logEl.style.display = 'none'
+    return
+  }
+
+  updatedEl.textContent = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : ''
+
+  const jobs = data.jobs || []
+  if (jobs.length > 0) {
+    emptyEl.style.display = 'none'
+    logEl.style.display = ''
+    // Auto-expand first job if none selected
+    if (!container._expandedJob) {
+      const active = jobs.find(j => j.in_queue) || jobs[0]
+      if (active) {
+        container._expandedJob = active.id
+        fetchClusterLog(container)
+        container._logInterval = setInterval(() => fetchClusterLog(container), 30000)
+      }
+    }
+    jobsEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px">
+      ${jobs.map(j => {
+        const total = j.total || 1
+        const done = j.completed || 0
+        const running = j.running || 0
+        const pending = j.pending || 0
+        const donePct = (done / total) * 100
+        const runPct = (running / total) * 100
+        const pendPct = (pending / total) * 100
+        const selected = container._expandedJob === j.id
+        const tip = `${done} done, ${running} running, ${pending} queued — ${done}/${j.total}`
+        return `<tr data-job-id="${esc(j.id)}" title="${tip}" style="border-bottom:1px solid var(--border);cursor:pointer;${selected ? 'background:rgba(255,255,255,0.04)' : ''}">
+          <td style="padding:3px 6px 3px 0;color:${selected ? 'var(--text)' : 'var(--text-dim)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;font-size:10px">${esc(j.label || j.id)}</td>
+          <td style="padding:3px 0;width:100%">
+            <div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;display:flex">
+              <div style="width:${donePct}%;height:100%;background:rgba(80,200,120,0.15)"></div>
+              <div style="width:${runPct}%;height:100%;background:rgba(100,160,220,0.15)"></div>
+              <div style="width:${pendPct}%;height:100%;background:rgba(200,180,80,0.15)"></div>
+            </div>
+          </td>
+          <td style="padding:3px 0 3px 6px;color:var(--text-dim);font-size:9px;white-space:nowrap;text-align:right">${done}/${j.total}</td>
+        </tr>`
+      }).join('')}
+    </table>`
+    // Click handler for rows
+    jobsEl.querySelectorAll('tr[data-job-id]').forEach(tr => {
+      tr.addEventListener('click', () => {
+        const jobId = tr.dataset.jobId
+        container._expandedJob = jobId
+        if (container._logInterval) clearInterval(container._logInterval)
+        const logContent = container.querySelector('.cluster-log-content')
+        if (logContent) logContent.textContent = 'Loading...'
+        fetchClusterLog(container)
+        container._logInterval = setInterval(() => fetchClusterLog(container), 30000)
+        // Re-render to update selected highlight
+        renderClusterPanel(container, panel, data)
+      })
+    })
+  } else {
+    emptyEl.textContent = 'No tracked jobs'
+    emptyEl.style.display = ''
+    jobsEl.innerHTML = ''
+    logEl.style.display = 'none'
+  }
+}
+
+function updateClusterWidget(container, params, state) {
+  // Cluster widget polls independently — no-op on state updates
+}
+
 const WIDGETS = {
   chat: { create: createChatWidget, update: updateChatWidget },
   agents: { create: createAgentsWidget, update: updateAgentsWidget },
   tasks: { create: createTasksWidget, update: updateTasksWidget },
+  cluster: { create: createClusterWidget, update: updateClusterWidget },
   terminal: { create: createTerminalWidget, update: updateTerminalWidget },
   search: { create: createSearchWidget, update: updateSearchWidget },
   timeline: { create: createTimelineWidget, update: updateTimelineWidget },
@@ -8341,25 +8520,12 @@ dv.onDidActivePanelChange(({ panel }) => {
       panel.api.setTitle('Agents')
     } else if (inst.widget === WIDGETS.chat) {
       panel.api.setTitle('Chat')
-      // Re-render pending updates and scroll to bottom
+      // Re-render pending updates — ResizeObserver handles scroll-to-bottom timing
       const container = inst.container
       if (container?._pendingUpdate && currentState) {
         container._pendingUpdate = false
-        // Defer to next frame so panel is fully visible before rendering/scrolling
-        // Double-rAF: first for layout, second for scroll after content is measured
-        requestAnimationFrame(() => {
-          updateChatWidget(container, container._widgetParams || inst.params, currentState)
-          requestAnimationFrame(() => {
-            if (container._autoScroll !== false) {
-              const log = container.querySelector('.chat-log')
-              if (log) log.scrollTop = log.scrollHeight
-            }
-          })
-        })
-      } else if (container?._autoScroll !== false) {
-        const log = container?.querySelector('.chat-log')
-        // Double-rAF: first frame ensures panel is laid out, second ensures content is measured
-        if (log) requestAnimationFrame(() => requestAnimationFrame(() => { log.scrollTop = log.scrollHeight }))
+        container._autoScroll = true
+        updateChatWidget(container, container._widgetParams || inst.params, currentState)
       }
     } else if (inst.widget === WIDGETS.tasks) {
       panel.api.setTitle('Tasks')
@@ -8497,6 +8663,10 @@ function connectSSE() {
       broadcastUpdate(state)
     } catch {}
   }
+  // Tick countdown for sleeping agents (1s interval, only active when someone is sleeping)
+  setInterval(() => {
+    if (currentState?.agents?.some(a => a._sleep)) broadcastUpdate(currentState)
+  }, 1000)
   // Session updates: new JSONL events from agent sessions (replaces polling)
   evtSource.addEventListener('session', (e) => {
     try {
