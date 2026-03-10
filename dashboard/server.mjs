@@ -16,7 +16,7 @@ import os from 'os';
 import path from 'path';
 import { execSync, execFileSync, execFile } from 'child_process';
 import { fileURLToPath } from 'url';
-import { SearchIndex } from './search-index.mjs';
+import { SearchIndex, parseSessionLine } from './search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from '../playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, trimCopy } from '../playback/storage.mjs';
 
@@ -74,6 +74,12 @@ const searchIndex = new SearchIndex();
 searchIndex.buildIncremental().then(r => {
   console.log(`Search index: ${r.entriesAdded} entries indexed in ${r.elapsed}s`);
 }).catch(e => console.error('Search index build failed:', e.message));
+// Index session events on startup (incremental — fast if already indexed)
+try {
+  const state = loadState();
+  const evCount = searchIndex.indexAllSessions(state);
+  if (evCount > 0) console.log(`Session events: ${evCount} events indexed`);
+} catch (e) { console.error('Session events index failed:', e.message); }
 // Re-index every 60s to pick up new content
 setInterval(() => searchIndex.buildIncremental().catch(() => {}), 60000);
 
@@ -240,44 +246,22 @@ function readNewSessionLines(agentId, jsonlPath, offset) {
     const chunk = buf.toString('utf8');
     const lines = chunk.split('\n').filter(l => l.trim());
     const events = [];
+    const dbRows = [];
+    const sessionId = path.basename(jsonlPath, '.jsonl');
+    let lineNum = 0; // approximate — offset-based, not absolute
 
     for (const line of lines) {
-      try {
-        const obj = JSON.parse(line);
-        const t = obj.type;
-        if (t === 'progress' || t === 'file-history-snapshot') continue;
-        const msg = obj.message || {};
-        const ev = { type: t, timestamp: obj.timestamp };
+      lineNum++;
+      const ev = parseSessionLine(line);
+      if (!ev) continue;
+      events.push(ev);
+      dbRows.push([agentId, sessionId, ev.type, ev.timestamp, JSON.stringify(ev.blocks),
+                    ev.usage?.input ?? null, ev.usage?.output ?? null, lineNum, jsonlPath]);
+    }
 
-        if (t === 'assistant' && msg.content) {
-          const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
-          ev.blocks = content.map(c => {
-            if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input, id: c.id };
-            if (c.type === 'text') return { type: 'text', text: c.text };
-            return { type: c.type };
-          });
-          if (msg.usage) {
-            const u = msg.usage;
-            ev.usage = {
-              input: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
-              output: u.output_tokens || 0,
-            };
-          }
-        } else if (t === 'user' && msg.content) {
-          const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
-          ev.blocks = content.map(c => {
-            if (c.type === 'tool_result') {
-              const text = typeof c.content === 'string' ? c.content :
-                Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content);
-              return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false };
-            }
-            if (c.type === 'text') return { type: 'text', text: c.text };
-            return { type: c.type };
-          });
-        } else continue;
-
-        events.push(ev);
-      } catch {}
+    // Insert into SQLite
+    if (dbRows.length > 0) {
+      try { searchIndex.insertEvents(dbRows); } catch {}
     }
 
     if (events.length > 0) {
@@ -750,97 +734,27 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
-  // Session: read agent's JSONL log as structured events
+  // Session: read agent's JSONL log as structured events (from SQLite)
   if (url.pathname === '/api/session' && req.method === 'GET') {
     const agentQuery = url.searchParams.get('agent') || '';
-    const afterTs = url.searchParams.get('after') || '';  // only events after this timestamp
+    const afterTs = url.searchParams.get('after') || '';
     const limit = parseInt(url.searchParams.get('limit') || '200');
     if (!agentQuery) { res.writeHead(400, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent required' })); return; }
     const state = loadState();
     const agent = findAgent(state, agentQuery);
     if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
 
-    // Find JSONL: try all session_ids, pick freshest
-    const cwd = agent.cwd || '';
-    const projectHash = cwd.replace(/\//g, '-');
-    const candidateIds = [];
-    if (agent.session_id) candidateIds.push(agent.session_id);
-    if (agent.session_ids) {
-      for (const sid of agent.session_ids) {
-        if (!candidateIds.includes(sid)) candidateIds.push(sid);
-      }
-    }
-    if (candidateIds.length === 0) candidateIds.push(agent.id);
-    let jsonlPath = null;
-    let bestMtime = 0;
-    let sessionId = candidateIds[0];
-    for (const sid of candidateIds) {
-      const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
-      try {
-        const stat = fs.statSync(p);
-        if (stat.mtimeMs > bestMtime) { bestMtime = stat.mtimeMs; jsonlPath = p; sessionId = sid; }
-      } catch {}
-    }
-
-    if (!jsonlPath) {
-      res.writeHead(404, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'session log not found' }));
-      return;
-    }
-
     try {
-      const raw = fs.readFileSync(jsonlPath, 'utf8');
-      const lines = raw.split('\n').filter(l => l.trim());
-      const events = [];
-      for (let i = lines.length - 1; i >= 0 && events.length < limit; i--) {
-        try {
-          const obj = JSON.parse(lines[i]);
-          if (afterTs && obj.timestamp && obj.timestamp <= afterTs) break;
-          const t = obj.type;
-          if (t === 'progress') continue;  // skip noisy progress events
-          const msg = obj.message || {};
-          const ev = { type: t, timestamp: obj.timestamp };
-
-          if (t === 'assistant' && msg.content) {
-            const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
-            ev.blocks = content.map(c => {
-              if (c.type === 'tool_use') return { type: 'tool_use', name: c.name, input: c.input };
-              if (c.type === 'text') return { type: 'text', text: c.text };
-              return { type: c.type };
-            });
-            if (msg.usage) {
-              const u = msg.usage;
-              ev.usage = {
-                input: (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0),
-                output: u.output_tokens || 0,
-              };
-            }
-          } else if (t === 'user' && msg.content) {
-            const content = Array.isArray(msg.content) ? msg.content : [{ type: 'text', text: msg.content }];
-            ev.blocks = content.map(c => {
-              if (c.type === 'tool_result') {
-                const text = typeof c.content === 'string' ? c.content :
-                  Array.isArray(c.content) ? c.content.map(x => x.text || '').join('') : JSON.stringify(c.content);
-                return { type: 'tool_result', id: c.tool_use_id, text, is_error: c.is_error || false };
-              }
-              if (c.type === 'text') return { type: 'text', text: c.text };
-              return { type: c.type };
-            });
-          } else if (t === 'file-history-snapshot') {
-            continue;  // skip
-          } else {
-            continue;  // skip unknown types
-          }
-          events.push(ev);
-        } catch {}
-      }
-      events.reverse();  // chronological order
+      const events = searchIndex.queryEvents(agent.id, { after: afterTs || undefined, limit });
       const label = agent.friendly_name || agent.name || agent.id;
+      // Get sessionId for metadata
+      const sessionId = agent.session_id || agent.id;
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ events, label, sessionId, total: lines.length }));
+      const total = searchIndex.countEvents(agent.id);
+      res.end(JSON.stringify({ events, label, sessionId, total }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'read failed: ' + e.message }));
+      res.end(JSON.stringify({ error: 'query failed: ' + e.message }));
     }
     return;
   }
@@ -964,7 +878,12 @@ const server = http.createServer(async (req, res) => {
   // Reindex: rebuild search index
   if (url.pathname === '/api/reindex' && req.method === 'POST') {
     try {
+      // Rebuild events index too
+      searchIndex.rebuildEventsIndex();
+      const state = loadState();
+      const eventsCount = searchIndex.indexAllSessions(state);
       searchIndex.buildIncremental().then(result => {
+        result.sessionEvents = eventsCount;
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
       });
@@ -972,6 +891,43 @@ const server = http.createServer(async (req, res) => {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));
     }
+    return;
+  }
+
+  // UI event recording (single)
+  if (url.pathname === '/api/ui-event' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const event = JSON.parse(body);
+        searchIndex.insertUIEvents([event]);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // UI event recording (batch)
+  if (url.pathname === '/api/ui-events' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const events = JSON.parse(body);
+        if (!Array.isArray(events)) throw new Error('expected array');
+        searchIndex.insertUIEvents(events);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, count: events.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
 
