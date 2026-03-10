@@ -506,9 +506,14 @@ export class SearchIndex {
   indexAllSessions(state) {
     const agents = state?.agents || [];
     let total = 0;
+    // Build list of all project directories once
+    let projectDirs = [];
+    try {
+      projectDirs = fs.readdirSync(PROJECTS_DIR).filter(d => {
+        try { return fs.statSync(path.join(PROJECTS_DIR, d)).isDirectory(); } catch { return false; }
+      });
+    } catch {}
     for (const agent of agents) {
-      const cwd = agent.cwd || '';
-      const projectHash = cwd.replace(/\//g, '-');
       const candidateIds = [];
       if (agent.session_id) candidateIds.push(agent.session_id);
       if (agent.session_ids) {
@@ -518,11 +523,16 @@ export class SearchIndex {
       }
       if (candidateIds.length === 0) candidateIds.push(agent.id);
       for (const sid of candidateIds) {
-        const p = path.join(PROJECTS_DIR, projectHash, sid + '.jsonl');
-        try {
-          fs.statSync(p);
-          total += this.indexSessionEvents(p, agent.id, sid);
-        } catch {}
+        // Search all project directories for this session JSONL
+        // (CWD-derived project hash is unreliable — agents may register from a parent dir)
+        for (const dir of projectDirs) {
+          const p = path.join(PROJECTS_DIR, dir, sid + '.jsonl');
+          try {
+            fs.statSync(p);
+            total += this.indexSessionEvents(p, agent.id, sid);
+            break; // found it, no need to check other dirs
+          } catch {}
+        }
       }
     }
     return total;

@@ -83,8 +83,11 @@ try {
   const evCount = searchIndex.indexAllSessions(state);
   if (evCount > 0) console.log(`Session events: ${evCount} events indexed`);
 } catch (e) { console.error('Session events index failed:', e.message); }
-// Re-index every 60s to pick up new content
-setInterval(() => searchIndex.buildIncremental().catch(() => {}), 60000);
+// Re-index every 60s to pick up new content (text search + session events)
+setInterval(() => {
+  searchIndex.buildIncremental().catch(() => {});
+  try { searchIndex.indexAllSessions(loadState()); } catch {}
+}, 60000);
 
 let PORT = 5199;
 for (let i = 2; i < process.argv.length; i++) {
@@ -875,6 +878,262 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: e.message }));
       }
     });
+    return;
+  }
+
+  // Health endpoint: agent liveness, process counts, orphans, mismatches
+  if (url.pathname === '/api/health' && req.method === 'GET') {
+    try {
+      const state = loadState();
+      const agents = state.agents || [];
+      const tasks = state.tasks || [];
+      const ALIVE_MS = 10 * 60 * 1000;
+      const now = Date.now();
+
+      // Get all kitty windows
+      let kittyWindows = [];
+      try {
+        const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
+        if (sock) {
+          const lsOut = execSync(`kitty @ --to "unix:${sock}" ls`, { encoding: 'utf8', timeout: 5000 });
+          const osWindows = JSON.parse(lsOut);
+          for (const osWin of osWindows) {
+            for (const tab of osWin.tabs || []) {
+              for (const w of tab.windows || []) {
+                kittyWindows.push({ id: w.id, title: w.title || '', pid: w.pid, tab: tab.id });
+              }
+            }
+          }
+        }
+      } catch { /* kitty not running or no socket */ }
+
+      const kittyIdSet = new Set(kittyWindows.map(w => w.id));
+
+      // Classify each agent
+      const agentHealth = agents.map(a => {
+        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
+        const heartbeatAlive = lastSeenMs < ALIVE_MS;
+        const windowAlive = a.kitty_win ? kittyIdSet.has(a.kitty_win) : null;
+
+        let status;
+        if (heartbeatAlive && windowAlive !== false) status = 'alive';
+        else if (heartbeatAlive && windowAlive === false) status = 'stale'; // heartbeat ok but window gone (about to die)
+        else if (!heartbeatAlive && windowAlive === true) status = 'stale'; // window exists but no heartbeat (stuck?)
+        else status = 'dead';
+
+        const agentTasks = tasks.filter(t => t.agent === a.id && t.status !== 'done' && !t.synthetic);
+        return {
+          id: a.id,
+          name: a.friendly_name || a.name || null,
+          status,
+          is_manager: !!a.is_manager,
+          kitty_win: a.kitty_win || null,
+          window_alive: windowAlive,
+          heartbeat_alive: heartbeatAlive,
+          last_seen: a.last_seen || null,
+          last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs / 1000),
+          compacting: !!a.compacting,
+          active_tasks: agentTasks.map(t => ({ id: t.id, description: t.description, status: t.status })),
+        };
+      });
+
+      // Detect orphan tasks: tasks assigned to agents that are dead
+      const deadIds = new Set(agentHealth.filter(a => a.status === 'dead').map(a => a.id));
+      const orphanTasks = tasks.filter(t =>
+        t.status !== 'done' && !t.synthetic && deadIds.has(t.agent)
+      ).map(t => ({ id: t.id, agent: t.agent, description: t.description, status: t.status }));
+
+      // Registry-vs-kitty mismatches
+      const registeredWinIds = new Set(agents.filter(a => a.kitty_win).map(a => a.kitty_win));
+      const unregisteredWindows = kittyWindows.filter(w => !registeredWinIds.has(w.id));
+      const deadWindows = agents.filter(a => a.kitty_win && !kittyIdSet.has(a.kitty_win))
+        .map(a => ({ agent: a.id, name: a.friendly_name || a.name, kitty_win: a.kitty_win }));
+
+      // Process counts
+      let claudeProcs = 0, nodeFleetProcs = 0;
+      try {
+        claudeProcs = parseInt(execSync("pgrep -f 'claude' | wc -l", { encoding: 'utf8', timeout: 3000 }).trim()) || 0;
+      } catch {}
+      try {
+        nodeFleetProcs = parseInt(execSync("pgrep -f 'node.*fleet.*index.mjs' | wc -l", { encoding: 'utf8', timeout: 3000 }).trim()) || 0;
+      } catch {}
+
+      const result = {
+        timestamp: new Date().toISOString(),
+        summary: {
+          total_agents: agents.length,
+          alive: agentHealth.filter(a => a.status === 'alive').length,
+          stale: agentHealth.filter(a => a.status === 'stale').length,
+          dead: agentHealth.filter(a => a.status === 'dead').length,
+          orphan_tasks: orphanTasks.length,
+          kitty_windows: kittyWindows.length,
+          claude_processes: claudeProcs,
+          fleet_mcp_processes: nodeFleetProcs,
+        },
+        agents: agentHealth,
+        orphan_tasks: orphanTasks,
+        mismatches: {
+          dead_windows: deadWindows,
+          unregistered_windows: unregisteredWindows.map(w => ({ id: w.id, title: w.title, pid: w.pid })),
+        },
+      };
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(result, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // Cleanup: prune dead agents, orphan tasks, stale registry entries
+  if (url.pathname === '/api/cleanup' && req.method === 'POST') {
+    try {
+      const state = loadState();
+      const agents = state.agents || [];
+      const tasks = state.tasks || [];
+      const ALIVE_MS = 10 * 60 * 1000;
+      const now = Date.now();
+
+      // Get live kitty windows
+      let kittyIdSet = new Set();
+      try {
+        const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
+        if (sock) {
+          const lsOut = execSync(`kitty @ --to "unix:${sock}" ls`, { encoding: 'utf8', timeout: 5000 });
+          const osWindows = JSON.parse(lsOut);
+          for (const osWin of osWindows) {
+            for (const tab of osWin.tabs || []) {
+              for (const w of tab.windows || []) kittyIdSet.add(w.id);
+            }
+          }
+        }
+      } catch {}
+
+      const removed = [];
+      const orphaned = [];
+
+      // Find dead agents: no heartbeat AND no kitty window
+      const deadAgentIds = new Set();
+      for (const a of agents) {
+        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
+        const heartbeatAlive = lastSeenMs < ALIVE_MS;
+        const windowAlive = a.kitty_win ? kittyIdSet.has(a.kitty_win) : false;
+        if (!heartbeatAlive && !windowAlive) {
+          deadAgentIds.add(a.id);
+          removed.push({ id: a.id, name: a.friendly_name || a.name, last_seen: a.last_seen });
+        }
+      }
+
+      // Remove dead agents from registry
+      state.agents = agents.filter(a => !deadAgentIds.has(a.id));
+
+      // Mark orphan tasks as done
+      for (const t of tasks) {
+        if (t.status !== 'done' && !t.synthetic && deadAgentIds.has(t.agent)) {
+          t.status = 'done';
+          t.completed_at = new Date().toISOString();
+          t._abandoned = true;
+          orphaned.push({ id: t.id, agent: t.agent, description: t.description });
+        }
+      }
+
+      saveState(state);
+      for (const r of removed) {
+        logEvent({ type: 'cleanup', action: 'deregister', agent: r.id, name: r.name, reason: 'dead' });
+      }
+      for (const o of orphaned) {
+        logEvent({ type: 'cleanup', action: 'abandon_task', task: o.id, agent: o.agent, description: o.description });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        ok: true,
+        removed_agents: removed,
+        abandoned_tasks: orphaned,
+        remaining_agents: state.agents.length,
+      }, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // Roll call: fleet status overview
+  if (url.pathname === '/api/roll-call' && req.method === 'GET') {
+    try {
+      const state = loadState();
+      const agents = state.agents || [];
+      const ALIVE_MS = 10 * 60 * 1000;
+      const now = Date.now();
+
+      // Read roster breadcrumbs
+      const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
+      let roster = [];
+      try {
+        if (fs.existsSync(rosterDir)) {
+          roster = fs.readdirSync(rosterDir)
+            .filter(f => f.endsWith('.json'))
+            .map(f => { try { return JSON.parse(fs.readFileSync(path.join(rosterDir, f), 'utf8')); } catch { return null; } })
+            .filter(Boolean);
+        }
+      } catch {}
+
+      // Scan kitty windows
+      let kittyWindows = [];
+      try {
+        const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
+        if (sock) {
+          const lsOut = execSync(`kitty @ --to "unix:${sock}" ls`, { encoding: 'utf8', timeout: 5000 });
+          const osWindows = JSON.parse(lsOut);
+          for (const osWin of osWindows) {
+            for (const tab of osWin.tabs || []) {
+              for (const w of tab.windows || []) {
+                const fg = w.foreground_processes || [];
+                const claudeProc = fg.find(p => p.cmdline && p.cmdline[0] && (p.cmdline[0] === 'claude' || p.cmdline[0].endsWith('/claude')));
+                kittyWindows.push({
+                  id: w.id, title: w.title || '', pid: w.pid,
+                  cwd: claudeProc?.cwd || w.cwd || '',
+                  has_claude: !!claudeProc, claude_pid: claudeProc?.pid || null,
+                });
+              }
+            }
+          }
+        }
+      } catch {}
+
+      const kittyIdSet = new Set(kittyWindows.map(w => w.id));
+      const registryIds = new Set(agents.map(a => a.id));
+      const registeredWins = new Set(agents.filter(a => a.kitty_win).map(a => a.kitty_win));
+
+      // Classify agents
+      const agentStatus = agents.map(a => {
+        const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
+        const heartbeat = lastSeenMs < ALIVE_MS;
+        const windowUp = a.kitty_win ? kittyIdSet.has(a.kitty_win) : null;
+        let status = 'dead';
+        if (heartbeat && windowUp !== false) status = 'alive';
+        else if (heartbeat || windowUp) status = 'stale';
+        return { ...a, status, heartbeat_alive: heartbeat, window_alive: windowUp, last_seen_ago_s: lastSeenMs === Infinity ? null : Math.round(lastSeenMs/1000) };
+      });
+
+      const missing = roster.filter(r => !registryIds.has(r.fleet_id));
+      const unmatchedWindows = kittyWindows.filter(w => w.has_claude && !registeredWins.has(w.id));
+      const idleWindows = kittyWindows.filter(w => !w.has_claude);
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({
+        agents: agentStatus,
+        missing_from_roster: missing,
+        unregistered_windows: unmatchedWindows,
+        idle_windows: idleWindows,
+      }, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
     return;
   }
 

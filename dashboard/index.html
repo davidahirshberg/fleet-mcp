@@ -2276,6 +2276,34 @@
     font-size: 11px;
   }
 
+  /* Playback focus/frost — director's narration on non-focus panels */
+  .pb-dockview .dv-view-container { position: relative; }
+  .pb-frost-overlay {
+    position: absolute; inset: 0; z-index: 50;
+    backdrop-filter: blur(4px);
+    background: rgba(0, 0, 0, 0.35);
+    display: flex; align-items: center; justify-content: center;
+    transition: opacity 0.4s ease;
+    cursor: pointer;
+  }
+  .pb-frost-overlay.has-narration { cursor: default; }
+  .pb-frost-narration {
+    max-width: 80%; padding: 16px 24px;
+    color: #e0e0e0; font-size: 15px; line-height: 1.6;
+    text-align: center; font-style: italic;
+    text-shadow: 0 1px 3px rgba(0,0,0,0.5);
+  }
+  .pb-frost-overlay.defrosting { opacity: 0; pointer-events: none; }
+  .pb-narration-subtitle {
+    position: absolute; bottom: 0; left: 0; right: 0;
+    padding: 8px 16px; text-align: center;
+    background: rgba(0, 0, 0, 0.7); color: #e0e0e0;
+    font-size: 13px; font-style: italic; line-height: 1.5;
+    z-index: 60; transition: opacity 0.3s ease;
+    backdrop-filter: blur(2px);
+  }
+  .pb-narration-subtitle.hidden { opacity: 0; pointer-events: none; }
+
   /* Demo mode: disable live-only UI interactions but keep visible */
   body.demo-mode .chat-input-bar input,
   body.demo-mode .chat-input-bar textarea,
@@ -4113,11 +4141,16 @@ function createChatWidget(container, params) {
           window._failedMessages = window._failedMessages || []
           window._failedMessages.push(payload)
         } else {
+          clearTimeout(failTimer)
           trackUI('chat_send', { panelId: container._panelId, to: target, textLength: msg.length, hasAttachments: !!(container._chatAttachments.length) })
           if (currentState) {
             const targetAgent = (currentState.agents || []).find(a => a.id === target)
             if (targetAgent?.compacting) {
               localMsg._voicemail = targetAgent.friendly_name || targetAgent.name || target.substring(0, 8)
+              localMsg._voicemailReason = 'compacting'
+            } else if (targetAgent && !isActive(targetAgent)) {
+              localMsg._voicemail = targetAgent.friendly_name || targetAgent.name || target.substring(0, 8)
+              localMsg._voicemailReason = 'unreachable'
             }
           }
         }
@@ -4847,6 +4880,12 @@ function renderChatLine(m, state) {
   if (m._failed) {
     return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span style="color:var(--orange);font-size:10px">⚠ not sent</span></div>`
   }
+  // Voicemail: queued for compacting/unreachable agent
+  if (m._voicemail) {
+    const vmColor = m._voicemailReason === 'unreachable' ? 'var(--red, #e55)' : 'var(--orange)'
+    const vmLabel = m._voicemailReason || 'queued'
+    return `<div class="chat-line from-user chat-queued" style="opacity:0.5;border-left:2px solid ${vmColor};padding-left:8px;margin-left:4px" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span style="color:${vmColor};font-size:10px;font-style:italic">${vmLabel}</span></div>`
+  }
   // Retracted messages: show struck-through with dim styling
   if (m._retracted) {
     return `<div class="chat-line from-user" style="opacity:0.3;text-decoration:line-through"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText}</div>`
@@ -5116,25 +5155,36 @@ function updateChatWidget(container, params, state) {
   const prevScrollHeight = log.scrollHeight
   const prevScrollTop = log.scrollTop
 
-  // Append compacting indicator for relevant agents
-  let compactingHtml = ''
+  // Append status indicators for compacting / unreachable agents
+  let statusHtml = ''
   if (!container._streamSource) {
     const target = container._chatTarget
-    let compactingAgents = (state.agents || []).filter(a => a.compacting)
-    if (target) {
-      compactingAgents = compactingAgents.filter(a => a.id === target)
-    }
+    const allAgents = state.agents || []
+    // Compacting agents
+    let compactingAgents = allAgents.filter(a => a.compacting)
+    if (target) compactingAgents = compactingAgents.filter(a => a.id === target)
     for (const a of compactingAgents) {
       const name = a.friendly_name || a.name || a.id.substring(0, 8)
       const cls = getNickClass(a.id, state)
-      compactingHtml += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> compacting...</div>`
+      statusHtml += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> compacting...</div>`
+    }
+    // Unreachable agents (only when targeting one specifically)
+    if (target) {
+      const a = allAgents.find(a => a.id === target)
+      if (a && !a.compacting && !isActive(a)) {
+        const name = a.friendly_name || a.name || a.id.substring(0, 8)
+        const cls = getNickClass(a.id, state)
+        statusHtml += `<div class="chat-line" style="color:var(--red, #e55);font-style:italic;font-size:11px;opacity:0.5"><span class="${cls}">${esc(name)}</span> unreachable</div>`
+      }
     }
   }
 
   container._suppressScrollEvent = true
   const prevScroll = log.scrollTop
   const wasBottom = container._autoScroll !== false
-  log.innerHTML = linesHtml + compactingHtml
+  const savedTermCard = container._terminalCard && log.contains(container._terminalCard) ? container._terminalCard : null
+  log.innerHTML = linesHtml + statusHtml
+  if (savedTermCard) log.appendChild(savedTermCard)
   if (wasBottom) {
     log.scrollTop = log.scrollHeight
   } else {
@@ -5420,7 +5470,7 @@ function updateChatWidget(container, params, state) {
         input.placeholder = 'Message...'
       }
     }
-    // Show compacting status for target agent
+    // Show agent status indicator (compacting / unreachable)
     const statusEl = container.querySelector('.chat-input-status')
     if (statusEl && !container._terminalMode) {
       const target = container._chatTarget
@@ -5428,6 +5478,9 @@ function updateChatWidget(container, params, state) {
       if (targetAgent?.compacting) {
         statusEl.textContent = 'compacting'
         statusEl.style.color = 'var(--orange)'
+      } else if (targetAgent && !isActive(targetAgent)) {
+        statusEl.textContent = 'unreachable'
+        statusEl.style.color = 'var(--red, #e55)'
       } else {
         statusEl.textContent = ''
         statusEl.style.color = ''
@@ -7032,6 +7085,7 @@ function createPlaybackWidget(container, params) {
       <span class="playback-speed" title="Click to cycle speed / timewarp" style="font-size:10px;cursor:pointer;color:var(--text-dim)">1x</span>
     </div>
     <div class="playback-inner-dv" style="flex:1;overflow:hidden;position:relative;min-height:0"></div>
+    <div class="pb-narration-subtitle hidden"></div>
   `
 
   // --- Inner dockview: a full dashboard inside the playback panel ---
@@ -7351,6 +7405,16 @@ function createPlaybackWidget(container, params) {
         }
       }
     }
+    // Check for focus events (frost/narration)
+    if (pbState.playback?.events) {
+      let activeFocus = null
+      for (let i = 0; i < pbState.playback.events.length; i++) {
+        const ev = pbState.playback.events[i]
+        if (ev.t > pbState.currentT) break
+        if (ev.type === 'focus') activeFocus = ev
+      }
+      applyFocusState(activeFocus)
+    }
     // Check for layout edits with timestamps (trailer cuts)
     if (pbState.playback?.edits) {
       const layoutEdits = pbState.playback.edits
@@ -7409,6 +7473,103 @@ function createPlaybackWidget(container, params) {
       // Stream source and chat targets are set in the init callback above
     } catch (e) {
       console.warn('Simple layout apply failed:', e)
+    }
+  }
+
+  // --- Focus/frost system ---
+  const subtitleEl = container.querySelector('.pb-narration-subtitle')
+  let _currentFocusPanel = null  // currently focused panel name, null = no focus
+  let _defrostedPanels = new Set()  // panels the user has manually defrosted
+  let _narrationOnSubtitle = false  // narration pushed to subtitle bar
+
+  function applyFocusState(focusEvent) {
+    const focusPanel = focusEvent?.data?.panel || null
+    const narration = focusEvent?.data?.narration || ''
+
+    // New focus event — reset defrosts
+    if (focusPanel !== _currentFocusPanel) {
+      _defrostedPanels.clear()
+      _narrationOnSubtitle = false
+      _currentFocusPanel = focusPanel
+    }
+
+    // Remove all existing frost overlays
+    for (const overlay of container.querySelectorAll('.pb-frost-overlay')) {
+      overlay.remove()
+    }
+    subtitleEl.classList.add('hidden')
+    subtitleEl.textContent = ''
+
+    if (!focusPanel) return  // no active focus — all clear
+
+    // Find the largest non-focus panel for narration
+    let narrationPanel = null
+    let narrationPanelArea = 0
+
+    for (const panel of innerDv.panels) {
+      const component = panel.api.component
+      const el = panel.view?.content?.element
+      if (!el) continue
+      const viewContainer = el.closest('.dv-view-container') || el.parentElement
+      if (!viewContainer) continue
+
+      if (component === focusPanel) continue  // skip the focus panel
+      if (_defrostedPanels.has(component)) continue  // user defrosted this one
+
+      const rect = viewContainer.getBoundingClientRect()
+      if (rect.width * rect.height > narrationPanelArea) {
+        narrationPanelArea = rect.width * rect.height
+        narrationPanel = component
+      }
+    }
+
+    // Apply frost overlays to non-focus panels
+    for (const panel of innerDv.panels) {
+      const component = panel.api.component
+      const el = panel.view?.content?.element
+      if (!el) continue
+      if (component === focusPanel) continue
+      if (_defrostedPanels.has(component)) continue
+
+      const viewContainer = el.closest('.dv-view-container') || el.parentElement
+      if (!viewContainer) continue
+      // Ensure relative positioning for overlay
+      if (getComputedStyle(viewContainer).position === 'static') {
+        viewContainer.style.position = 'relative'
+      }
+
+      const overlay = document.createElement('div')
+      overlay.className = 'pb-frost-overlay'
+
+      // Put narration on the largest non-focus panel
+      if (component === narrationPanel && narration && !_narrationOnSubtitle) {
+        overlay.classList.add('has-narration')
+        const narDiv = document.createElement('div')
+        narDiv.className = 'pb-frost-narration'
+        narDiv.textContent = narration
+        overlay.appendChild(narDiv)
+      }
+
+      // Click to defrost — narration falls to subtitle
+      overlay.addEventListener('click', () => {
+        _defrostedPanels.add(component)
+        overlay.classList.add('defrosting')
+        setTimeout(() => overlay.remove(), 400)
+        // If this panel had narration, move it to subtitle bar
+        if (component === narrationPanel && narration) {
+          _narrationOnSubtitle = true
+          subtitleEl.textContent = narration
+          subtitleEl.classList.remove('hidden')
+        }
+      })
+
+      viewContainer.appendChild(overlay)
+    }
+
+    // If narration is on subtitle (user defrosted), show it there
+    if (_narrationOnSubtitle && narration) {
+      subtitleEl.textContent = narration
+      subtitleEl.classList.remove('hidden')
     }
   }
 
@@ -8184,10 +8345,21 @@ dv.onDidActivePanelChange(({ panel }) => {
       const container = inst.container
       if (container?._pendingUpdate && currentState) {
         container._pendingUpdate = false
-        updateChatWidget(container, container._widgetParams || inst.params, currentState)
+        // Defer to next frame so panel is fully visible before rendering/scrolling
+        // Double-rAF: first for layout, second for scroll after content is measured
+        requestAnimationFrame(() => {
+          updateChatWidget(container, container._widgetParams || inst.params, currentState)
+          requestAnimationFrame(() => {
+            if (container._autoScroll !== false) {
+              const log = container.querySelector('.chat-log')
+              if (log) log.scrollTop = log.scrollHeight
+            }
+          })
+        })
       } else if (container?._autoScroll !== false) {
         const log = container?.querySelector('.chat-log')
-        if (log) log.scrollTop = log.scrollHeight
+        // Double-rAF: first frame ensures panel is laid out, second ensures content is measured
+        if (log) requestAnimationFrame(() => requestAnimationFrame(() => { log.scrollTop = log.scrollHeight }))
       }
     } else if (inst.widget === WIDGETS.tasks) {
       panel.api.setTitle('Tasks')

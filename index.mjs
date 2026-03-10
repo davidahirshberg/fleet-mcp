@@ -97,9 +97,74 @@ function detectSessionId() {
   return null;
 }
 
-const MY_SESSION = detectSessionId();
+// Try roster breadcrumb first (keyed by kitty window) — survives MCP restarts and compaction.
+// Falls back to detectSessionId() for brand new agents with no breadcrumb.
+function sessionFromRoster() {
+  if (!KITTY_WIN) return null;
+  try {
+    const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
+    if (!fs.existsSync(rosterDir)) return null;
+    const files = fs.readdirSync(rosterDir).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      try {
+        const b = JSON.parse(fs.readFileSync(path.join(rosterDir, f), 'utf8'));
+        if (b.kitty_win === KITTY_WIN) return b.session_id;
+      } catch { continue; }
+    }
+  } catch {}
+  return null;
+}
+
+const MY_SESSION = sessionFromRoster() || detectSessionId();
 let MY_FLEET_ID = null;
 let ME = MY_SESSION;
+
+// Agent pruning throttle — kitty checks are expensive, so only run every 5min
+let _lastAgentPrune = 0;
+
+const ROSTER_DIR = path.join(os.homedir(), '.claude', 'fleet-roster');
+
+// Read all roster breadcrumbs from disk
+function readRoster() {
+  try {
+    if (!fs.existsSync(ROSTER_DIR)) return [];
+    return fs.readdirSync(ROSTER_DIR)
+      .filter(f => f.endsWith('.json'))
+      .map(f => {
+        try { return JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, f), 'utf8')); }
+        catch { return null; }
+      })
+      .filter(Boolean);
+  } catch { return []; }
+}
+
+// Scan kitty windows — returns array of { id, title, pid, cwd, has_claude, claude_pid }
+function scanKittyWindows() {
+  try {
+    const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
+    if (!sock) return [];
+    const lsOut = execSync(`kitty @ --to "unix:${sock}" ls`, { encoding: 'utf8', timeout: 5000 });
+    const osWindows = JSON.parse(lsOut);
+    const windows = [];
+    for (const osWin of osWindows) {
+      for (const tab of osWin.tabs || []) {
+        for (const w of tab.windows || []) {
+          const fg = w.foreground_processes || [];
+          const claudeProc = fg.find(p => p.cmdline && p.cmdline[0] && (p.cmdline[0] === 'claude' || p.cmdline[0].endsWith('/claude')));
+          windows.push({
+            id: w.id,
+            title: w.title || '',
+            pid: w.pid,
+            cwd: claudeProc?.cwd || w.cwd || '',
+            has_claude: !!claudeProc,
+            claude_pid: claudeProc?.pid || null,
+          });
+        }
+      }
+    }
+    return windows;
+  } catch { return []; }
+}
 
 // ---- State helpers ----
 
@@ -169,9 +234,42 @@ function saveState(state) {
     return (now_ - new Date(t.completed_at || t.delegated_at).getTime()) < 86400000;
   });
   state.messages = state.messages.filter(m => {
+    const age = now_ - new Date(m.timestamp).getTime();
+    // Messages to web/human/skip are display-only — prune after 1h regardless of read state
+    if (['web', 'human', 'skip'].includes(m.to)) return age < 3600000;
     if (!m.read) return true;
-    return (now_ - new Date(m.timestamp).getTime()) < 3600000;
+    return age < 3600000;
   });
+
+  // Periodic agent pruning: every 5 minutes, remove agents that are both
+  // heartbeat-dead (>10min) and have no live kitty window.
+  // Avoids expensive kitty checks on every save.
+  if (now_ - _lastAgentPrune > 5 * 60 * 1000) {
+    _lastAgentPrune = now_;
+    const before = state.agents.length;
+    state.agents = state.agents.filter(a => {
+      if (a.id === ME) return true; // never prune self
+      const lastSeenMs = a.last_seen ? now_ - new Date(a.last_seen).getTime() : Infinity;
+      if (lastSeenMs < ALIVE_THRESHOLD_MS) return true; // heartbeat alive
+      // Heartbeat dead — check kitty window
+      if (a.kitty_win && kittyWindowExists(a.kitty_win)) return true;
+      // Both dead — prune
+      logEvent({ type: 'auto_prune', agent: a.id, name: a.friendly_name || a.name, reason: 'dead_heartbeat_no_window' });
+      return false;
+    });
+    // Also mark orphan tasks for pruned agents as abandoned
+    if (state.agents.length < before) {
+      const liveIds = new Set(state.agents.map(a => a.id));
+      for (const t of state.tasks) {
+        if (t.status !== 'done' && !t.synthetic && !liveIds.has(t.agent)) {
+          t.status = 'done';
+          t.completed_at = new Date().toISOString();
+          t._abandoned = true;
+          logEvent({ type: 'auto_prune', action: 'abandon_task', task: t.id, agent: t.agent });
+        }
+      }
+    }
+  }
 
   fs.mkdirSync(`${os.homedir()}/.claude`, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -308,6 +406,13 @@ function getAgent(state, id) {
 function removeAgent(state, id) {
   if (!state.agents) return;
   state.agents = state.agents.filter(a => a.id !== id && a.name !== id && a.friendly_name !== id);
+}
+
+function setTabTitle(win, title) {
+  if (!win || !title) return;
+  try {
+    execSync(`kitty @ set-tab-title --match id:${win} "${title.replace(/"/g, '\\"')}"`, { timeout: 5000, stdio: 'ignore' });
+  } catch {}
 }
 
 function kittyWindowExists(win) {
@@ -532,6 +637,18 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
+      name: 'adopt',
+      description: 'Reassign a fleet identity to a different agent. The new agent inherits the old fleet ID, friendly name, manager status, tasks, and message history. Use when an agent dies and is replaced by a fresh session. Manager only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          agent: { type: 'string', description: 'The new agent to receive the identity (session UUID, name, or friendly name)' },
+          identity: { type: 'string', description: 'The old fleet ID (or friendly name) to adopt' },
+        },
+        required: ['agent', 'identity'],
+      },
+    },
+    {
       name: 'respawn',
       description: 'Resume a dead agent session. Finds an idle kitty tab (or the agent\'s old window), cd\'s to the agent\'s working directory, and runs claude --resume. Manager only.',
       inputSchema: {
@@ -640,6 +757,32 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         type: 'object',
         properties: {
           agent: { type: 'string', description: 'Agent identifier (UUID, name, or friendly name). Omit to restart all agents.' },
+        },
+      },
+    },
+    {
+      name: 'cleanup',
+      description: 'Prune dead agents from registry and abandon their orphan tasks. Checks both heartbeat (10min) and kitty window liveness. Returns what was removed.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'roll_call',
+      description: 'Show fleet status: who is alive, who is missing, what kitty windows exist. Reads roster breadcrumbs + scans live windows. Use before rehydrate to see what needs recovery.',
+      inputSchema: {
+        type: 'object',
+        properties: {},
+      },
+    },
+    {
+      name: 'rehydrate',
+      description: 'Recover fleet after a mass kill. Matches running agents to their old identities via roster breadcrumbs, or spawns missing agents. Manager only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          spawn_missing: { type: 'boolean', description: 'If true, spawn fresh agents for any roster entries that have no live match. Default false (plan only).' },
         },
       },
     },
@@ -787,8 +930,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         entry.session_id = sessionId;
       }
     } else {
-      // New agent — fleet ID = first session ID (or name for headless)
-      const fleetId = sessionId || agentName;
+      // New agent — fleet ID is prefixed to distinguish from session UUIDs
+      const fleetId = sessionId ? `fleet:${sessionId.slice(0, 8)}` : agentName;
       entry = {
         id: fleetId,
         registered_at: now(),
@@ -846,7 +989,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     MY_FLEET_ID = entry.id;
     ME = MY_FLEET_ID;
 
+    // Write roster breadcrumb — survives kitty kills for identity recovery
+    try {
+      const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
+      fs.mkdirSync(rosterDir, { recursive: true });
+      const breadcrumb = {
+        fleet_id: entry.id,
+        session_id: entry.session_id,
+        session_ids: entry.session_ids || [],
+        kitty_win: entry.kitty_win || null,
+        cwd: entry.cwd || null,
+        friendly_name: entry.friendly_name || null,
+        name: entry.name || null,
+        labels: entry.labels || [],
+        is_manager: !!entry.is_manager,
+        registered_at: entry.registered_at,
+      };
+      // Key by fleet ID (stable identity) — one breadcrumb per agent
+      const safeId = entry.id.replace(/[^a-zA-Z0-9_:-]/g, '_');
+      fs.writeFileSync(path.join(rosterDir, `${safeId}.json`), JSON.stringify(breadcrumb, null, 2));
+    } catch { /* best effort */ }
+
     saveState(state);
+
+    // Set kitty tab title to friendly name (or agent name) on register
+    const tabLabel = entry.friendly_name || entry.name || null;
+    if (tabLabel && KITTY_WIN) setTabTitle(KITTY_WIN, tabLabel);
 
     const agentCount = state.agents.length;
     const role = isManager ? 'manager' : 'agent';
@@ -986,6 +1154,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       to = toEntry.id;
     }
     const from = ME || 'unknown';
+    // Mark own messages read — if you're chatting, you've read your inbox
+    if (ME) markRead(state, ME);
     postMessage(state, to, from, message);
     saveState(state);
     logEvent({ type: 'chat', from, to, message });
@@ -1011,11 +1181,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     while (Date.now() < deadline) {
       const state = loadState();
 
-      // Check for unread messages first
+      // Check for unread messages first (don't mark read — chat() does that)
       const unread = getUnread(state, ME);
       if (unread.length > 0) {
-        markRead(state, ME);
-        saveState(state);
         const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
         return { content: [{ type: 'text', text: `Messages received:\n\n${formatted}` }] };
       }
@@ -1236,8 +1404,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (unread.length > 0) {
-      markRead(state, ME);
-      dirty = true;
       const userAliases = new Set(['web', 'skip', 'human']);
       const formatted = unread.map(m => {
         const fromAgent = getAgent(state, m.from);
@@ -1264,10 +1430,69 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const oldName = agent.friendly_name;
     agent.friendly_name = friendlyName;
     saveState(state);
+    setTabTitle(agent.kitty_win, friendlyName);
     const msg = oldName
       ? `Renamed ${agent.id}: "${oldName}" → "${friendlyName}"`
       : `Named ${agent.id}: "${friendlyName}"`;
     return { content: [{ type: 'text', text: msg }] };
+  }
+
+  // ---- adopt ----
+  if (name === 'adopt') {
+    const guard = requireManager();
+    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
+    const state = loadState();
+    const newAgent = getAgent(state, args.agent);
+    if (!newAgent) return { content: [{ type: 'text', text: `Agent ${args.agent} not registered.` }], isError: true };
+    const oldAgent = getAgent(state, args.identity);
+    if (!oldAgent) return { content: [{ type: 'text', text: `Identity ${args.identity} not found.` }], isError: true };
+    if (oldAgent.id === newAgent.id) return { content: [{ type: 'text', text: `Agent already has that identity.` }], isError: true };
+
+    const oldId = oldAgent.id;
+    const newId = newAgent.id;
+
+    // Transfer identity: copy old agent's stable fields to new agent
+    newAgent.id = oldId;
+    if (oldAgent.friendly_name) newAgent.friendly_name = oldAgent.friendly_name;
+    if (oldAgent.is_manager) newAgent.is_manager = true;
+    // Merge session history
+    const sessions = new Set([...(oldAgent.session_ids || []), ...(newAgent.session_ids || [])]);
+    if (oldAgent.session_id) sessions.add(oldAgent.session_id);
+    if (newAgent.session_id) sessions.add(newAgent.session_id);
+    newAgent.session_ids = [...sessions];
+    // Keep new agent's kitty_win, cwd, session_id, last_seen (it's the live one)
+
+    // Update all tasks referencing old agent
+    for (const task of (state.tasks || [])) {
+      if (task.agent === newId) task.agent = oldId;
+    }
+    // Update all messages referencing old agent
+    for (const msg of (state.messages || [])) {
+      if (msg.to === newId) msg.to = oldId;
+      if (msg.from === newId) msg.from = oldId;
+    }
+
+    // Remove old dead entry
+    removeAgent(state, oldId);
+    // Re-add the merged entry (removeAgent removed by id which is now shared)
+    state.agents.push(newAgent);
+
+    // Update this process's identity if we adopted ourselves
+    if (ME === newId) { MY_FLEET_ID = oldId; ME = oldId; }
+
+    saveState(state);
+    logEvent({ type: 'adopt', agent: oldId, from: newId, reason: `${newId} adopted identity ${oldId}` });
+
+    // Send orientation message to the adopted agent
+    if (args.orient !== false) {
+      const name = newAgent.friendly_name || oldId;
+      const orientMsg = `You have been assigned the identity "${name}" (fleet ID: ${oldId}). You are a continuation of a previous agent. Use a subagent to read your old session logs via search_logs(agent: "${oldId}") and orient yourself — figure out what you were working on, what tasks are active, and what the current state is. Report back via chat when oriented.`;
+      if (!state.messages) state.messages = [];
+      state.messages.push({ to: oldId, from: ME, text: orientMsg, timestamp: now(), read: false });
+      saveState(state);
+    }
+
+    return { content: [{ type: 'text', text: `${newId} adopted identity "${oldId}" (name: "${newAgent.friendly_name || '?'}"). Old entry removed. Tasks and messages transferred. Agent notified to orient.` }] };
   }
 
   // ---- respawn ----
@@ -1334,6 +1559,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     saveState(state);
 
     const label = agent.friendly_name || agent.name || agent.id;
+    setTabTitle(targetWin, label);
     return { content: [{ type: 'text', text: `Respawning "${label}" in win ${targetWin}: ${cmd}` }] };
   }
 
@@ -1364,6 +1590,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     } catch (e) {
       return { content: [{ type: 'text', text: `Failed to spawn: ${e.message}` }], isError: true };
     }
+
+    // Set a placeholder tab title until the agent registers and gets named
+    setTabTitle(targetWin, 'new-agent');
 
     // Kick after delay so the agent registers on startup
     const kickWin = targetWin;
@@ -1665,6 +1894,203 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
     return { content: [{ type: 'text', text: `MCP restart → ${targets.length} agent(s):\n${results.join('\n')}` }] };
+  }
+
+  // ---- cleanup ----
+  if (name === 'cleanup') {
+    const state = loadState();
+    const agents = state.agents || [];
+    const now = Date.now();
+    const removed = [];
+    const orphaned = [];
+
+    state.agents = agents.filter(a => {
+      if (a.id === ME) return true;
+      const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
+      if (lastSeenMs < ALIVE_THRESHOLD_MS) return true;
+      if (a.kitty_win && kittyWindowExists(a.kitty_win)) return true;
+      removed.push({ id: a.id, name: a.friendly_name || a.name, last_seen: a.last_seen });
+      logEvent({ type: 'cleanup', agent: a.id, name: a.friendly_name || a.name, reason: 'dead' });
+      return false;
+    });
+
+    if (removed.length > 0) {
+      const liveIds = new Set(state.agents.map(a => a.id));
+      for (const t of state.tasks) {
+        if (t.status !== 'done' && !t.synthetic && !liveIds.has(t.agent)) {
+          t.status = 'done';
+          t.completed_at = new Date().toISOString();
+          t._abandoned = true;
+          orphaned.push({ id: t.id, agent: t.agent, description: t.description });
+          logEvent({ type: 'cleanup', action: 'abandon_task', task: t.id, agent: t.agent });
+        }
+      }
+    }
+
+    saveState(state);
+    const lines = [];
+    if (removed.length === 0 && orphaned.length === 0) {
+      lines.push('Nothing to clean up — all agents are alive or already gone.');
+    } else {
+      if (removed.length) lines.push(`Removed ${removed.length} dead agent(s): ${removed.map(r => r.name || r.id).join(', ')}`);
+      if (orphaned.length) lines.push(`Abandoned ${orphaned.length} orphan task(s): ${orphaned.map(o => o.description).join(', ')}`);
+      lines.push(`${state.agents.length} agent(s) remaining.`);
+    }
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
+  }
+
+  // ---- roll_call ----
+  if (name === 'roll_call') {
+    const state = loadState();
+    const agents = state.agents || [];
+    const roster = readRoster();
+    const windows = scanKittyWindows();
+    const now = Date.now();
+
+    const kittyIdSet = new Set(windows.map(w => w.id));
+    const lines = [];
+
+    // Classify live agents
+    const alive = [], stale = [], dead = [];
+    for (const a of agents) {
+      const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
+      const heartbeat = lastSeenMs < ALIVE_THRESHOLD_MS;
+      const windowUp = a.kitty_win ? kittyIdSet.has(a.kitty_win) : null;
+      const label = a.friendly_name || a.name || a.id;
+      const info = `${label} (${a.id}) — kitty:${a.kitty_win || 'none'}, cwd: ${a.cwd || '?'}, seen ${lastSeenMs === Infinity ? 'never' : Math.round(lastSeenMs/1000) + 's ago'}`;
+      if (heartbeat && windowUp !== false) alive.push(info);
+      else if (heartbeat || windowUp) stale.push(info);
+      else dead.push(info);
+    }
+
+    if (alive.length) lines.push(`Alive (${alive.length}):\n  ${alive.join('\n  ')}`);
+    if (stale.length) lines.push(`Stale (${stale.length}):\n  ${stale.join('\n  ')}`);
+    if (dead.length) lines.push(`Dead (${dead.length}):\n  ${dead.join('\n  ')}`);
+
+    // Roster entries not in registry
+    const registryIds = new Set(agents.map(a => a.id));
+    const missing = roster.filter(r => !registryIds.has(r.fleet_id));
+    if (missing.length) {
+      lines.push(`\nIn roster but gone (${missing.length}):`);
+      for (const m of missing) {
+        const label = m.friendly_name || m.name || m.fleet_id;
+        lines.push(`  ${label} (${m.fleet_id}) — cwd: ${m.cwd || '?'}, session: ${m.session_id || '?'}${m.is_manager ? ' [manager]' : ''}`);
+      }
+    }
+
+    // Unregistered windows with claude
+    const registeredWins = new Set(agents.filter(a => a.kitty_win).map(a => a.kitty_win));
+    const unmatchedWins = windows.filter(w => w.has_claude && !registeredWins.has(w.id));
+    if (unmatchedWins.length) {
+      lines.push(`\nUnregistered claude windows (${unmatchedWins.length}):`);
+      for (const w of unmatchedWins) {
+        lines.push(`  kitty:${w.id} — cwd: ${w.cwd}, pid: ${w.claude_pid}`);
+      }
+    }
+
+    // Idle windows
+    const idle = windows.filter(w => !w.has_claude);
+    if (idle.length) {
+      lines.push(`\nIdle windows (${idle.length}): ${idle.map(w => `kitty:${w.id}`).join(', ')}`);
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no roster, no windows.' }] };
+  }
+
+  // ---- rehydrate ----
+  if (name === 'rehydrate') {
+    const guard = requireManager();
+    if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
+
+    const state = loadState();
+    const roster = readRoster();
+    const windows = scanKittyWindows();
+    const spawnMissing = args.spawn_missing === true;
+
+    const registryIds = new Set((state.agents || []).map(a => a.id));
+    const registeredWins = new Set((state.agents || []).filter(a => a.kitty_win).map(a => a.kitty_win));
+
+    // Match unregistered claude windows to missing roster entries
+    const unmatchedWindows = windows.filter(w => w.has_claude && !registeredWins.has(w.id));
+    const missingRoster = roster.filter(r => !registryIds.has(r.fleet_id));
+
+    const matched = [];
+    const ambiguous = [];
+
+    for (const w of unmatchedWindows) {
+      const candidates = missingRoster.filter(r => r.cwd === w.cwd);
+      if (candidates.length === 1) {
+        matched.push({ window: w, roster: candidates[0] });
+        missingRoster.splice(missingRoster.indexOf(candidates[0]), 1);
+      } else {
+        ambiguous.push({ window: w, candidates });
+      }
+    }
+
+    const lines = [];
+
+    // Apply matches
+    if (matched.length) {
+      lines.push(`Matched ${matched.length} agent(s):`);
+      for (const m of matched) {
+        const r = m.roster;
+        const w = m.window;
+        const entry = {
+          id: r.fleet_id,
+          registered_at: new Date().toISOString(),
+          kitty_win: w.id,
+          session_id: r.session_id,
+          session_ids: r.session_ids || [],
+          friendly_name: r.friendly_name || null,
+          name: r.name || null,
+          labels: r.labels || [],
+          is_manager: r.is_manager || false,
+          cwd: r.cwd,
+          last_seen: new Date().toISOString(),
+        };
+        state.agents = (state.agents || []).filter(a => a.id !== r.fleet_id && a.kitty_win !== w.id);
+        state.agents.push(entry);
+        logEvent({ type: 'rehydrate', agent: r.fleet_id, name: r.friendly_name, kitty_win: w.id, reason: 'cwd_match' });
+        lines.push(`  ${r.friendly_name || r.name || r.fleet_id} -> kitty:${w.id} (cwd: ${r.cwd})`);
+      }
+      saveState(state);
+    }
+
+    if (ambiguous.length) {
+      lines.push(`\nAmbiguous (${ambiguous.length} window(s) — manual matching needed):`);
+      for (const u of ambiguous) {
+        lines.push(`  kitty:${u.window.id} (cwd: ${u.window.cwd}) — ${u.candidates.length} candidates: ${u.candidates.map(c => c.friendly_name || c.fleet_id).join(', ') || 'none'}`);
+      }
+    }
+
+    if (missingRoster.length) {
+      lines.push(`\nStill missing (${missingRoster.length}):`);
+      for (const r of missingRoster) {
+        lines.push(`  ${r.friendly_name || r.name || r.fleet_id} (${r.fleet_id}) — cwd: ${r.cwd}${r.is_manager ? ' [manager]' : ''}`);
+      }
+
+      if (spawnMissing) {
+        lines.push('\nSpawning missing agents...');
+        for (const r of missingRoster) {
+          try {
+            const cwd = r.cwd || os.homedir();
+            const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
+            if (!sock) { lines.push(`  ${r.friendly_name || r.fleet_id}: no kitty socket`); continue; }
+            const result = execSync(`kitty @ --to "unix:${sock}" launch --type=tab --cwd="${cwd}" --title="${r.friendly_name || r.fleet_id}" -- zsh -c 'claude'`, { encoding: 'utf8', timeout: 10000 }).trim();
+            lines.push(`  ${r.friendly_name || r.fleet_id}: spawned (${result})`);
+            logEvent({ type: 'rehydrate', action: 'spawn', agent: r.fleet_id, name: r.friendly_name, cwd });
+          } catch (e) {
+            lines.push(`  ${r.friendly_name || r.fleet_id}: failed (${e.message})`);
+          }
+        }
+      }
+    }
+
+    if (!matched.length && !ambiguous.length && !missingRoster.length) {
+      lines.push('Nothing to rehydrate — all roster entries are in the registry.');
+    }
+
+    return { content: [{ type: 'text', text: lines.join('\n') }] };
   }
 
   // ---- playback_record ----
