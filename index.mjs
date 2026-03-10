@@ -797,7 +797,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
       }
     } else {
-      msg += '\n\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
+      msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, call wait_for_task() — it blocks until a task or message arrives (no polling needed).';
+      msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
       if (refExists) {
         msg += '\nSee ~/.claude/reference/managing-agents.md for how to work with the manager.';
       } else {
@@ -1160,7 +1161,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         dirty = true;
       }
     } else {
-      text = `Nothing new.`;
+      text = `Nothing new. Call wait_for_task() to block until a task or message arrives.`;
     }
 
     if (unread.length > 0) {
