@@ -30,7 +30,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { SearchIndex } from './dashboard/search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
-import { createPlayback, getPlayback, listPlaybacks, editPlayback } from './playback/storage.mjs';
+import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
@@ -925,6 +925,22 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['id', 'operations'],
       },
     },
+    {
+      name: 'playback_transcript',
+      description: 'Generate a human-readable transcript of a playback. Shows chat messages, annotations, focus/layout changes. Includes content density analysis to find empty stretches.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string', description: 'Playback ID (UUID)' },
+          start_ms: { type: 'number', description: 'Start time in ms (default: 0)' },
+          end_ms: { type: 'number', description: 'End time in ms (default: full duration)' },
+          types: { type: 'array', items: { type: 'string' }, description: 'Event types to include (default: all). Values: chat, marker, focus, layout, delegate, task_done, user_text, assistant_text, tool_call, tool_result' },
+          density: { type: 'boolean', description: 'Include content density analysis per time window (default: false)' },
+          window_ms: { type: 'number', description: 'Window size in ms for density analysis (default: 60000 = 1 min)' },
+        },
+        required: ['id'],
+      },
+    },
   ],
 }));
 
@@ -1235,9 +1251,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     while (Date.now() < deadline) {
       const state = loadState();
 
-      // Check for unread messages first (don't mark read — chat() does that)
+      // Check for unread messages first
       const unread = getUnread(state, ME);
       if (unread.length > 0) {
+        markRead(state, ME);
+        saveState(state);
         const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
         return { content: [{ type: 'text', text: `Messages received:\n\n${formatted}` }] };
       }
@@ -1466,6 +1484,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         return `[from ${fromLabel}]${replyHint} ${m.text}`;
       }).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
+      markRead(state, ME);
+      dirty = true;
     }
 
     if (dirty) saveState(state);
@@ -2384,6 +2404,26 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return { content: [{ type: 'text', text: `Edited playback ${result.id}: ${result.edit_count} edit(s), ${result.event_count} events.` }] };
+  }
+
+  // ---- playback_transcript ----
+  if (name === 'playback_transcript') {
+    if (!args.id) {
+      return { content: [{ type: 'text', text: 'Playback ID is required.' }], isError: true };
+    }
+
+    const result = playbackTranscript(args.id, {
+      startT: args.start_ms || 0,
+      endT: args.end_ms,
+      types: args.types,
+      density: args.density || false,
+      windowMs: args.window_ms || 60000,
+    });
+    if (!result) {
+      return { content: [{ type: 'text', text: `Playback ${args.id} not found.` }], isError: true };
+    }
+
+    return { content: [{ type: 'text', text: result.transcript }] };
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

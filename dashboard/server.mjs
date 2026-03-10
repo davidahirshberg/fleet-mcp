@@ -83,11 +83,15 @@ try {
   const evCount = searchIndex.indexAllSessions(state);
   if (evCount > 0) console.log(`Session events: ${evCount} events indexed`);
 } catch (e) { console.error('Session events index failed:', e.message); }
-// Re-index every 60s to pick up new content (text search + session events)
+// Re-index session events every 5s (lightweight incremental), full text search every 60s
+let _lastFullIndex = Date.now();
 setInterval(() => {
-  searchIndex.buildIncremental().catch(() => {});
   try { searchIndex.indexAllSessions(loadState()); } catch {}
-}, 60000);
+  if (Date.now() - _lastFullIndex > 60000) {
+    _lastFullIndex = Date.now();
+    searchIndex.buildIncremental().catch(() => {});
+  }
+}, 5000);
 
 let PORT = 5199;
 for (let i = 2; i < process.argv.length; i++) {
@@ -1153,9 +1157,6 @@ const server = http.createServer(async (req, res) => {
 
     try {
       const status = JSON.parse(fs.readFileSync(path.join(localDir, `${host}.json`), 'utf8'));
-      // Also include locally-tracked jobs from fleet state
-      const state = loadState();
-      status.tracked = state.cluster_jobs || [];
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify(status));
     } catch (e) {
@@ -1168,21 +1169,31 @@ const server = http.createServer(async (req, res) => {
   // Cluster log: tail SLURM log for a job
   if (url.pathname === '/api/cluster-log' && req.method === 'GET') {
     const host = url.searchParams.get('cluster') || 'qtm';
-    const jobId = url.searchParams.get('job_id');
+    let jobId = url.searchParams.get('job_id');
+    const jobName = url.searchParams.get('job_name');
     const taskId = url.searchParams.get('task_id');
     const nlines = parseInt(url.searchParams.get('lines') || '80');
     const stderr = url.searchParams.get('stderr') === 'true';
     const ext = stderr ? 'err' : 'out';
 
+    // Resolve job name to job ID via squeue if needed
+    if (!jobId && jobName) {
+      try {
+        jobId = execSync(`ssh ${host} "squeue -u \\$(whoami) --name=${jobName} --format=%A --noheader | head -1 | sed 's/_.*//'"`, {
+          encoding: 'utf8', timeout: 10000,
+        }).trim();
+      } catch {}
+    }
+
     if (!jobId) {
       res.writeHead(400, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ error: 'job_id required' }));
+      res.end(JSON.stringify({ error: 'job_id or job_name required' }));
       return;
     }
 
     let cmd;
     if (taskId) {
-      cmd = `find ~ -maxdepth 5 -name "*-${jobId}_${taskId}.${ext}" -newer ~/.cluster-status/manifest.tsv 2>/dev/null | head -1`;
+      cmd = `find ~ -maxdepth 5 -name "*-${jobId}_${taskId}.${ext}" 2>/dev/null | head -1`;
     } else {
       cmd = `find ~ -maxdepth 5 -name "*-${jobId}_*.${ext}" 2>/dev/null | xargs ls -t 2>/dev/null | head -1`;
     }
@@ -1702,6 +1713,19 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: e.message }));
       }
     });
+    return;
+  }
+
+  // tlda token: read from ~/.config/tlda/config.json
+  if (url.pathname === '/api/tlda-token' && req.method === 'GET') {
+    try {
+      const cfg = JSON.parse(fs.readFileSync(path.join(os.homedir(), '.config', 'tlda', 'config.json'), 'utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ token: cfg.tokenRw || cfg.token || null }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ token: null }));
+    }
     return;
   }
 

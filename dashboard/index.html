@@ -275,14 +275,8 @@
     max-height: var(--activity-card-height);
     overflow-y: auto;
     scrollbar-width: none;
-    display: flex;
-    flex-direction: column-reverse;
   }
   .chat-activity-card .activity-detail::-webkit-scrollbar { display: none; }
-  .chat-activity-card .activity-detail > .activity-detail-inner {
-    display: flex;
-    flex-direction: column;
-  }
   .chat-activity-card .activity-detail .tool-step {
     white-space: nowrap;
     overflow-x: auto;
@@ -693,22 +687,15 @@
     -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
   }
 
-  /* Long message collapse */
-  .message-body.message-collapsed {
+  /* Long message scroll — caps height, scrolls overflow */
+  .message-body.message-long {
+    display: block;
     max-height: calc(20 * 1.4em);
-    overflow: hidden;
-    mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
-    -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+    overflow-y: auto;
+    border-left: 2px solid var(--border, #333);
+    padding-left: 6px;
+    margin: 2px 0;
   }
-  .message-toggle {
-    display: inline-block;
-    font-size: 10px;
-    color: var(--text-dim);
-    cursor: pointer;
-    margin-top: 2px;
-    user-select: none;
-  }
-  .message-toggle:hover { color: var(--accent); }
 
   /* Terminal code blocks */
   .term-code-block { margin: 2px 0; }
@@ -2351,6 +2338,14 @@ import { tinykeys } from 'https://cdn.jsdelivr.net/npm/tinykeys@3.0.0/+esm'
 
 
 // --- Config ---
+let _tldaToken = null
+;(async () => {
+  try {
+    const r = await fetch('/api/tlda-token')
+    if (r.ok) _tldaToken = (await r.json()).token || null
+  } catch {}
+})()
+
 let fleetConfig = {}
 async function loadFleetConfig() {
   try {
@@ -2461,7 +2456,9 @@ const playbackCtrl = {
     for (let i = startIdx; i < events.length; i++) {
       const ev = events[i]
       if (ev.t > this.currentT + typingLookahead) break
-      cacheIdx = i + 1
+      // Only advance cache past events at or before currentT — lookahead events
+      // must be re-scanned on subsequent ticks until currentT catches up
+      if (ev.t <= this.currentT) cacheIdx = i + 1
 
       // Track edits for code panel — no time gate, because the lookahead
       // consumes events past currentT for typing animation. Edit tracking
@@ -2962,6 +2959,11 @@ function applyChatTarget(container, agentId) {
   container._autoScroll = true // reset scroll anchor on target switch
   if (container._panelId) savePanelState(container._panelId, 'chatTarget', agentId)
   trackUI('chat_target', { panelId: container._panelId, agentId, prev })
+  // Force re-render with new target (hash includes target, so stale hash won't match)
+  if (currentState) {
+    const params = container._widgetParams || {}
+    updateChatWidget(container, params, currentState)
+  }
 }
 
 function onLabelDragEnd(e) {
@@ -3578,7 +3580,7 @@ document.addEventListener('dragend', (e) => {
 function renderMarkdown(html) {
   // Images: ![alt](url)
   html = html.replace(/!\[([^\]]*)\]\(([^)]+)\)/g, (_, alt, url) =>
-    `<img src="${url}" alt="${alt}" style="max-width:300px;max-height:200px;border-radius:4px;margin:4px 0;display:block;cursor:pointer" onclick="window.open('${url}','_blank')">`)
+    `<img src="${url}" alt="${alt}" style="max-width:80%;max-height:300px;border-radius:4px;margin:8px auto;display:block;cursor:pointer" onclick="window.open('${url}','_blank')">`)
   // Code blocks with syntax highlighting + folding (lazy highlight for folded blocks)
   html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, langHint, code) => {
     code = code.replace(/^\n|\n$/g, '')
@@ -3669,9 +3671,43 @@ function renderMarkdown(html) {
       return `<span class="file-path" title="${fullPath}">~/${rel}</span>`
     })
   })
-  // URLs: linkify bare http(s) URLs (skip already-linked ones inside tags)
+  // tlda doc cards: URLs pointing to the tlda viewer render as inline iframe previews
+  // Track code depth to skip URL processing inside <code>/<pre> elements
+  let _inCode = 0
   html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
-    if (segment.startsWith('<')) return segment
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) _inCode++
+      else if (/^<\/(code|pre)>/i.test(segment)) _inCode = Math.max(0, _inCode - 1)
+      return segment
+    }
+    if (_inCode) return segment
+    return segment.replace(/\bhttps?:\/\/localhost:51(?:73|74|75|76)\/?[^\s<>"')\]]*\?doc=[^\s<>"')\]]+/g, url => {
+      try {
+        const u = new URL(url)
+        const docName = u.searchParams.get('doc') || 'doc'
+        // Inject auth token if not already in URL
+        if (_tldaToken && !u.searchParams.has('token')) u.searchParams.set('token', _tldaToken)
+        const iframeSrc = u.toString()
+        const cardId = 'tlda-' + btoa(url).slice(0, 16)
+        return `<div class="tlda-card" data-tlda-src="${esc(iframeSrc)}" data-tlda-id="${cardId}" style="margin:8px auto;border:1px solid var(--border);border-radius:6px;overflow:hidden;width:80%">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:3px 8px;background:rgba(147,112,219,0.08);border-bottom:1px solid var(--border)">
+            <span style="font-size:10px;color:var(--accent);font-weight:500">${esc(docName)}</span>
+            <a href="${iframeSrc}" target="_blank" style="font-size:9px;color:var(--text-dim);text-decoration:none;border:none">open ↗</a>
+          </div>
+          <div class="tlda-iframe-slot" style="width:100%;height:250px"></div>
+        </div>`
+      } catch { return url }
+    })
+  })
+  // URLs: linkify bare http(s) URLs (skip already-linked ones inside tags and code blocks)
+  _inCode = 0
+  html = html.replace(/((?:<[^>]*>)|(?:[^<]+))/g, (segment) => {
+    if (segment.startsWith('<')) {
+      if (/^<(code|pre)\b/i.test(segment)) _inCode++
+      else if (/^<\/(code|pre)>/i.test(segment)) _inCode = Math.max(0, _inCode - 1)
+      return segment
+    }
+    if (_inCode) return segment
     return segment.replace(/\bhttps?:\/\/[^\s<>"')\]]+/g, url => {
       // Smart URL display: show domain + path tail
       try {
@@ -3797,7 +3833,10 @@ function createChatWidget(container, params) {
     if (container._autoScroll) log.scrollTop = log.scrollHeight
   })
 
-  // Diff gutter — hover to show diffs, click to pin
+  // Diff gutter — hover to show diffs, click to pin (skip for playback panels)
+  if (container._isPlaybackWidget) {
+    container._diffGutter = null
+  } else {
   const gutter = document.createElement('div')
   gutter.className = 'diff-gutter'
   gutter.innerHTML = '<div class="diff-gutter-icon">◆</div>'
@@ -3820,6 +3859,7 @@ function createChatWidget(container, params) {
       log.classList.remove('diffs-visible')
     }
   })
+  } // end diff gutter else
 
   // Preserve unsent text + cursor position across HMR/reloads
   requestAnimationFrame(() => {
@@ -4653,7 +4693,7 @@ function getActivityEvents(agentId) {
     for (const b of ev.blocks) {
       if (b.type === 'tool_use') {
         if (ACTIVITY_NOISE.has(b.name)) continue
-        // Convert fleet chat/delegate tool calls to chat messages
+        // Convert fleet chat/delegate tool calls to chat messages (no card break)
         if (CHAT_TOOLS.has(b.name)) {
           const inp = b.input || {}
           const text = inp.message || inp.description || ''
@@ -4666,8 +4706,6 @@ function getActivityEvents(agentId) {
               _fromSession: true,
             })
           }
-          // Insert break marker so activity cards split at chat boundaries
-          items.push({ _chatBreak: true, from: agentId, timestamp: ev.timestamp })
           continue
         }
         const name = humanizeToolName(b.name)
@@ -4909,13 +4947,10 @@ function renderChatLine(m, state) {
   const nickHtml = isAmbient
     ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
-  // Long message collapse: fold messages >20 lines
+  // Long message: scrollable container instead of collapse
   const rawLineCount = (m.text || '').split('\n').length
-  const shouldCollapse = rawLineCount > 20
-  let bodyText = displayText
-  if (shouldCollapse) {
-    bodyText = `<span class="message-body message-collapsed">${displayText}</span><span class="message-toggle" onclick="(function(e){var b=e.previousElementSibling;if(b.classList.contains('message-collapsed')){b.classList.remove('message-collapsed');e.textContent='collapse'}else{b.classList.add('message-collapsed');e.textContent='show all (${rawLineCount} lines)'}})(this)">show all (${rawLineCount} lines)</span>`
-  }
+  const isLongMsg = rawLineCount > 20
+  let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
   let line
   if (isAmbient) {
     line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${attachHtml}</div>`
@@ -4931,6 +4966,39 @@ function renderChatLine(m, state) {
 }
 
 let CHAT_PAGE_SIZE = 100
+
+function repositionTldaIframes(container, log) {
+  if (!container._tldaOverlay) return
+  const overlay = container._tldaOverlay
+  const overlayRect = overlay.getBoundingClientRect()
+  const activeIds = new Set()
+
+  log.querySelectorAll('.tlda-card[data-tlda-id]').forEach(card => {
+    const slot = card.querySelector('.tlda-iframe-slot')
+    if (!slot) return
+    const id = card.dataset.tldaId
+    activeIds.add(id)
+    let iframe = container._tldaFrames.get(id)
+    if (!iframe) {
+      iframe = document.createElement('iframe')
+      iframe.src = card.dataset.tldaSrc
+      iframe.style.cssText = 'position:absolute;border:none;pointer-events:auto'
+      iframe.loading = 'lazy'
+      overlay.appendChild(iframe)
+      container._tldaFrames.set(id, iframe)
+    }
+    slot.style.cssText = 'width:100%;height:250px'
+    const slotRect = slot.getBoundingClientRect()
+    iframe.style.left = (slotRect.left - overlayRect.left) + 'px'
+    iframe.style.top = (slotRect.top - overlayRect.top) + 'px'
+    iframe.style.width = slotRect.width + 'px'
+    iframe.style.height = '250px'
+    iframe.style.display = ''
+  })
+  for (const [id, iframe] of container._tldaFrames) {
+    if (!activeIds.has(id)) iframe.style.display = 'none'
+  }
+}
 
 function updateChatWidget(container, params, state) {
   const log = container.querySelector('.chat-log')
@@ -5008,6 +5076,11 @@ function updateChatWidget(container, params, state) {
     } else {
       filtered = msgs.filter(m => matchingAgentIds.has(m.from) || matchingAgentIds.has(m.to))
     }
+  } else if (container._chatTarget && !container._streamSource) {
+    // When targeting a specific agent (no label filter), only show messages to/from that agent
+    // Skip in playback mode — already filtered above with friendly name resolution
+    const target = container._chatTarget
+    filtered = msgs.filter(m => m.from === target || m.to === target)
   }
 
   // Merge activity events from session data (fetched client-side)
@@ -5031,9 +5104,11 @@ function updateChatWidget(container, params, state) {
     return chatTargets.size === 0
   })
 
-  // Merge activity events — fetch session data for agents without a terminal widget
+  // Merge activity events — fetch session data for active agents
+  // Skip only when rendering playback state (synth state from a recording)
+  const isPlaybackRender = container._streamSource && state === container._streamSource.synthState
   let activityEvents = []
-  if (!container._streamSource) {
+  if (!isPlaybackRender) {
     for (const a of activeAgents) {
       // Trigger lightweight fetch if cache is stale or missing (no terminal needed)
       const cached = window._sessionCache?.[a.id]
@@ -5060,7 +5135,12 @@ function updateChatWidget(container, params, state) {
     const allAgents = state.agents || []
     // Compacting agents
     let compactingAgents = allAgents.filter(a => a.compacting && a.compacting_since)
-    if (target) compactingAgents = compactingAgents.filter(a => a.id === target)
+    // Only show for targeted agent or agents matching the label filter
+    if (target) {
+      compactingAgents = compactingAgents.filter(a => a.id === target)
+    } else if (chatTargets.size > 0) {
+      compactingAgents = compactingAgents.filter(a => chatTargets.has(a.id))
+    }
     for (const a of compactingAgents) {
       activityEvents.push({ _compacting: true, _chatBreak: true, from: a.id, timestamp: a.compacting_since })
     }
@@ -5074,13 +5154,27 @@ function updateChatWidget(container, params, state) {
   }
 
   // Combine and sort by timestamp (skip sort in playback — events already ordered)
-  const withActivity = activityEvents.length
-    ? [...filtered, ...activityEvents].sort((a, b) => {
-        const ta = a.timestamp || ''
-        const tb = b.timestamp || ''
-        return ta < tb ? -1 : ta > tb ? 1 : 0
-      })
-    : filtered
+  // Stable sort: tag each item with original index as tiebreaker so equal timestamps
+  // never reorder across renders. Activity events sort before messages at same timestamp.
+  let withActivity
+  if (activityEvents.length) {
+    const combined = [...filtered, ...activityEvents]
+    for (let k = 0; k < combined.length; k++) combined[k]._sortIdx = k
+    combined.sort((a, b) => {
+      const ta = a.timestamp || ''
+      const tb = b.timestamp || ''
+      if (ta !== tb) return ta < tb ? -1 : 1
+      // Same timestamp: activity before messages
+      const aa = a._activity || a._chatBreak ? 0 : 1
+      const ab = b._activity || b._chatBreak ? 0 : 1
+      if (aa !== ab) return aa - ab
+      // Final tiebreaker: original array order
+      return a._sortIdx - b._sortIdx
+    })
+    withActivity = combined
+  } else {
+    withActivity = filtered
+  }
 
   // Lazy scroll: only render last N messages, load more on scroll-to-top
   if (!container._chatVisibleCount) container._chatVisibleCount = CHAT_PAGE_SIZE
@@ -5100,7 +5194,8 @@ function updateChatWidget(container, params, state) {
     (!container._chatTarget || container._chatTarget === typingObj.to)
     ? typingObj.text : undefined
   const lastActivity = lastMsg?._activity ? (lastMsg._toolName || '') : ''
-  const structHash = msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity
+  const targetKey = container._chatTarget || 'all'
+  const structHash = targetKey + ':' + msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity
   const fullHash = structHash + ':' + lastText.length + ':' + (typingForThis || '')
 
   if (log._chatHash === fullHash) {
@@ -5167,19 +5262,24 @@ function updateChatWidget(container, params, state) {
     }
     if (m._chatBreak) { i++; continue } // skip break markers (they split activity groups)
     if (m._activity) {
-      // Collect consecutive activity groups (possibly from different agents)
-      // Each agent's consecutive events form one group; multiple groups can be adjacent
-      const activityCards = []
-      while (i < visible.length && visible[i]._activity) {
-        const group = [visible[i]]
-        while (i + 1 < visible.length && visible[i + 1]._activity && visible[i + 1].from === visible[i].from) {
-          group.push(visible[++i])
+      // Group consecutive activity events from the same agent into one card.
+      // Any non-activity item (chat message, status indicator) breaks the group —
+      // this keeps cards positioned chronologically in the timeline.
+      const agentId = m.from
+      const group = [m]
+      let j = i + 1
+      while (j < visible.length) {
+        const v = visible[j]
+        if (v._activity && v.from === agentId) {
+          group.push(v)
+          j++
+        } else {
+          break
         }
-        activityCards.push(renderActivityGroup(group, state))
-        i++
       }
-      // Wrap activity cards in an inline-wrap container for compact inline display when collapsed
-      renderedLines += `<div class="chat-activity-inline-wrap">${activityCards.join('')}</div>`
+      i = j
+      renderedLines += `<div class="chat-activity-inline-wrap">${renderActivityGroup(group, state)}</div>`
+      continue
     } else {
       renderedLines += renderChatLine(m, state)
       i++
@@ -5197,14 +5297,36 @@ function updateChatWidget(container, params, state) {
   const prevScroll = log.scrollTop
   const wasBottom = container._autoScroll !== false
   const savedTermCard = container._terminalCard && log.contains(container._terminalCard) ? container._terminalCard : null
+  // Preserve tlda iframes: iframes reload on ANY DOM reparenting.
+  // Solution: iframes live in an overlay that's never destroyed by innerHTML.
+  // The overlay sits over the log; iframes are positioned to match placeholder slots.
+  if (!container._tldaOverlay) {
+    container._tldaOverlay = document.createElement('div')
+    container._tldaOverlay.style.cssText = 'position:absolute;top:0;left:0;right:0;bottom:0;pointer-events:none;overflow:hidden;z-index:1'
+    log.parentElement.style.position = 'relative'
+    log.parentElement.appendChild(container._tldaOverlay)
+    container._tldaFrames = new Map()
+    // Reposition iframes on scroll
+    log.addEventListener('scroll', () => {
+      if (container._tldaReposPending) return
+      container._tldaReposPending = true
+      requestAnimationFrame(() => {
+        container._tldaReposPending = false
+        repositionTldaIframes(container, log)
+      })
+    })
+  }
   log.innerHTML = linesHtml
   if (savedTermCard) log.appendChild(savedTermCard)
-  if (wasBottom) {
-    // Immediate scroll — ResizeObserver also fires after layout for a reliable second pass
-    log.scrollTop = log.scrollHeight
-  } else {
-    log.scrollTop = prevScroll
-  }
+  // Reposition tlda iframes after layout settles, then scroll
+  requestAnimationFrame(() => {
+    repositionTldaIframes(container, log)
+    if (wasBottom) {
+      log.scrollTop = log.scrollHeight
+    } else {
+      log.scrollTop = prevScroll
+    }
+  })
 
   // Set up load-more click handler
   const loadMoreEl = log.querySelector('.chat-load-more')
@@ -5315,6 +5437,11 @@ function updateChatWidget(container, params, state) {
         container._pinnedActivityAgents.add(agentId)
       }
     }
+  })
+
+  // Scroll expanded activity card details to the bottom (show latest activity)
+  log.querySelectorAll('.chat-activity-card:not(.collapsed) .activity-detail').forEach(detail => {
+    detail.scrollTop = detail.scrollHeight
   })
 
   // Tool-ref click: scroll to the original tool-run card
@@ -6903,6 +7030,21 @@ async function fetchSessionLite(agentId) {
   } catch {}
 }
 
+// Poll for activity: periodically fetch session data for targeted agents
+// so activity cards appear without waiting for SSE state changes
+setInterval(() => {
+  if (!currentState) return
+  const targets = new Set()
+  for (const [, inst] of panelInstances) {
+    if (inst.container._streamSource) continue
+    if (inst.widget !== WIDGETS?.chat) continue
+    if (inst.container._chatTarget) targets.add(inst.container._chatTarget)
+  }
+  for (const agentId of targets) {
+    fetchSessionLite(agentId)
+  }
+}, 5000)
+
 // JSONL-backed terminal: fetch structured events from agent session log
 async function fetchSession(agentId, container) {
   const body = container.querySelector('.terminal-body')
@@ -6914,6 +7056,7 @@ async function fetchSession(agentId, container) {
       // Content hash to avoid re-rendering unchanged output
       const hash = data.total + ':' + data.events.length + ':' + (data.events[data.events.length - 1]?.timestamp || '')
       // Store in shared cache for chat widget activity rendering
+      const oldHash = window._sessionCache[agentId]?.hash
       window._sessionCache[agentId] = { data, hash, fetchedAt: Date.now() }
       // Update agent's context_pct from latest usage data
       if (currentState) {
@@ -6922,6 +7065,15 @@ async function fetchSession(agentId, container) {
           const agentEntry = (currentState.agents || []).find(a => a.id === agentId)
           if (agentEntry) {
             agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+          }
+        }
+      }
+      // If cache changed, also update chat widgets (activity cards)
+      if (hash !== oldHash && currentState) {
+        for (const [, inst] of panelInstances) {
+          if (inst.container._streamSource) continue
+          if (inst.widget === WIDGETS.chat || inst.widget === WIDGETS.agents) {
+            try { inst.widget.update(inst.container, inst.params, currentState) } catch {}
           }
         }
       }
@@ -7101,16 +7253,16 @@ function updateSearchWidget() { /* search is user-driven, no state updates neede
 function createPlaybackWidget(container, params) {
   container.classList.add('playback-widget')
   container.innerHTML = `
-    <div class="playback-controls" style="display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:28px;position:relative">
-      <input type="text" class="pb-search" placeholder="recordings..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:3px;font-size:11px;width:80px;outline:none;transition:width 0.2s">
-      <div class="pb-dropdown" style="display:none;position:absolute;top:28px;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;max-height:150px;overflow-y:auto;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.3)"></div>
-      <button class="pb-play" style="font-size:11px;padding:2px 8px">Play</button>
+    <div class="playback-controls" style="display:flex;align-items:center;gap:4px;padding:3px 6px;border-bottom:1px solid var(--border);flex-shrink:0;min-height:28px;position:relative;overflow:visible">
+      <input type="text" class="pb-search" placeholder="recordings..." style="background:var(--bg);border:1px solid var(--border);color:var(--text);padding:2px 6px;border-radius:3px;font-size:11px;flex:1;min-width:100px;max-width:280px;outline:none;text-overflow:ellipsis">
+      <div class="pb-dropdown" style="display:none;position:absolute;top:28px;left:0;right:0;background:var(--bg);border:1px solid var(--border);border-radius:4px;max-height:200px;overflow-y:auto;z-index:100;box-shadow:0 4px 12px rgba(0,0,0,0.3)"></div>
+      <button class="pb-play" style="font-size:11px;padding:2px 8px;flex-shrink:0">Play</button>
+      <span class="playback-speed" title="Click to cycle speed" style="font-size:11px;cursor:pointer;color:var(--text);background:var(--surface);border:1px solid var(--border);border-radius:3px;padding:1px 6px;white-space:nowrap;flex-shrink:0;user-select:none">1x</span>
       <div class="scrubber-wrap" style="flex:1;min-width:60px;position:relative;height:20px">
         <canvas class="timewarp-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;pointer-events:none;opacity:0.8"></canvas>
         <input type="range" class="playback-scrubber" min="0" max="1000" value="0" style="width:100%;position:relative;z-index:1">
       </div>
-      <span class="playback-time" style="font-size:10px;color:var(--text-dim);white-space:nowrap">0:00 / 0:00</span>
-      <span class="playback-speed" title="Click to cycle speed / timewarp" style="font-size:10px;cursor:pointer;color:var(--text-dim)">1x</span>
+      <span class="playback-time" style="font-size:10px;color:var(--text-dim);white-space:nowrap;flex-shrink:0">0:00 / 0:00</span>
     </div>
     <div class="playback-inner-dv" style="flex:1;overflow:hidden;position:relative;min-height:0"></div>
     <div class="pb-narration-subtitle hidden"></div>
@@ -7138,9 +7290,14 @@ function createPlaybackWidget(container, params) {
           element._isPlaybackWidget = true
           widget.create(element, widgetParams)
           // Force chat target from params (overrides loadPanelState rAF)
+          // Playback panels default to no filter — show all messages
           if (widgetParams.agent) {
             element._chatTarget = widgetParams.agent
             requestAnimationFrame(() => { element._chatTarget = widgetParams.agent })
+          } else {
+            element._chatTarget = null
+            element._labelFilter = null
+            requestAnimationFrame(() => { element._chatTarget = null; element._labelFilter = null })
           }
           if (playbackCtrl.synthState) widget.update(element, widgetParams, playbackCtrl.synthState)
         },
@@ -7164,24 +7321,24 @@ function createPlaybackWidget(container, params) {
     const hash = msgs.length + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.text?.length || 0) + ':' + (typing?.text?.length || 0) + ':' + (state._interrupt ? 1 : 0) + ':' + editKey
     if (hash === _lastBroadcastHash) return
     _lastBroadcastHash = hash
+    let anyPending = false
     for (const panel of innerDv.panels) {
       const el = panel.view?.content?.element
       if (!el) continue
       const widget = WIDGETS[panel.api.component]
       if (widget) {
-        try { widget.update(el, {}, state) } catch {}
+        try { widget.update(el, {}, state) } catch (e) { console.warn('Playback update error:', panel.id, e) }
+        if (el._pendingUpdate) anyPending = true
       }
     }
+    // If any widget skipped due to zero height, clear the hash so next tick retries
+    if (anyPending) _lastBroadcastHash = ''
   }
   container._broadcastToInner = broadcastToInner
 
   function setupDefaultInnerLayout() {
-    const chat = innerDv.addPanel({ id: 'pb-chat', component: 'chat', title: 'Chat' })
-    innerDv.addPanel({ id: 'pb-terminal', component: 'terminal', title: 'Terminal',
-      position: { referencePanel: chat, direction: 'right' } })
-    // Code panel spans full width at bottom
-    innerDv.addPanel({ id: 'pb-code', component: 'code', title: 'Code',
-      position: { direction: 'below' } })
+    // Default: chat-only full screen. Layout events from the recording override this.
+    innerDv.addPanel({ id: 'pb-chat', component: 'chat', title: 'Chat' })
   }
 
   // Apply a layout event from the recording (director's cut)
@@ -7360,14 +7517,15 @@ function createPlaybackWidget(container, params) {
     updateProgress()
     playBtn.innerHTML = pbState.playing ? '&#9208;' : '&#9654;'
     playBtn.classList.toggle('active', pbState.playing)
-    if (pbState.timewarp) {
-      speedBtn.textContent = pbState.timewarp.name || 'warp'
-      speedBtn.style.color = 'var(--accent)'
-      speedBtn.title = pbState.timewarp.description || 'Timewarp active'
-    } else {
-      speedBtn.textContent = pbState.speed + 'x'
-      speedBtn.style.color = ''
-      speedBtn.title = 'Click to cycle speed / timewarp'
+    // Speed pill — always shows the multiplier
+    speedBtn.textContent = pbState.speed + 'x'
+    speedBtn.style.borderColor = pbState.speed !== 1 ? 'var(--accent)' : ''
+    speedBtn.style.color = pbState.speed !== 1 ? 'var(--accent)' : ''
+    // Search field shows recording title + active cut
+    if (pbState.playback && document.activeElement !== searchInput) {
+      const title = pbState.playback.title || 'Untitled'
+      const cut = pbState.timewarp ? ` · ${pbState.timewarp.name}` : ''
+      searchInput.value = title + cut
     }
   }
 
@@ -7376,7 +7534,7 @@ function createPlaybackWidget(container, params) {
     try {
       const now = performance.now()
       if (pbState.lastTick) {
-        const effectiveSpeed = pbState.timewarp ? getSpeedAt(pbState.currentT) : pbState.speed
+        const effectiveSpeed = pbState.timewarp ? getSpeedAt(pbState.currentT) * pbState.speed : pbState.speed
         // Jump regions (>100x): snap to end of region instantly instead of flashing through
         if (effectiveSpeed > 100 && pbState.timewarp) {
           const tw = pbState.timewarp
@@ -7417,8 +7575,10 @@ function createPlaybackWidget(container, params) {
   }
   container._resetInnerLayout = resetInnerLayout
   container._drawTimewarpOverlay = drawTimewarpOverlay
+  container._updatePlaybackUI = updatePlaybackUI
 
   function syncPlaybackToWidgets() {
+
     if (!playbackCtrl.active) return
     playbackCtrl.currentT = pbState.currentT
     playbackCtrl.buildSynthState()
@@ -7465,12 +7625,15 @@ function createPlaybackWidget(container, params) {
     }
     broadcastToInner()
   }
+  container._syncPlaybackToWidgets = syncPlaybackToWidgets
 
   function applySimpleLayout(panels) {
     // panels: [{ widget, position, params, title }]
     // position: 'top-left', 'top-right', 'bottom-left', 'bottom-right' or 'full'
     try {
       innerDv.clear()
+      // Reset broadcast hash — new panels need a fresh update even if synth state hasn't changed
+      _lastBroadcastHash = ''
       if (panels.length === 0) return
       if (panels.length === 1 || panels[0].position === 'full') {
         const p = panels[0]
@@ -7616,6 +7779,13 @@ function createPlaybackWidget(container, params) {
       subtitleEl.textContent = narration
       subtitleEl.classList.remove('hidden')
     }
+
+    // Fallback: if focus panel is the only panel (nothing to frost),
+    // show narration as subtitle directly
+    if (narration && !narrationPanel && !_narrationOnSubtitle) {
+      subtitleEl.textContent = narration
+      subtitleEl.classList.remove('hidden')
+    }
   }
 
   // Cancel any pending typing animation (now handled by child chat widget via stream)
@@ -7629,17 +7799,16 @@ function createPlaybackWidget(container, params) {
 
   // --- Search dropdown ---
   searchInput.addEventListener('focus', () => {
-    searchInput.style.width = '180px'
+    // Clear the title to allow typing a search query
+    searchInput.value = ''
     dropdown.style.display = ''
     showDropdownResults(_allPlaybacks)
   })
   searchInput.addEventListener('blur', () => {
     setTimeout(() => {
       dropdown.style.display = 'none'
-      if (pbState.playback) {
-        searchInput.style.width = '80px'
-        searchInput.value = ''
-      }
+      // Restore the title + cut display
+      updatePlaybackUI()
     }, 200)
   })
   searchInput.addEventListener('input', () => {
@@ -7719,24 +7888,57 @@ function createPlaybackWidget(container, params) {
   })
 
   function showDropdownResults(list) {
-    if (!list.length) {
+    if (!list.length && !pbState.timewarps.length) {
       dropdown.innerHTML = `<div style="color:var(--text-dim);font-size:11px;padding:6px 8px">No recordings</div>`
       return
     }
-    dropdown.innerHTML = list.map(pb =>
-      `<div class="pb-result" data-id="${pb.id}" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:1px solid var(--border)">
-        <div style="color:var(--text)">${esc(pb.title)}</div>
+    let html = ''
+    for (const pb of list) {
+      const isLoaded = pbState.playback && pbState.playback.id === pb.id
+      // Recording name — clicking loads at constant speed (no warp)
+      html += `<div class="pb-result" data-id="${pb.id}" style="padding:4px 8px;cursor:pointer;font-size:11px;border-bottom:${isLoaded && pbState.timewarps.length ? 'none' : '1px solid var(--border)'}">
+        <div style="color:${isLoaded ? 'var(--accent)' : 'var(--text)'}">${esc(pb.title)}</div>
         <div style="color:var(--text-dim);font-size:10px">${pb.event_count} events, ${fmtTime(pb.duration_ms)}</div>
       </div>`
-    ).join('')
+      // If this recording is loaded, show its cuts indented below
+      if (isLoaded && pbState.timewarps.length > 0) {
+        for (const tw of pbState.timewarps) {
+          const active = tw === pbState.timewarp
+          html += `<div class="pb-cut" data-cut="${esc(tw.name)}" style="padding:3px 8px 3px 24px;cursor:pointer;font-size:11px;color:${active ? 'var(--accent)' : 'var(--text-dim)'};border-bottom:1px solid var(--border);${active ? 'background:rgba(147,112,219,0.08)' : ''}">
+            ${active ? '▸ ' : '  '}${esc(tw.name)}
+          </div>`
+        }
+      }
+    }
+    dropdown.innerHTML = html
+
+    // Bind recording clicks
     dropdown.querySelectorAll('.pb-result').forEach(el => {
       el.addEventListener('mouseenter', () => el.style.background = 'rgba(255,255,255,0.05)')
       el.addEventListener('mouseleave', () => el.style.background = '')
       el.addEventListener('mousedown', (e) => {
-        e.preventDefault() // prevent blur
+        e.preventDefault()
         loadRecording(el.dataset.id)
         dropdown.style.display = 'none'
-        searchInput.style.width = '80px'
+        searchInput.blur()
+      })
+    })
+    // Bind cut clicks — switch timewarp on current recording
+    dropdown.querySelectorAll('.pb-cut').forEach(el => {
+      el.addEventListener('mouseenter', () => { if (!el.style.background.includes('147')) el.style.background = 'rgba(255,255,255,0.05)' })
+      el.addEventListener('mouseleave', () => { if (!el.style.background.includes('147')) el.style.background = '' })
+      el.addEventListener('mousedown', (e) => {
+        e.preventDefault()
+        const cutName = el.dataset.cut
+        if (cutName) {
+          const tw = pbState.timewarps.find(t => t.name === cutName)
+          if (tw) pbState.timewarp = tw
+        } else {
+          pbState.timewarp = null // "Raw" option
+        }
+        drawTimewarpOverlay()
+        updatePlaybackUI()
+        dropdown.style.display = 'none'
         searchInput.blur()
       })
     })
@@ -7761,31 +7963,12 @@ function createPlaybackWidget(container, params) {
     if (pbState.playing) tick()
   })
 
+  // Speed button always cycles the same speeds, warp or not
+  const allSpeeds = [0.5, 1, 2, 4, 8]
   speedBtn.addEventListener('click', () => {
     stopTick()
-    if (pbState.timewarp) {
-      // Currently on a timewarp — find it in the list, advance to next or wrap to 1x
-      const twIdx = pbState.timewarps.indexOf(pbState.timewarp)
-      if (twIdx < pbState.timewarps.length - 1) {
-        pbState.timewarp = pbState.timewarps[twIdx + 1]
-      } else {
-        pbState.timewarp = null
-        pbState.speedIdx = 0
-        pbState.speed = pbState.speeds[0]
-      }
-    } else {
-      pbState.speedIdx++
-      if (pbState.speedIdx < pbState.speeds.length) {
-        pbState.speed = pbState.speeds[pbState.speedIdx]
-      } else if (pbState.timewarps.length > 0) {
-        // Past fixed speeds — enter first timewarp
-        pbState.timewarp = pbState.timewarps[0]
-      } else {
-        pbState.speedIdx = 0
-        pbState.speed = pbState.speeds[0]
-      }
-    }
-    drawTimewarpOverlay()
+    const idx = allSpeeds.indexOf(pbState.speed)
+    pbState.speed = allSpeeds[(idx + 1) % allSpeeds.length]
     updatePlaybackUI()
     if (pbState.playing) tick()
   })
@@ -7828,10 +8011,6 @@ function createPlaybackWidget(container, params) {
       drawTimewarpOverlay()
       resetInnerLayout()
       updatePlaybackUI()
-      // Set search placeholder to recording title
-      searchInput.value = ''
-      searchInput.placeholder = (pb.title || 'recording').slice(0, 20) + '...'
-      searchInput.style.width = '80px'
     } catch (e) {
       console.error('Playback load error:', e)
     }
@@ -8228,19 +8407,20 @@ function updateCodeWidget(container, params, state) {
 // --- Cluster Widget ---
 function createClusterWidget(container, params) {
   container.innerHTML = `
-    <div class="cluster-panel" style="display:flex;flex-direction:column;height:100%;font-size:12px">
+    <div class="cluster-panel" style="height:100%;font-size:12px;overflow:auto">
       <div style="padding:6px 8px;display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid var(--border)">
         <span style="font-weight:500;color:var(--text);font-size:11px">qtm</span>
         <span class="cluster-updated" style="color:var(--text-dim);font-size:10px"></span>
       </div>
-      <div class="cluster-jobs" style="padding:4px 8px;flex:0 0 auto"></div>
-      <div class="cluster-log" style="flex:1;overflow:auto;min-height:0;padding:0 8px 8px">
-        <pre class="cluster-log-content" style="margin:0;font-size:10px;line-height:1.4;color:var(--text-dim);white-space:pre-wrap;word-break:break-all"></pre>
-      </div>
+      <div class="cluster-jobs" style="padding:4px 8px"></div>
       <div class="cluster-empty" style="color:var(--text-dim);padding:12px 0;text-align:center">Loading...</div>
     </div>`
   container._expandedJob = null
+  container._expandedJobId = null
   container._logInterval = null
+  container._lastData = null
+  container._sortCol = null  // null = original order, 'label', 'pct', 'active'
+  container._sortAsc = true
   fetchClusterStatus(container)
   container._clusterInterval = setInterval(() => fetchClusterStatus(container), 30000)
 }
@@ -8252,28 +8432,21 @@ async function fetchClusterStatus(container) {
     const res = await fetch('/api/cluster-status')
     if (!res.ok) return
     const data = await res.json()
+    container._lastData = data
     renderClusterPanel(container, panel, data)
   } catch {}
 }
 
 async function fetchClusterLog(container) {
-  const jobId = container._expandedJob
-  if (!jobId) return
-  const logEl = container.querySelector('.cluster-log-content')
+  const jobName = container._expandedJobName
+  if (!jobName) return
+  const logEl = container.querySelector('.cluster-log-inline')
   if (!logEl) return
   try {
-    const res = await fetch(`/api/cluster-log?job_id=${encodeURIComponent(jobId)}`)
+    const res = await fetch(`/api/cluster-log?job_name=${encodeURIComponent(jobName)}`)
     if (!res.ok) return
     const data = await res.json()
-    if (data.error && !data.log) {
-      logEl.textContent = data.error
-    } else {
-      const header = data.file ? `${data.file}\n${'─'.repeat(40)}\n` : ''
-      logEl.textContent = header + (data.log || '(empty)')
-    }
-    // Auto-scroll to bottom
-    const logWrap = container.querySelector('.cluster-log')
-    if (logWrap) logWrap.scrollTop = logWrap.scrollHeight
+    logEl.textContent = (data.error && !data.log) ? data.error : (data.log || '(empty)')
   } catch (e) {
     logEl.textContent = `Error: ${e.message}`
   }
@@ -8282,76 +8455,103 @@ async function fetchClusterLog(container) {
 function renderClusterPanel(container, panel, data) {
   const updatedEl = panel.querySelector('.cluster-updated')
   const jobsEl = panel.querySelector('.cluster-jobs')
-  const logEl = panel.querySelector('.cluster-log')
   const emptyEl = panel.querySelector('.cluster-empty')
 
   if (data.error) {
     emptyEl.textContent = data.error
     emptyEl.style.display = ''
     jobsEl.innerHTML = ''
-    logEl.style.display = 'none'
     return
   }
 
   updatedEl.textContent = data.timestamp ? new Date(data.timestamp).toLocaleTimeString() : ''
 
   const jobs = data.jobs || []
-  if (jobs.length > 0) {
-    emptyEl.style.display = 'none'
-    logEl.style.display = ''
-    // Auto-expand first job if none selected
-    if (!container._expandedJob) {
-      const active = jobs.find(j => j.in_queue) || jobs[0]
-      if (active) {
-        container._expandedJob = active.id
-        fetchClusterLog(container)
-        container._logInterval = setInterval(() => fetchClusterLog(container), 30000)
-      }
-    }
-    jobsEl.innerHTML = `<table style="width:100%;border-collapse:collapse;font-size:11px">
-      ${jobs.map(j => {
-        const total = j.total || 1
-        const done = j.completed || 0
-        const running = j.running || 0
-        const pending = j.pending || 0
-        const donePct = (done / total) * 100
-        const runPct = (running / total) * 100
-        const pendPct = (pending / total) * 100
-        const selected = container._expandedJob === j.id
-        const tip = `${done} done, ${running} running, ${pending} queued — ${done}/${j.total}`
-        return `<tr data-job-id="${esc(j.id)}" title="${tip}" style="border-bottom:1px solid var(--border);cursor:pointer;${selected ? 'background:rgba(255,255,255,0.04)' : ''}">
-          <td style="padding:3px 6px 3px 0;color:${selected ? 'var(--text)' : 'var(--text-dim)'};white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:120px;font-size:10px">${esc(j.label || j.id)}</td>
-          <td style="padding:3px 0;width:100%">
-            <div style="height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;display:flex">
-              <div style="width:${donePct}%;height:100%;background:rgba(80,200,120,0.15)"></div>
-              <div style="width:${runPct}%;height:100%;background:rgba(100,160,220,0.15)"></div>
-              <div style="width:${pendPct}%;height:100%;background:rgba(200,180,80,0.15)"></div>
-            </div>
-          </td>
-          <td style="padding:3px 0 3px 6px;color:var(--text-dim);font-size:9px;white-space:nowrap;text-align:right">${done}/${j.total}</td>
-        </tr>`
-      }).join('')}
-    </table>`
-    // Click handler for rows
-    jobsEl.querySelectorAll('tr[data-job-id]').forEach(tr => {
-      tr.addEventListener('click', () => {
-        const jobId = tr.dataset.jobId
-        container._expandedJob = jobId
-        if (container._logInterval) clearInterval(container._logInterval)
-        const logContent = container.querySelector('.cluster-log-content')
-        if (logContent) logContent.textContent = 'Loading...'
-        fetchClusterLog(container)
-        container._logInterval = setInterval(() => fetchClusterLog(container), 30000)
-        // Re-render to update selected highlight
-        renderClusterPanel(container, panel, data)
-      })
-    })
-  } else {
+  if (jobs.length === 0) {
     emptyEl.textContent = 'No tracked jobs'
     emptyEl.style.display = ''
     jobsEl.innerHTML = ''
-    logEl.style.display = 'none'
+    return
   }
+
+  emptyEl.style.display = 'none'
+  // Find max name length for alignment
+  const maxLabel = Math.min(Math.max(...jobs.map(j => (j.name || '').length), 4), 20)
+
+  // Sort jobs
+  const sortCol = container._sortCol
+  const sortDir = container._sortAsc ? 1 : -1
+  const indexed = jobs.map((j, i) => ({ ...j, _origIdx: i }))
+  if (sortCol === 'name') indexed.sort((a, b) => sortDir * (a.name || '').localeCompare(b.name || ''))
+  else if (sortCol === 'pct') indexed.sort((a, b) => sortDir * (((a.completed||0)/(a.total||1)) - ((b.completed||0)/(b.total||1))))
+  else if (sortCol === 'total') indexed.sort((a, b) => sortDir * ((b.total||0) - (a.total||0)))
+
+  // Header
+  const arrow = (col) => sortCol === col ? (container._sortAsc ? ' ▲' : ' ▼') : ''
+  const hdrStyle = 'cursor:pointer;color:var(--text-dim);font-size:9px;user-select:none'
+  const header = `<div style="display:flex;align-items:center;gap:6px;padding:2px 0;border-bottom:1px solid var(--border)">
+    <span class="cluster-sort" data-col="name" style="${hdrStyle};flex:0 0 ${maxLabel}ch">name${arrow('name')}</span>
+    <span class="cluster-sort" data-col="pct" style="${hdrStyle};flex:1">progress${arrow('pct')}</span>
+    <span class="cluster-sort" data-col="total" style="${hdrStyle};flex:0 0 auto;min-width:40px;text-align:right">done${arrow('total')}</span>
+  </div>`
+
+  jobsEl.innerHTML = header + indexed.map((j) => {
+    const i = j._origIdx
+    const total = j.total || 1
+    const done = j.completed || 0
+    const running = j.running || 0
+    const pending = j.pending || 0
+    const donePct = (done / total) * 100
+    const runPct = (running / total) * 100
+    const pendPct = (pending / total) * 100
+    const rowKey = `${i}`
+    const expanded = container._expandedJob === rowKey
+    const tip = `${done} done, ${running} running, ${pending} pending — ${total} total`
+    return `<div class="cluster-row" data-row-key="${rowKey}" data-job-name="${esc(j.name || '')}">
+      <div title="${tip}" style="display:flex;align-items:center;gap:6px;padding:3px 0;cursor:pointer;border-bottom:1px solid var(--border);${expanded ? 'background:rgba(255,255,255,0.04)' : ''}">
+        <span style="color:${expanded ? 'var(--text)' : 'var(--text-dim)'};font-size:10px;flex:0 0 ${maxLabel}ch;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(j.name || '')}</span>
+        <div style="flex:1;height:5px;background:rgba(255,255,255,0.06);border-radius:3px;overflow:hidden;display:flex">
+          <div style="width:${donePct}%;height:100%;background:rgba(80,200,120,0.18)"></div>
+          <div style="width:${runPct}%;height:100%;background:rgba(100,160,220,0.28)"></div>
+          <div style="width:${pendPct}%;height:100%;background:rgba(200,180,80,0.28)"></div>
+        </div>
+        <span style="color:var(--text-dim);font-size:9px;flex:0 0 auto;min-width:40px;text-align:right">${done}/${total}</span>
+      </div>
+      ${expanded ? `<pre class="cluster-log-inline" style="margin:0;padding:6px 8px;font-size:10px;line-height:1.4;color:var(--text-dim);white-space:pre-wrap;word-break:break-all;background:rgba(0,0,0,0.15);border-radius:3px;max-height:250px;overflow:auto;border-bottom:1px solid var(--border)">Loading log...</pre>` : ''}
+    </div>`
+  }).join('')
+
+  // Sort header click handlers
+  jobsEl.querySelectorAll('.cluster-sort').forEach(hdr => {
+    hdr.addEventListener('click', () => {
+      const col = hdr.dataset.col
+      if (container._sortCol === col) container._sortAsc = !container._sortAsc
+      else { container._sortCol = col; container._sortAsc = true }
+      renderClusterPanel(container, panel, data)
+    })
+  })
+
+  // Row click handlers
+  jobsEl.querySelectorAll('.cluster-row').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('.cluster-log-inline')) return
+      const rowKey = row.dataset.rowKey
+      const jobName = row.dataset.jobName
+      if (container._logInterval) { clearInterval(container._logInterval); container._logInterval = null }
+      if (container._expandedJob === rowKey) {
+        container._expandedJob = null
+        container._expandedJobName = null
+      } else {
+        container._expandedJob = rowKey
+        container._expandedJobName = jobName
+      }
+      renderClusterPanel(container, panel, data)
+      if (container._expandedJob) {
+        fetchClusterLog(container)
+        container._logInterval = setInterval(() => fetchClusterLog(container), 30000)
+      }
+    })
+  })
 }
 
 function updateClusterWidget(container, params, state) {
@@ -8496,6 +8696,17 @@ function syncStreamSources() {
     if (!inst || !panel.group) continue
     // Don't reassign playback widgets themselves
     if (inst.widget === WIDGETS.playback || inst.widget === WIDGETS.timeline) continue
+    // Don't bind stream to chat panels with a live chat target — they show live data
+    if (inst.widget === WIDGETS.chat && inst.container._chatTarget) {
+      // Clear any stale stream source from a previous sync
+      if (inst.container._streamSource) {
+        inst.container._streamSource = null
+        if (currentState) {
+          try { inst.widget.update(inst.container, inst.params, currentState) } catch {}
+        }
+      }
+      continue
+    }
 
     const next = groupStreams.get(panel.group.id) || null
     const prev = inst.container._streamSource || null
@@ -8550,8 +8761,8 @@ function broadcastUpdate(state) {
         if (match) {
           // SSE confirmed — drop local copy
           lm._local = false
-        } else if (!lm._failed) {
-          // Not yet confirmed — keep in state
+        } else {
+          // Not yet confirmed or failed — keep in state (failed shows ⚠ indicator)
           incoming.push(lm)
         }
       }
@@ -8675,9 +8886,22 @@ function connectSSE() {
       const cache = window._sessionCache || {}
       const existing = cache[agent]
       if (existing?.data) {
-        // Deduplicate: only append events newer than the last cached event
+        // Deduplicate: skip events already in cache.
+        // Can't rely on timestamp alone (multiple events share timestamps within a turn).
+        // Use count of events at the boundary timestamp to handle overlaps.
         const lastTs = existing.data.events[existing.data.events.length - 1]?.timestamp
-        const newEvents = lastTs ? events.filter(ev => ev.timestamp > lastTs) : events
+        let newEvents
+        if (!lastTs) {
+          newEvents = events
+        } else {
+          const cachedAtBoundary = existing.data.events.filter(ev => ev.timestamp === lastTs).length
+          let seenAtBoundary = 0
+          newEvents = events.filter(ev => {
+            if (ev.timestamp > lastTs) return true
+            if (ev.timestamp === lastTs) return ++seenAtBoundary > cachedAtBoundary
+            return false // older than cache
+          })
+        }
         if (newEvents.length === 0) return
         // Append new events to existing cache, cap at 2000 to prevent unbounded growth
         existing.data.events.push(...newEvents)
@@ -8727,6 +8951,7 @@ function connectSSE() {
       }
     } catch {}
   })
+  evtSource.addEventListener('reload', () => { location.reload() })
   evtSource.onerror = () => {
     evtSource.close()
     setTimeout(connectSSE, 3000)
@@ -8893,6 +9118,7 @@ function executeCommand(cmd) {
             }
             if (inst.container._resetInnerLayout) inst.container._resetInnerLayout()
             if (inst.container._drawTimewarpOverlay) inst.container._drawTimewarpOverlay()
+            if (inst.container._updatePlaybackUI) inst.container._updatePlaybackUI()
             const search = inst.container.querySelector('.pb-search')
             if (search) search.value = pb.title || ''
           }
@@ -9176,3 +9402,4 @@ setInterval(() => {
 </script>
 </body>
 </html>
+
