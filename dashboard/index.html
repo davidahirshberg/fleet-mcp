@@ -168,6 +168,22 @@
   }
   .chat-interrupt-btn:hover { border-color: var(--orange) !important; color: var(--orange) !important; }
   .chat-interrupt-btn.active { background: rgba(200,150,106,0.15) !important; border-color: var(--orange) !important; color: var(--orange) !important; }
+  .chat-input-bar.interrupt-mode textarea { border-color: var(--orange); }
+  .chat-target-ghost {
+    position: absolute;
+    right: 8px;
+    top: 50%;
+    transform: translateY(-50%);
+    font-size: 11px;
+    opacity: 0.3;
+    pointer-events: none;
+    z-index: 2;
+    white-space: nowrap;
+    transition: opacity 0.15s;
+    font-family: inherit;
+  }
+  .chat-input-wrap:hover .chat-target-ghost { opacity: 0.5; }
+  .chat-target-ghost.hidden { opacity: 0; }
   .chat-widget {
     display: flex;
     flex-direction: column;
@@ -483,8 +499,18 @@
     margin-left: 4px;
     font-weight: 400;
   }
+  .activity-more { color: var(--text-dim); font-size: 10px; font-weight: 300; }
   .chat-activity-card:not(.collapsed) .activity-header { display: none; }
   .chat-activity-card.collapsed .activity-badge { display: none; }
+  .chat-stale-link {
+    text-align: center;
+    padding: 4px;
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    opacity: 0.5;
+  }
+  .chat-stale-link:hover { color: var(--accent); opacity: 0.8; }
   .chat-load-more {
     text-align: center;
     padding: 4px;
@@ -564,6 +590,23 @@
     mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
     -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
   }
+
+  /* Long message collapse */
+  .message-body.message-collapsed {
+    max-height: calc(20 * 1.4em);
+    overflow: hidden;
+    mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+    -webkit-mask-image: linear-gradient(to bottom, #000 75%, transparent 100%);
+  }
+  .message-toggle {
+    display: inline-block;
+    font-size: 10px;
+    color: var(--text-dim);
+    cursor: pointer;
+    margin-top: 2px;
+    user-select: none;
+  }
+  .message-toggle:hover { color: var(--accent); }
 
   /* Terminal code blocks */
   .term-code-block { margin: 2px 0; }
@@ -3490,6 +3533,7 @@ function createChatWidget(container, params) {
       <div class="chat-input-bar">
         <div class="chat-input-wrap">
           <div class="chat-ghost"></div>
+          <span class="chat-target-ghost"></span>
           <textarea rows="1" placeholder="Message..." class="chat-input" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
         </div>
         <span class="chat-input-status"></span>
@@ -3501,6 +3545,7 @@ function createChatWidget(container, params) {
   const filterBar = container.querySelector('.chat-filter-bar')
   const indicator = container.querySelector('.filter-indicator')
   const picker = container.querySelector('.label-picker')
+  const targetGhost = container.querySelector('.chat-target-ghost')
 
   // Per-widget state
   container._chatTarget = null
@@ -3633,11 +3678,7 @@ function createChatWidget(container, params) {
     scrollToggle.textContent = atBottom ? '⏸' : '▶'
     scrollToggle.classList.toggle('paused', !atBottom)
 
-    // Lazy load: when scrolled near top, load more messages
-    if (log.scrollTop < 50 && container._chatVisibleCount) {
-      const loadMore = log.querySelector('.chat-load-more')
-      if (loadMore) loadMore.click()
-    }
+    // Infinite scroll handled by IntersectionObserver below
   })
 
   // Attachment helpers
@@ -3762,6 +3803,24 @@ function createChatWidget(container, params) {
     // Handle /terminal commands
     if (msg === '/terminal' || msg === '/terminal on') { openTerminalCard(); return }
     if (msg === '/terminal off' || msg === '/terminal close') { closeTerminalCard(); return }
+    // Inline /interrupt: send interrupt with message in one action
+    if (msg.startsWith('/interrupt')) {
+      const interruptMsg = msg.slice('/interrupt'.length).trim()
+      const target = container._chatTarget
+      if (!target) {
+        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Select an agent first</div>`
+        return
+      }
+      try {
+        const body = { agent: target }
+        if (interruptMsg) body.message = interruptMsg
+        const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+        const data = await res.json()
+        if (data.error) log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(data.error)}</div>`
+      } catch (err) { log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>` }
+      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      return
+    }
     if (msg.startsWith('/')) {
       const result = executeCommand(msg)
       if (result) {
@@ -3813,6 +3872,7 @@ function createChatWidget(container, params) {
       // Send as interrupt
       container._interruptMode = false
       interruptBtn.classList.remove('active')
+      container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
       try {
         const body = { agent: target }
         if (msg) body.message = msg
@@ -3851,7 +3911,15 @@ function createChatWidget(container, params) {
   }
   input.addEventListener('keydown', e => {
     if (!container._terminalMode) {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send() }
+      const enterMode = localStorage.getItem('fleet-enter-mode') || 'enter'
+      if (e.key === 'Enter') {
+        if (enterMode === 'enter' && !e.shiftKey) {
+          e.preventDefault(); send()
+        } else if (enterMode === 'cmd-enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault(); send()
+        }
+        // cmd-enter mode: plain Enter inserts newline (default textarea behavior)
+      }
       return
     }
     // Terminal mode: buffered input
@@ -3965,7 +4033,11 @@ function createChatWidget(container, params) {
   input.setAttribute('autocapitalize', 'off')
   input.setAttribute('spellcheck', 'false')
   function autoResize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px' }
-  input.addEventListener('input', autoResize)
+  input.addEventListener('input', () => {
+    autoResize()
+    // Hide target ghost when text is long enough to overlap
+    if (targetGhost) targetGhost.classList.toggle('hidden', input.value.length > 30)
+  })
 
   // Interrupt mode toggle
   const interruptBtn = container.querySelector('.chat-interrupt-btn')
@@ -3973,6 +4045,7 @@ function createChatWidget(container, params) {
   interruptBtn.addEventListener('click', () => {
     container._interruptMode = !container._interruptMode
     interruptBtn.classList.toggle('active', container._interruptMode)
+    container.querySelector('.chat-input-bar').classList.toggle('interrupt-mode', container._interruptMode)
     input.placeholder = container._interruptMode ? 'Interrupt message...' : 'Message...'
     input.focus()
   })
@@ -4407,12 +4480,13 @@ function renderActivityGroup(group, state) {
   const texts = group.filter(t => t._isText)
   const lastText = texts.length ? texts[texts.length - 1] : null
 
-  // Collapsed header: last text or tool summary
+  // Collapsed header: last text or tool summary with count
   let headerSummary = ''
   if (lastText) {
     headerSummary = esc(lastText._text.split('\n')[0].slice(0, 60))
   } else if (lastTool) {
-    headerSummary = `${esc(lastTool._toolName)}: ${esc((lastTool._toolArg || '').slice(0, 30))}`
+    const extra = tools.length > 1 ? ` <span class="activity-more">(+${tools.length - 1} more)</span>` : ''
+    headerSummary = `${esc(lastTool._toolName)}: ${esc((lastTool._toolArg || '').slice(0, 30))}${extra}`
   }
 
   // Badge overlay: agent name + ctx% + count — floats right on first line of detail
@@ -4557,11 +4631,18 @@ function renderChatLine(m, state) {
   const nickHtml = isAmbient
     ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
+  // Long message collapse: fold messages >20 lines
+  const rawLineCount = (m.text || '').split('\n').length
+  const shouldCollapse = rawLineCount > 20
+  let bodyText = displayText
+  if (shouldCollapse) {
+    bodyText = `<span class="message-body message-collapsed">${displayText}</span><span class="message-toggle" onclick="(function(e){var b=e.previousElementSibling;if(b.classList.contains('message-collapsed')){b.classList.remove('message-collapsed');e.textContent='collapse'}else{b.classList.add('message-collapsed');e.textContent='show all (${rawLineCount} lines)'}})(this)">show all (${rawLineCount} lines)</span>`
+  }
   let line
   if (isAmbient) {
-    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${displayText}${attachHtml}</div>`
+    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${attachHtml}</div>`
   } else {
-    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${displayText}${receipt}${attachHtml}${retractBtn}</div>`
+    line = `<div class="${lineClass}" style="${dimStyle}" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts" draggable="true">${ts}</span> ${nickHtml} ${bodyText}${receipt}${attachHtml}${retractBtn}</div>`
   }
   if (m._interrupt) {
     const age = Date.now() - new Date(m.timestamp).getTime()
@@ -4665,8 +4746,11 @@ function updateChatWidget(container, params, state) {
   }
   const activeAgents = (state.agents || []).filter(a => {
     const ago = a.last_seen ? (Date.now() - new Date(a.last_seen).getTime()) / 1000 : Infinity
+    // When targeting a specific agent, always show their activity (don't gate on last_seen)
+    if (chatTargets.has(a.id)) return true
+    // For untargeted view (all agents), only show recently active ones
     if (ago > 600) return false
-    return chatTargets.size === 0 || chatTargets.has(a.id)
+    return chatTargets.size === 0
   })
 
   // Merge activity events — fetch session data for agents without a terminal widget
@@ -4764,7 +4848,9 @@ function updateChatWidget(container, params, state) {
   log._chatHash = fullHash
 
   // Full rebuild — group consecutive activity events by agent, render chat lines individually
-  let renderedLines = hasMore ? `<div class="chat-load-more" data-total="${total}">↑ ${startIdx} older messages — click to load</div>` : ''
+  // Stale messages link: show at top when all messages are loaded
+  const staleLink = !hasMore && total > 0 ? `<div class="chat-stale-link">Older messages in search →</div>` : ''
+  let renderedLines = staleLink + (hasMore ? `<div class="chat-load-more" data-total="${total}">↑ ${startIdx} older messages — click to load</div>` : '')
   let i = 0
   while (i < visible.length) {
     const m = visible[i]
@@ -4822,6 +4908,8 @@ function updateChatWidget(container, params, state) {
   const loadMoreEl = log.querySelector('.chat-load-more')
   if (loadMoreEl) {
     loadMoreEl.onclick = () => {
+      if (container._loadingMore) return
+      container._loadingMore = true
       container._chatVisibleCount = (container._chatVisibleCount || CHAT_PAGE_SIZE) + CHAT_PAGE_SIZE
       container._autoScroll = false
       const sh = log.scrollHeight
@@ -4829,6 +4917,34 @@ function updateChatWidget(container, params, state) {
       // Restore scroll position after prepend
       requestAnimationFrame(() => {
         log.scrollTop = log.scrollHeight - sh + prevScrollTop
+        container._loadingMore = false
+      })
+    }
+    // Infinite scroll: IntersectionObserver triggers load when sentinel is near viewport
+    if (container._loadMoreObserver) container._loadMoreObserver.disconnect()
+    container._loadMoreObserver = new IntersectionObserver(entries => {
+      if (entries[0]?.isIntersecting && !container._loadingMore) loadMoreEl.click()
+    }, { root: log, rootMargin: '200px 0px 0px 0px' })
+    container._loadMoreObserver.observe(loadMoreEl)
+  } else {
+    if (container._loadMoreObserver) { container._loadMoreObserver.disconnect(); container._loadMoreObserver = null }
+  }
+
+  // Stale messages link: open search tab with current filter prefilled
+  const staleLinkEl = log.querySelector('.chat-stale-link')
+  if (staleLinkEl) {
+    staleLinkEl.onclick = () => {
+      const target = container._chatTarget
+      const prefill = target ? agentLabel(state, target) : ''
+      executeCommand('/tab search')
+      // Prefill the new search panel after it renders
+      requestAnimationFrame(() => {
+        const searchInputs = document.querySelectorAll('.search-input')
+        const newest = searchInputs[searchInputs.length - 1]
+        if (newest && prefill) {
+          newest.value = prefill
+          newest.dispatchEvent(new Event('input'))
+        }
       })
     }
   }
@@ -5052,17 +5168,11 @@ function updateChatWidget(container, params, state) {
     } else {
       const dnf = container._labelFilter && container._labelFilter.length > 0 ? container._labelFilter : null
       const target = container._chatTarget
-      if (dnf && !target) {
-        // Broadcast mode: show who receives (the filter logic)
-        const matching = (state.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a))
-        const expr = dnf.map(g => g.join(' & ')).join(' | ')
-        input.placeholder = matching.length > 0
-          ? `→ ${expr} (${matching.length})...`
-          : 'No agents match filter...'
-      } else if (target) {
-        input.placeholder = `→ ${agentLabel(state, target)}...`
+      // Ghost pill shows the target — only use placeholder when there's no target at all
+      if (target || dnf) {
+        input.placeholder = ''
       } else {
-        input.placeholder = 'Message (no target)...'
+        input.placeholder = 'Message...'
       }
     }
     // Show compacting status for target agent
@@ -5076,6 +5186,28 @@ function updateChatWidget(container, params, state) {
       } else {
         statusEl.textContent = ''
         statusEl.style.color = ''
+      }
+    }
+    // Update ghost target pill (right-aligned inside textarea)
+    const ghost = container.querySelector('.chat-target-ghost')
+    if (ghost) {
+      const target = container._chatTarget
+      const dnf = container._labelFilter && container._labelFilter.length > 0 ? container._labelFilter : null
+      const inputVal = input.value || ''
+      if (target) {
+        const label = agentLabel(state, target)
+        const agent = (state.agents || []).find(a => a.id === target)
+        const cls = getNickClass(target, state)
+        ghost.innerHTML = `<span class="${cls}">→ ${esc(label)}</span>`
+        // Hide when typed text is long enough to overlap
+        ghost.classList.toggle('hidden', inputVal.length > 30)
+      } else if (dnf) {
+        const matching = (state.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a))
+        const expr = dnf.map(g => g.join(' & ')).join(' | ')
+        ghost.innerHTML = `<span style="color:var(--blue)">→ ${esc(expr)} (${matching.length})</span>`
+        ghost.classList.toggle('hidden', inputVal.length > 30)
+      } else {
+        ghost.textContent = ''
       }
     }
   }
@@ -7946,8 +8078,17 @@ function executeCommand(cmd) {
     return null
   }
 
+  if (name === '/entermode') {
+    const modes = ['enter', 'cmd-enter']
+    const mode = parts[1]
+    if (!mode) return `Enter mode: ${localStorage.getItem('fleet-enter-mode') || 'enter'}. Usage: /entermode [${modes.join('|')}]`
+    if (!modes.includes(mode)) return `Unknown mode: ${mode}. Available: ${modes.join(', ')}`
+    localStorage.setItem('fleet-enter-mode', mode)
+    return `Enter mode set to: ${mode}`
+  }
+
   if (name === '/help') {
-    return 'Commands: /sp [widget], /vsp [widget], /tab [widget], /close, /only, /reset, /save <name>, /load <name>, /layouts, /delete <name>, /play <query>, /recordings, /share <path>\nWidgets: ' + WIDGET_NAMES.join(', ')
+    return 'Commands: /sp [widget], /vsp [widget], /tab [widget], /close, /only, /reset, /save <name>, /load <name>, /layouts, /delete <name>, /play <query>, /recordings, /share <path>, /entermode [enter|cmd-enter]\nWidgets: ' + WIDGET_NAMES.join(', ')
   }
 
   return null // not a command, send as chat
