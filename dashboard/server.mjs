@@ -27,6 +27,9 @@ const LOG_FILE = path.join(os.homedir(), '.claude', 'agent-messages.jsonl');
 const HTML_FILE = path.join(__dirname, 'index.html');
 const PROJECTS_DIR = path.join(os.homedir(), '.claude', 'projects');
 const REFS_FILE = path.join(os.homedir(), '.claude', 'references.json');
+const FLEET_DIR = path.join(os.homedir(), '.fleet');
+const CONFIG_FILE = path.join(FLEET_DIR, 'config.json');
+const KEYMAP_FILE = path.join(FLEET_DIR, 'keymap.json');
 
 // --- tlda integration ---
 const TLDA_PORT = 5176;
@@ -1361,6 +1364,44 @@ const server = http.createServer(async (req, res) => {
         }
         res.writeHead(201, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify(result));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // Config: read
+  if (url.pathname === '/api/config' && req.method === 'GET') {
+    let config = {};
+    try { config = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
+    // Inline keymap if it exists
+    try {
+      const keymapPath = (config.keymap || KEYMAP_FILE).replace(/^~/, os.homedir());
+      config._keymap = JSON.parse(fs.readFileSync(keymapPath, 'utf8'));
+    } catch {}
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(config));
+    return;
+  }
+
+  // Config: save
+  if (url.pathname === '/api/config' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const update = JSON.parse(body);
+        // Don't persist internal fields
+        delete update._keymap;
+        let existing = {};
+        try { existing = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf8')); } catch {}
+        const merged = { ...existing, ...update };
+        try { fs.mkdirSync(FLEET_DIR, { recursive: true }); } catch {}
+        fs.writeFileSync(CONFIG_FILE, JSON.stringify(merged, null, 2));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify(merged));
       } catch (e) {
         res.writeHead(400, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
