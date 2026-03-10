@@ -134,19 +134,6 @@
     cursor: pointer;
     font-size: 12px;
   }
-  .chat-interrupt-btn {
-    background: transparent !important;
-    color: var(--text-dim) !important;
-    border: none !important;
-    padding: 4px 6px !important;
-    font-size: 13px !important;
-    line-height: 1;
-    opacity: 0.3;
-    transition: opacity 0.15s;
-    cursor: pointer;
-  }
-  .chat-interrupt-btn:hover { opacity: 0.7; color: var(--orange) !important; }
-  .chat-interrupt-btn.active { opacity: 1; color: var(--orange) !important; }
   .chat-retract {
     display: none; cursor: pointer; margin-left: 4px; font-size: 10px;
     color: var(--text-dim); opacity: 0.4; vertical-align: middle;
@@ -164,17 +151,8 @@
     opacity: 0.5;
     transition: none;
   }
-  .chat-interrupt-btn {
-    background: transparent !important;
-    color: var(--text-dim) !important;
-    border: 1px solid var(--border) !important;
-    padding: 6px 8px !important;
-    font-size: 14px !important;
-    line-height: 1;
-  }
-  .chat-interrupt-btn:hover { border-color: var(--orange) !important; color: var(--orange) !important; }
-  .chat-interrupt-btn.active { background: rgba(200,150,106,0.15) !important; border-color: var(--orange) !important; color: var(--orange) !important; }
-  .chat-input-bar.interrupt-mode textarea { border-color: var(--orange); }
+  .chat-input-bar.queue-mode textarea { border-color: rgba(106,175,176,0.3); }
+  .chat-input-bar.interrupt-mode textarea { border-color: rgba(200,150,106,0.3); }
   .chat-target-ghost {
     position: absolute;
     right: 8px;
@@ -2294,8 +2272,7 @@
   /* Demo mode: disable live-only UI interactions but keep visible */
   body.demo-mode .chat-input-bar input,
   body.demo-mode .chat-input-bar textarea,
-  body.demo-mode .chat-send,
-  body.demo-mode .chat-interrupt-btn { pointer-events: none; }
+  body.demo-mode .chat-send { pointer-events: none; }
 
   /* ninja-keys command palette theming */
   ninja-keys {
@@ -3777,7 +3754,6 @@ function createChatWidget(container, params) {
           <textarea rows="1" placeholder="Message..." class="chat-input" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
         </div>
         <span class="chat-input-status"></span>
-        <button class="chat-interrupt-btn" title="Toggle interrupt mode">&#x26A1;</button>
       </div>
     </div>`
   const log = container.querySelector('.chat-log')
@@ -3989,6 +3965,40 @@ function createChatWidget(container, params) {
 
   function clearGhost() { setGhost('', '') }
 
+  async function flushQueue(ctr, chatLog, chatInput, chatParams) {
+    const buf = ctr._queueBuffer || []
+    ctr._queueMode = false
+    ctr._modeTargets = null
+    ctr._queueBuffer = []
+    ctr.querySelector('.chat-input-bar').classList.remove('queue-mode')
+    chatInput.placeholder = 'Message...'
+    // Unfade queued messages in the chat log
+    for (const el of chatLog.querySelectorAll('.chat-queued')) {
+      el.style.opacity = '1'
+      el.classList.remove('chat-queued')
+    }
+    if (buf.length === 0) return
+    // Send all queued messages
+    const targets = ctr._modeTargets ? [...ctr._modeTargets] : []
+    if (targets.length === 0 && ctr._chatTarget) targets.push(ctr._chatTarget)
+    if (targets.length === 0 && ctr._labelFilter?.length && currentState) {
+      (currentState.agents || []).filter(a => agentMatchesDnf(ctr._labelFilter, a)).forEach(a => targets.push(a.id))
+    }
+    if (targets.length === 0) return
+    for (const item of buf) {
+      for (const t of targets) {
+        const payload = { message: item.msg, to: t }
+        if (item.isRaw) payload._raw = true
+        if (item.attachments?.length) payload.attachments = item.attachments
+        try {
+          await fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+        } catch (e) { console.error('Queue flush failed:', e) }
+      }
+    }
+    if (currentState) try { updateChatWidget(ctr, ctr._widgetParams, currentState) } catch {}
+    if (ctr._autoScroll !== false) chatLog.scrollTop = chatLog.scrollHeight
+  }
+
   function openTerminalCard() {
     const target = container._chatTarget
     if (!target) {
@@ -4040,7 +4050,7 @@ function createChatWidget(container, params) {
     if (container._terminalCard) { container._terminalCard.remove(); container._terminalCard = null }
     container._terminalMode = false
     inputStatus.textContent = ''
-    input.placeholder = container._interruptMode ? 'Interrupt message...' : 'Message...'
+    input.placeholder = 'Message...'
   }
 
   async function send() {
@@ -4055,21 +4065,60 @@ function createChatWidget(container, params) {
     // Handle /terminal commands
     if (msg === '/terminal' || msg === '/terminal on') { openTerminalCard(); return }
     if (msg === '/terminal off' || msg === '/terminal close') { closeTerminalCard(); return }
-    // Inline /interrupt: send interrupt with message in one action
-    // /interrupt message — interrupt current chat target
-    // /interrupt <agent> message — interrupt named agent
+    // /queue — toggle queue mode. Messages held until each target goes idle.
+    if (msg === '/queue' || msg.startsWith('/queue ')) {
+      if (container._queueMode) {
+        // Toggle off
+        container._queueMode = false
+        container._modeTargets = null
+        container.querySelector('.chat-input-bar').classList.remove('queue-mode')
+        input.placeholder = 'Message...'
+        flushQueue(container, log, input, params)
+        if (currentState) try { updateChatWidget(container, container._widgetParams, currentState) } catch {}
+        return
+      }
+      const rest = msg.slice(6).trim()
+      let targets = []
+      if (rest && currentState) {
+        for (const name of rest.split(/\s+/)) {
+          const match = (currentState.agents || []).find(a =>
+            a.friendly_name === name || a.name === name || a.id === name ||
+            (a.friendly_name?.toLowerCase() === name.toLowerCase()) ||
+            (a.name?.toLowerCase() === name.toLowerCase())
+          )
+          if (match) targets.push(match.id)
+        }
+      }
+      if (targets.length === 0 && container._chatTarget) targets.push(container._chatTarget)
+      if (targets.length === 0 && container._labelFilter?.length && currentState) {
+        targets = (currentState.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a)).map(a => a.id)
+      }
+      if (targets.length === 0) {
+        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">No targets for queue mode</div>`
+        if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+        return
+      }
+      container._queueMode = true
+      container._modeTargets = new Set(targets)
+      container._queueBuffer = []
+      container._queueAgentWasWorking = {}
+      for (const t of targets) container._queueAgentWasWorking[t] = true
+      container.querySelector('.chat-input-bar').classList.add('queue-mode')
+      input.placeholder = 'Queued message...'
+      if (currentState) try { updateChatWidget(container, container._widgetParams, currentState) } catch {}
+      return
+    }
+    // /interrupt [agent] [message] — send interrupt immediately (no toggle)
     if (msg.startsWith('/interrupt')) {
       const rest = msg.slice('/interrupt'.length).trim()
       let target = container._chatTarget
       let interruptMsg = rest
-      // Try to parse first word as agent name
       if (rest && currentState) {
         const firstWord = rest.split(/\s+/)[0]
-        const agents = currentState.agents || []
-        const match = agents.find(a =>
+        const match = (currentState.agents || []).find(a =>
           a.friendly_name === firstWord || a.name === firstWord ||
-          (a.friendly_name && a.friendly_name.toLowerCase() === firstWord.toLowerCase()) ||
-          (a.name && a.name.toLowerCase() === firstWord.toLowerCase())
+          (a.friendly_name?.toLowerCase() === firstWord.toLowerCase()) ||
+          (a.name?.toLowerCase() === firstWord.toLowerCase())
         )
         if (match) {
           target = match.id
@@ -4137,20 +4186,18 @@ function createChatWidget(container, params) {
       return
     }
     container._autoScroll = true
-    const isInterrupt = container._interruptMode
-    if (isInterrupt) {
-      // Send as interrupt
-      container._interruptMode = false
-      interruptBtn.classList.remove('active')
-      container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
-      try {
-        const body = { agent: target }
-        if (msg) body.message = msg
-        const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        const data = await res.json()
-        if (data.error) log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(data.error)}</div>`
-      } catch (err) { log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>` }
-    } else {
+    // Queue mode: buffer messages locally instead of sending
+    if (container._queueMode) {
+      if (!container._queueBuffer) container._queueBuffer = []
+      container._queueBuffer.push({ msg, isRaw, attachments: container._chatAttachments.slice() })
+      // Show queued message faded — unfades on flush
+      log.innerHTML += `<div class="chat-line from-user chat-queued" style="opacity:0.3">${renderMarkdown(esc(msg))}</div>`
+      container._chatAttachments = []
+      renderChatAttachments()
+      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      return
+    }
+    {
       // Send as chat — optimistic display + retry on failure
       const payload = { message: msg, to: target }
       if (isRaw) payload._raw = true
@@ -4345,16 +4392,9 @@ function createChatWidget(container, params) {
     if (targetGhost) targetGhost.classList.toggle('hidden', input.value.length > 30)
   })
 
-  // Interrupt mode toggle
-  const interruptBtn = container.querySelector('.chat-interrupt-btn')
-  container._interruptMode = false
-  interruptBtn.addEventListener('click', () => {
-    container._interruptMode = !container._interruptMode
-    interruptBtn.classList.toggle('active', container._interruptMode)
-    container.querySelector('.chat-input-bar').classList.toggle('interrupt-mode', container._interruptMode)
-    input.placeholder = container._interruptMode ? 'Interrupt message...' : 'Message...'
-    input.focus()
-  })
+  container._queueMode = false
+  container._queueBuffer = []
+
 
   // Image paste support
   input.addEventListener('paste', async e => {
@@ -5640,21 +5680,23 @@ function updateChatWidget(container, params, state) {
       const target = container._chatTarget
       const dnf = container._labelFilter && container._labelFilter.length > 0 ? container._labelFilter : null
       const inputVal = input.value || ''
+      // Mode prefix for pill
+      let modePrefix = ''
+      if (container._queueMode) modePrefix = '<span style="color:var(--cyan)">queued</span> '
       if (target) {
         const label = agentLabel(state, target)
         const agent = (state.agents || []).find(a => a.id === target)
         const cls = getNickClass(target, state)
-        ghost.innerHTML = `<span class="${cls}">→ ${esc(label)}</span>`
-        // Hide when typed text is long enough to overlap
+        ghost.innerHTML = `${modePrefix}<span class="${cls}">→ ${esc(label)}</span>`
         ghost.classList.toggle('hidden', inputVal.length > 30)
       } else if (dnf) {
         const matching = (state.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a))
         const expr = dnf.map(g => g.join(' & ')).join(' | ')
         const countSuffix = matching.length > 1 ? ` (${matching.length})` : ''
-        ghost.innerHTML = `<span style="color:var(--blue)">→ ${esc(expr)}${countSuffix}</span>`
+        ghost.innerHTML = `${modePrefix}<span style="color:var(--blue)">→ ${esc(expr)}${countSuffix}</span>`
         ghost.classList.toggle('hidden', inputVal.length > 30)
       } else {
-        ghost.textContent = ''
+        ghost.innerHTML = modePrefix || ''
       }
     }
   }
@@ -7964,7 +8006,7 @@ function createPlaybackWidget(container, params) {
   })
 
   // Speed button always cycles the same speeds, warp or not
-  const allSpeeds = [0.5, 1, 2, 4, 8]
+  const allSpeeds = [0.25, 0.5, 1, 2, 4, 8]
   speedBtn.addEventListener('click', () => {
     stopTick()
     const idx = allSpeeds.indexOf(pbState.speed)
@@ -8872,6 +8914,49 @@ function connectSSE() {
     try {
       const state = JSON.parse(e.data)
       broadcastUpdate(state)
+      // Auto-flush queued messages per-target when agent transitions working → idle
+      for (const [, inst] of panelInstances) {
+        if (inst.widget !== WIDGETS?.chat || !inst.container._queueMode) continue
+        const ctr = inst.container
+        const targets = ctr._modeTargets
+        if (!targets || targets.size === 0) continue
+        const wasWorking = ctr._queueAgentWasWorking || {}
+        for (const t of [...targets]) {
+          const agentTask = (state.tasks || []).find(tk => tk.agent === t && tk.status !== 'done' && !tk.synthetic)
+          const isWorking = agentTask && agentTask.status === 'working'
+          if (wasWorking[t] && !isWorking) {
+            // This target went idle — flush queued messages to it
+            const buf = ctr._queueBuffer || []
+            for (const item of buf) {
+              const payload = { message: item.msg, to: t }
+              if (item.isRaw) payload._raw = true
+              if (item.attachments?.length) payload.attachments = item.attachments
+              fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => {})
+            }
+            targets.delete(t)
+            // Unfade queued messages
+            const chatLog = ctr.querySelector('.chat-log')
+            if (chatLog) {
+              for (const el of chatLog.querySelectorAll('.chat-queued')) {
+                el.style.opacity = '1'
+                el.classList.remove('chat-queued')
+              }
+            }
+          }
+          wasWorking[t] = isWorking
+        }
+        ctr._queueAgentWasWorking = wasWorking
+        // If all targets flushed, turn off queue mode
+        if (targets.size === 0) {
+          ctr._queueMode = false
+          ctr._modeTargets = null
+          ctr._queueBuffer = []
+          ctr.querySelector('.chat-input-bar')?.classList.remove('queue-mode')
+          const chatInput = ctr.querySelector('.chat-input')
+          if (chatInput) chatInput.placeholder = 'Message...'
+          if (currentState) try { updateChatWidget(ctr, ctr._widgetParams, currentState) } catch {}
+        }
+      }
     } catch {}
   }
   // Tick countdown for sleeping agents (1s interval, only active when someone is sleeping)

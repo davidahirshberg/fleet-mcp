@@ -45,18 +45,11 @@ do_kick() {
     }
     sleep 0.1
 
-    if "$BIN/agent-idle" "$pattern" 2>/dev/null; then
-        # Idle: send 📬 + Enter so agent processes immediately
-        kitty @ --to "unix:$sock" send-text --match "$match" '📬' 2>/dev/null
-        kitty @ --to "unix:$sock" send-key --match "$match" enter 2>/dev/null
-        log "OK kicked (idle) via $sock"
-        echo "kicked $match"
-    else
-        # Busy: just send 📬, don't press Enter (agent will see it when ready)
-        kitty @ --to "unix:$sock" send-text --match "$match" '📬' 2>/dev/null
-        log "OK nudged (busy) via $sock"
-        echo "nudged $match"
-    fi
+    # Always send 📬 + Enter — ESC just freed the agent, it needs to process
+    kitty @ --to "unix:$sock" send-text --match "$match" '📬' 2>/dev/null
+    kitty @ --to "unix:$sock" send-key --match "$match" enter 2>/dev/null
+    log "OK kicked via $sock"
+    echo "kicked $match"
     return 0
 }
 

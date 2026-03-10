@@ -133,6 +133,7 @@ export class SearchIndex {
       CREATE INDEX IF NOT EXISTS idx_session_events_agent ON session_events(agent_id, timestamp DESC);
       CREATE INDEX IF NOT EXISTS idx_session_events_session ON session_events(session_id);
       CREATE INDEX IF NOT EXISTS idx_session_events_file ON session_events(file_path, line_num);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_session_events_unique ON session_events(file_path, line_num);
 
       -- UI events for playback/UX analysis
       CREATE TABLE IF NOT EXISTS ui_events (
@@ -162,7 +163,7 @@ export class SearchIndex {
 
     // Session events statements
     this._insertSessionEvent = this.db.prepare(`
-      INSERT INTO session_events (agent_id, session_id, type, timestamp, blocks, usage_input, usage_output, line_num, file_path)
+      INSERT OR IGNORE INTO session_events (agent_id, session_id, type, timestamp, blocks, usage_input, usage_output, line_num, file_path)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     this._insertSessionEventMany = this.db.transaction((rows) => {
