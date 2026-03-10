@@ -157,10 +157,15 @@ function saveState(state) {
     }
   }
 
+  // Sync synthetic message tasks before pruning
+  syncSyntheticTasks(state);
+
   // Prune: drop done tasks older than 24h, read messages older than 1h
+  // Synthetic done tasks are pruned immediately (they auto-resolve, no history needed)
   const now_ = Date.now();
   state.tasks = state.tasks.filter(t => {
     if (t.status !== 'done') return true;
+    if (t.synthetic) return false; // prune done synthetic tasks immediately
     return (now_ - new Date(t.completed_at || t.delegated_at).getTime()) < 86400000;
   });
   state.messages = state.messages.filter(m => {
@@ -172,8 +177,73 @@ function saveState(state) {
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
 }
 
+// ---- Synthetic message tasks ----
+// When an agent has unread messages, a synthetic task makes the obligation visible.
+function syncSyntheticTasks(state) {
+  if (!state.messages || !state.agents) return;
+
+  // Group unread messages by recipient
+  const unreadByAgent = {};
+  for (const m of state.messages) {
+    if (m.read) continue;
+    if (!unreadByAgent[m.to]) unreadByAgent[m.to] = [];
+    unreadByAgent[m.to].push(m);
+  }
+
+  // For each agent: create, update, or resolve synthetic tasks
+  const allAgentIds = new Set(state.agents.map(a => a.id));
+  // Also check recipients that might be 'web' etc — skip those
+  for (const agentId of allAgentIds) {
+    const existing = state.tasks.find(t => t.agent === agentId && t.synthetic && t.status !== 'done');
+    const unread = unreadByAgent[agentId] || [];
+
+    if (unread.length === 0) {
+      // No unread messages — resolve any existing synthetic task
+      if (existing && existing.status !== 'done') {
+        existing.status = 'done';
+        existing.completed_at = now();
+      }
+      continue;
+    }
+
+    // Count by source type
+    const humanAliases = new Set(['web', 'skip', 'human']);
+    const fromSkip = unread.filter(m => humanAliases.has(m.from)).length;
+    const fromAgents = unread.length - fromSkip;
+
+    let desc = `Respond to ${unread.length} message${unread.length > 1 ? 's' : ''}`;
+    const parts = [];
+    if (fromSkip > 0) parts.push(`${fromSkip} from skip`);
+    if (fromAgents > 0) parts.push(`${fromAgents} from agents`);
+    if (parts.length > 0) desc += ` (${parts.join(', ')})`;
+
+    if (existing && existing.status !== 'done') {
+      // Update existing synthetic task
+      existing.description = desc;
+      existing.priority = fromSkip > 0 ? 'urgent' : 'normal';
+    } else {
+      // Create new synthetic task
+      const taskId = `${agentId.slice(0, 8)}-msg-${Date.now().toString(36)}`;
+      state.tasks.push({
+        id: taskId,
+        agent: agentId,
+        description: desc,
+        message: fromSkip > 0
+          ? 'You have unread messages from Skip/human. Respond promptly.'
+          : 'You have unread messages from other agents. Respond at a natural break point.',
+        delegated_at: now(),
+        status: 'pending',
+        synthetic: true,
+        priority: fromSkip > 0 ? 'urgent' : 'normal',
+      });
+    }
+  }
+}
+
 function getTask(state, agent) {
-  return state.tasks.find(t => t.agent === agent && t.status !== 'done');
+  // Prefer real tasks over synthetic ones
+  return state.tasks.find(t => t.agent === agent && t.status !== 'done' && !t.synthetic)
+    || state.tasks.find(t => t.agent === agent && t.status !== 'done');
 }
 
 function getTaskById(state, id) {
@@ -852,8 +922,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return dep && dep.status !== 'done';
     });
 
-    // Replace any existing non-done task for this agent
-    state.tasks = state.tasks.filter(t => !(t.agent === agent && t.status !== 'done'));
+    // Replace any existing non-done real task for this agent (preserve synthetic tasks)
+    state.tasks = state.tasks.filter(t => !(t.agent === agent && t.status !== 'done' && !t.synthetic));
     // Task ID: use first 8 chars of UUID or agent name for readability
     const shortId = typeof agent === 'string' ? agent.slice(0, 8) : `w${agent}`;
     const taskId = `${shortId}-${Date.now().toString(36)}`;
@@ -956,8 +1026,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         }
       }
 
-      // Check for a pending task assigned to me
-      const task = state.tasks.find(t => t.agent === ME && t.status === 'pending' && !t.acknowledged);
+      // Check for a pending real task assigned to me (synthetic tasks are handled via messages above)
+      const task = state.tasks.find(t => t.agent === ME && t.status === 'pending' && !t.acknowledged && !t.synthetic);
       if (task) {
         task.acknowledged = true;
         task.status = 'working';
@@ -1011,10 +1081,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const lines = active.map(t => {
       const age = Math.round((Date.now() - new Date(t.delegated_at)) / 60000);
       let status = t.status;
+      if (t.synthetic) status = `📬 ${t.priority || 'normal'}`;
       if (t.status === 'blocked' && t.blockedBy) {
         status = `blocked by ${t.blockedBy.join(', ')}`;
       }
-      if ((t.status === 'pending' || t.status === 'working') && age > 1440) {
+      if (!t.synthetic && (t.status === 'pending' || t.status === 'working') && age > 1440) {
         status += ` [stale — ${Math.round(age / 60)}h]`;
       }
       let owner = '';
