@@ -1,0 +1,47 @@
+[
+  {
+    "id": "d84d979a-5384-43cb-9e2f-9f5088643789",
+    "title": "The Identity Crisis — Director's Cut",
+    "created": "2026-03-10T14:20:37.922Z",
+    "duration_ms": 40467830,
+    "event_count": 2116,
+    "event_types": {
+      "chat": 1275,
+      "focus": 24,
+      "layout": 10,
+      "delegate": 22,
+      "task_done": 22,
+      "name_change": 3,
+      "marker": 10,
+      "user_text": 75,
+      "tool_call": 294,
+      "tool_result": 294,
+      "assistant_text": 87
+    },
+    "sources": [
+      {
+        "type": "events"
+      },
+      {
+        "type": "session",
+        "id": "c88bafbf",
+        "project": "-Users-skip-work-fleet"
+      },
+      {
+        "type": "session",
+        "id": "e667a693-a0bf-4804-8820-108d0c576ec3",
+        "project": "-Users-skip-work-fleet"
+      },
+      {
+        "type": "session",
+        "id": "98d8b8a0",
+        "project": "-Users-skip-work-fleet"
+      },
+      {
+        "type": "session",
+        "id": "17f3c018-746f-4abd-941a-025f9063fa94",
+        "project": "-Users-skip-work-fleet"
+      }
+    ]
+  }
+]
