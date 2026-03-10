@@ -2268,7 +2268,7 @@
   }
   .pb-narration-subtitle.hidden { opacity: 0; pointer-events: none; }
 
-  /* Demo mode: disable live-only UI interactions but keep visible */
+  /* Demo mode: single playback pane, no chrome */
   body.demo-mode .chat-input-bar input,
   body.demo-mode .chat-input-bar textarea,
   body.demo-mode .chat-send { pointer-events: none; }
@@ -8097,8 +8097,6 @@ function createPlaybackWidget(container, params) {
 function updatePlaybackWidget() {}
 
 // Legacy alias
-function createTimelineWidget(c, p) { createPlaybackWidget(c, p) }
-function updateTimelineWidget() {}
 
 // --- Docs widget (tlda annotations) ---
 const ANN_COLORS = { red: '#c85050', orange: '#c8956a', yellow: '#c8b060', green: '#7ab8a0', blue: '#7a9ec8', violet: '#9370db', grey: '#6b6b88', black: '#c8c8d8', white: '#f0f0f0', 'light-red': '#d88888', 'light-green': '#a0d8b8', 'light-blue': '#a0c0e0', 'light-violet': '#b8a0d8' }
@@ -8614,7 +8612,6 @@ const WIDGETS = {
   cluster: { create: createClusterWidget, update: updateClusterWidget },
   terminal: { create: createTerminalWidget, update: updateTerminalWidget },
   search: { create: createSearchWidget, update: updateSearchWidget },
-  timeline: { create: createTimelineWidget, update: updateTimelineWidget },
   playback: { create: createPlaybackWidget, update: updatePlaybackWidget },
   docs: { create: createDocsWidget, update: updateDocsWidget },
   'pb-terminal': { create: createTerminalWidget, update: updateTerminalWidget },
@@ -8672,7 +8669,7 @@ function setupDefaultLayout() {
   dv.addPanel({ id: 'terminal', component: 'terminal', title: 'Terminal',
     position: { referencePanel: chat, direction: 'within' } })
 
-  dv.addPanel({ id: 'timeline', component: 'timeline', title: 'Timeline',
+  dv.addPanel({ id: 'playback', component: 'playback', title: 'Playback',
     position: { referencePanel: chat, direction: 'within' } })
 
   const agents = dv.addPanel({ id: 'agents', component: 'agents', title: 'Agents',
@@ -8687,8 +8684,15 @@ function setupDefaultLayout() {
 
 // Try restore saved layout, fall back to default
 if (_isDemoMode) {
-  // Demo mode: single full-page playback widget
-  dv.addPanel({ id: 'playback-demo', component: 'timeline', title: 'Playback' })
+  // Demo mode: single full-page playback widget, hide outer tab bar
+  const demoPanel = dv.addPanel({ id: 'playback-demo', component: 'playback', title: 'Playback' })
+  requestAnimationFrame(() => {
+    const group = demoPanel.api.group
+    if (group) {
+      group.model.header.hidden = true
+      group.locked = true
+    }
+  })
 } else {
   const saved = localStorage.getItem('fleet-layout-v2')
   if (saved) {
@@ -8730,7 +8734,7 @@ function syncStreamSources() {
     if (!inst || !panel.group) continue
     const gid = panel.group.id
     // Playback widget anchors the stream
-    if ((inst.widget === WIDGETS.playback || inst.widget === WIDGETS.timeline) && inst.container._pbState) {
+    if (inst.widget === WIDGETS.playback && inst.container._pbState) {
       groupStreams.set(gid, playbackCtrl)
     }
     // Any panel already bound to a stream propagates to its group
@@ -8744,7 +8748,7 @@ function syncStreamSources() {
     const inst = panelInstances.get(panel.id)
     if (!inst || !panel.group) continue
     // Don't reassign playback widgets themselves
-    if (inst.widget === WIDGETS.playback || inst.widget === WIDGETS.timeline) continue
+    if (inst.widget === WIDGETS.playback) continue
     // Don't bind stream to chat panels with a live chat target — they show live data
     if (inst.widget === WIDGETS.chat && inst.container._chatTarget) {
       // Clear any stale stream source from a previous sync
