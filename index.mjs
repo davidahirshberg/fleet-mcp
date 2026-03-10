@@ -454,7 +454,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'chat',
-      description: 'Send a message to another agent (or the manager if "to" is omitted). Writes to state file; recipient is notified via fs.watch.',
+      description: 'Send a message to another agent (or the manager if "to" is omitted). Format with markdown (headers, lists, bold) — the dashboard renders it. Writes to state file; recipient is notified via fs.watch.',
       inputSchema: {
         type: 'object',
         properties: {

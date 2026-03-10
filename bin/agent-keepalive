@@ -81,7 +81,7 @@ def agent_alive(t):
             return True
         except: pass
     return False
-live = [t for t in tasks if agent_alive(t)]
+live = [t for t in tasks if agent_alive(t) and not t.get('synthetic')]
 pending = sum(1 for t in live if t['status'] == 'pending')
 idle = sum(1 for t in live if t['status'] == 'idle')
 blocked = sum(1 for t in live if t['status'] == 'blocked')

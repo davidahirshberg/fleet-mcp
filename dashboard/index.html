@@ -11,8 +11,9 @@
   :root {
     --bg: #0f0f1a;
     --surface: #161625;
-    --text: #c8c8d8;
+    --text: #8888a0;
     --text-dim: #6b6b88;
+    --text-bright: #9494aa;
     --accent: #9370db;
     --green: #7ab8a0;
     --yellow: #c8b060;
@@ -21,8 +22,12 @@
     --orange: #c8956a;
     --cyan: #6aafb0;
     --border: #1e1e32;
+    --activity-card-height: 300px;
+    --terminal-card-height: 300px;
+    --chat-page-size: 100;
   }
   * { box-sizing: border-box; margin: 0; padding: 0; }
+  strong { color: var(--text-bright); font-weight: 500; }
   html, body { height: 100%; overflow: hidden; }
   body {
     font-family: 'Helvetica Neue', 'Helvetica', 'Arial', sans-serif;
@@ -213,6 +218,24 @@
     user-select: none;
     transition: opacity 0.3s, border-color 0.3s;
   }
+  .chat-activity-card.collapsed {
+    display: inline-block;
+    margin: 1px 2px;
+    border-radius: 10px;
+    border-color: rgba(255,255,255,0.06);
+    background: rgba(255,255,255,0.03);
+    vertical-align: middle;
+  }
+  .chat-activity-inline-wrap {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 2px;
+    min-height: 18px;
+  }
+  .chat-activity-inline-wrap > .chat-activity-card:not(.collapsed) {
+    width: 100%;
+  }
   .chat-activity-card:hover { background: rgba(255,255,255,0.04); }
   .chat-activity-card.will-fold { border-color: rgba(255,255,255,0.04); }
   .chat-activity-card.pinned { border-color: var(--blue); border-style: solid; }
@@ -249,11 +272,21 @@
   .chat-activity-card .activity-detail {
     padding: 2px 8px 4px;
     line-height: 1.5;
+    max-height: var(--activity-card-height);
+    overflow-y: auto;
+    scrollbar-width: none;
+    display: flex;
+    flex-direction: column-reverse;
+  }
+  .chat-activity-card .activity-detail::-webkit-scrollbar { display: none; }
+  .chat-activity-card .activity-detail > .activity-detail-inner {
+    display: flex;
+    flex-direction: column;
   }
   .chat-activity-card .activity-detail .tool-step {
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
   .chat-activity-card .activity-detail .tool-step-hidden {
     color: var(--text-dim);
@@ -300,7 +333,7 @@
   }
   .chat-terminal-card .term-card-header .term-card-close:hover { opacity: 1; }
   .chat-terminal-card .term-card-output {
-    max-height: 300px;
+    max-height: var(--terminal-card-height);
     overflow-y: auto;
     padding: 4px 8px;
     white-space: pre-wrap;
@@ -494,10 +527,13 @@
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
+    padding: 1px 6px;
+    gap: 4px;
+    font-size: 10px;
   }
   .chat-activity-card.collapsed .activity-last-tool {
     color: var(--blue);
-    margin-left: 4px;
+    margin-left: 2px;
     font-weight: 400;
   }
   .activity-more { color: var(--text-dim); font-size: 10px; font-weight: 300; }
@@ -512,6 +548,71 @@
     opacity: 0.5;
   }
   .chat-stale-link:hover { color: var(--accent); opacity: 0.8; }
+  /* Agent terminal hover preview in agents panel */
+  .agent-terminal-preview {
+    position: fixed;
+    z-index: 200;
+    background: rgba(20, 20, 28, 0.97);
+    border: 1px solid rgba(147,112,219,0.3);
+    border-radius: 4px;
+    font-family: 'SF Mono','Menlo',monospace;
+    font-size: 11px;
+    color: var(--text);
+    max-width: 480px;
+    max-height: 280px;
+    overflow-y: auto;
+    padding: 6px 8px;
+    white-space: pre-wrap;
+    word-break: break-all;
+    line-height: 1.4;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.5);
+    pointer-events: none;
+    scrollbar-width: none;
+  }
+  .agent-terminal-preview::-webkit-scrollbar { display: none; }
+  .agent-terminal-preview .atp-header {
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 500;
+    margin-bottom: 4px;
+    padding-bottom: 3px;
+    border-bottom: 1px solid rgba(255,255,255,0.05);
+  }
+  .agent-terminal-preview .atp-msg {
+    padding: 3px 0;
+    border-bottom: 1px solid rgba(255,255,255,0.03);
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .agent-terminal-preview .atp-msg:last-child { border-bottom: none; }
+  .agent-terminal-preview .atp-tools {
+    color: var(--text-dim);
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+  .agent-terminal-preview .atp-tool-card {
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: rgba(255,255,255,0.02);
+    padding: 2px 6px;
+    font-size: 11px;
+  }
+  .agent-terminal-preview .atp-tools .tool-name {
+    color: var(--yellow);
+  }
+  .agent-terminal-preview .atp-text-line {
+    color: var(--text);
+    opacity: 0.8;
+    padding: 1px 0;
+    font-size: 11px;
+    line-height: 1.4;
+  }
+  .agent-terminal-preview.agent-chat-preview {
+    font-family: inherit;
+    white-space: normal;
+    word-break: break-word;
+  }
   .chat-load-more {
     text-align: center;
     padding: 4px;
@@ -729,7 +830,17 @@
     text-align: left; padding: 4px 8px; font-weight: 400; color: var(--text-dim);
     font-size: 10px; text-transform: uppercase; letter-spacing: 0.5px;
     border-bottom: 1px solid var(--border); cursor: pointer; user-select: none;
+    position: relative;
   }
+  .agents-table:hover th, .agents-table:hover td { border-right: 1px solid rgba(255,255,255,0.04); }
+  .agents-table:hover th:last-child, .agents-table:hover td:last-child { border-right: none; }
+  .agents-table:hover .agent-msg-col-header, .agents-table:hover .agent-msg-col { border-right: none; }
+  .agents-table th .col-resize {
+    position: absolute; right: -2px; top: 0; bottom: 0; width: 5px;
+    cursor: col-resize; background: transparent; z-index: 1;
+  }
+  .agents-table:hover th .col-resize:hover { background: rgba(147,112,219,0.4); }
+  .agents-table th .col-resize:active { background: rgba(147,112,219,0.6); }
   .agents-table th:hover { color: var(--text); }
   .agents-table th .sort-arrow { margin-left: 2px; font-size: 8px; }
   .agent-item {
@@ -747,6 +858,23 @@
   .agent-ctx-cell { text-align: right; white-space: nowrap; width: 1%; }
   .agent-last-action { font-size: 10px; color: var(--text-dim); opacity: 0.4; font-family: 'SF Mono','Menlo',monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px; display: inline-block; vertical-align: middle; }
   .agent-name { font-weight: 400; }
+  .agent-working-icon { color: var(--green); opacity: 0.6; font-size: 9px; margin-left: 3px; font-family: 'SF Mono','Menlo',monospace; letter-spacing: -1px; }
+  .agent-msg-col { width: 24px; padding: 0 2px !important; text-align: center; position: relative; }
+  .agent-msg-task-badge { font-size: 10px; color: var(--yellow); opacity: 0.6; cursor: default; }
+  .agent-msg-task-tooltip {
+    display: none; position: absolute; z-index: 150; left: 100%; top: -4px;
+    background: rgba(20,20,28,0.97); border: 1px solid rgba(147,112,219,0.2);
+    border-radius: 4px; padding: 6px 8px; min-width: 220px; max-width: 350px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4); white-space: normal;
+  }
+  .agent-msg-task-badge:hover .agent-msg-task-tooltip { display: block; }
+  .agent-task-tooltip {
+    display: none; position: absolute; z-index: 150; left: 0; top: 100%;
+    background: rgba(20,20,28,0.97); border: 1px solid rgba(147,112,219,0.2);
+    border-radius: 4px; padding: 6px 8px; min-width: 200px; max-width: 350px;
+    box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  }
+  .agent-task-cell:hover .agent-task-tooltip { display: block; }
   .agent-badge {
     font-size: 10px;
     padding: 1px 5px;
@@ -3055,7 +3183,7 @@ function renderMarkdownLine(line) {
   let h = esc(line)
   // Headers
   h = h.replace(/^(#{1,6})\s+(.+)$/, (_, hashes, text) =>
-    `<strong style="color:var(--text)">${text}</strong>`)
+    `<strong style="color:var(--text-bright)">${text}</strong>`)
   // Code spans
   h = h.replace(/``([^`]+)``/g, '<code>$1</code>')
   h = h.replace(/`([^`\n]+)`/g, '<code>$1</code>')
@@ -3851,11 +3979,28 @@ function createChatWidget(container, params) {
     if (msg === '/terminal' || msg === '/terminal on') { openTerminalCard(); return }
     if (msg === '/terminal off' || msg === '/terminal close') { closeTerminalCard(); return }
     // Inline /interrupt: send interrupt with message in one action
+    // /interrupt message — interrupt current chat target
+    // /interrupt <agent> message — interrupt named agent
     if (msg.startsWith('/interrupt')) {
-      const interruptMsg = msg.slice('/interrupt'.length).trim()
-      const target = container._chatTarget
+      const rest = msg.slice('/interrupt'.length).trim()
+      let target = container._chatTarget
+      let interruptMsg = rest
+      // Try to parse first word as agent name
+      if (rest && currentState) {
+        const firstWord = rest.split(/\s+/)[0]
+        const agents = currentState.agents || []
+        const match = agents.find(a =>
+          a.friendly_name === firstWord || a.name === firstWord ||
+          (a.friendly_name && a.friendly_name.toLowerCase() === firstWord.toLowerCase()) ||
+          (a.name && a.name.toLowerCase() === firstWord.toLowerCase())
+        )
+        if (match) {
+          target = match.id
+          interruptMsg = rest.slice(firstWord.length).trim()
+        }
+      }
       if (!target) {
-        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Select an agent first</div>`
+        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Select an agent or specify one: /interrupt &lt;agent&gt; message</div>`
         return
       }
       try {
@@ -3929,32 +4074,60 @@ function createChatWidget(container, params) {
         if (data.error) log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(data.error)}</div>`
       } catch (err) { log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>` }
     } else {
-      // Send as chat
-      try {
-        const payload = { message: msg, to: target }
-        if (isRaw) payload._raw = true
-        if (container._chatAttachments.length) {
-          payload.attachments = container._chatAttachments.slice()
+      // Send as chat — optimistic display + retry on failure
+      const payload = { message: msg, to: target }
+      if (isRaw) payload._raw = true
+      if (container._chatAttachments.length) {
+        payload.attachments = container._chatAttachments.slice()
+      }
+      // Optimistic local render — add to state.messages, SSE deduplicates on arrival
+      const localMsg = {
+        from: 'web',
+        to: target,
+        text: msg,
+        timestamp: new Date().toISOString(),
+        _local: true,
+      }
+      if (payload.attachments) localMsg.attachments = payload.attachments
+      if (!currentState.messages) currentState.messages = []
+      currentState.messages.push(localMsg)
+      // Re-render chat to show the message immediately (scroll to bottom only if already there)
+      updateChatWidget(container, container._params || params, currentState)
+      // Fire-and-forget send — mark failed after timeout if no SSE confirmation
+      const failTimer = setTimeout(() => {
+        if (localMsg._local) {
+          localMsg._failed = true
+          updateChatWidget(container, container._params || params, currentState)
         }
+      }, 5000)
+      try {
         const res = await fetch('/api/chat', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(payload),
         })
         if (!res.ok) {
-          const err = await res.text()
-          log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Send failed: ${esc(err)}</div>`
+          clearTimeout(failTimer)
+          localMsg._failed = true
+          updateChatWidget(container, container._params || params, currentState)
+          window._failedMessages = window._failedMessages || []
+          window._failedMessages.push(payload)
         } else {
           trackUI('chat_send', { panelId: container._panelId, to: target, textLength: msg.length, hasAttachments: !!(container._chatAttachments.length) })
-          // Check if target agent is compacting — show voicemail notice
           if (currentState) {
             const targetAgent = (currentState.agents || []).find(a => a.id === target)
             if (targetAgent?.compacting) {
-              log.innerHTML += `<div class="chat-line" style="color:var(--text-dim);font-style:italic;font-size:11px;opacity:0.7">voicemail — ${esc(targetAgent.friendly_name || targetAgent.name || target.substring(0, 8))} is compacting</div>`
+              localMsg._voicemail = targetAgent.friendly_name || targetAgent.name || target.substring(0, 8)
             }
           }
         }
-      } catch (e) { console.error('Send failed:', e) }
+      } catch (e) {
+        clearTimeout(failTimer)
+        localMsg._failed = true
+        updateChatWidget(container, container._params || params, currentState)
+        window._failedMessages = window._failedMessages || []
+        window._failedMessages.push(payload)
+      }
     }
     container._chatAttachments = []
     renderChatAttachments()
@@ -4451,6 +4624,8 @@ function getActivityEvents(agentId) {
               _fromSession: true,
             })
           }
+          // Insert break marker so activity cards split at chat boundaries
+          items.push({ _chatBreak: true, from: agentId, timestamp: ev.timestamp })
           continue
         }
         const name = humanizeToolName(b.name)
@@ -4604,7 +4779,7 @@ function renderActivityGroup(group, state) {
       <span class="activity-signal"></span>
       ${ctxHtml}
     </div>
-    <div class="activity-detail">${badge}${detailHtml}</div>
+    <div class="activity-detail"><div class="activity-detail-inner">${badge}${detailHtml}</div></div>
   </div>`
 }
 
@@ -4668,6 +4843,10 @@ function renderChatLine(m, state) {
       attachHtml = ' ' + attachHtml
     }
   }
+  // Failed local messages: show with failure indicator
+  if (m._failed) {
+    return `<div class="chat-line from-user" data-msg-ts="${esc(m.timestamp || '')}" data-msg-from="${esc(m.from || '')}"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText} <span style="color:var(--orange);font-size:10px">⚠ not sent</span></div>`
+  }
   // Retracted messages: show struck-through with dim styling
   if (m._retracted) {
     return `<div class="chat-line from-user" style="opacity:0.3;text-decoration:line-through"><span class="chat-ts">${ts}</span> <span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span> ${displayText}</div>`
@@ -4703,7 +4882,7 @@ function renderChatLine(m, state) {
   return line
 }
 
-const CHAT_PAGE_SIZE = 100
+let CHAT_PAGE_SIZE = 100
 
 function updateChatWidget(container, params, state) {
   const log = container.querySelector('.chat-log')
@@ -4905,17 +5084,25 @@ function updateChatWidget(container, params, state) {
   let i = 0
   while (i < visible.length) {
     const m = visible[i]
+    if (m._chatBreak) { i++; continue } // skip break markers (they split activity groups)
     if (m._activity) {
-      // Collect consecutive activity events from the same agent
-      const group = [m]
-      while (i + 1 < visible.length && visible[i + 1]._activity && visible[i + 1].from === m.from) {
-        group.push(visible[++i])
+      // Collect consecutive activity groups (possibly from different agents)
+      // Each agent's consecutive events form one group; multiple groups can be adjacent
+      const activityCards = []
+      while (i < visible.length && visible[i]._activity) {
+        const group = [visible[i]]
+        while (i + 1 < visible.length && visible[i + 1]._activity && visible[i + 1].from === visible[i].from) {
+          group.push(visible[++i])
+        }
+        activityCards.push(renderActivityGroup(group, state))
+        i++
       }
-      renderedLines += renderActivityGroup(group, state)
+      // Wrap activity cards in an inline-wrap container for compact inline display when collapsed
+      renderedLines += `<div class="chat-activity-inline-wrap">${activityCards.join('')}</div>`
     } else {
       renderedLines += renderChatLine(m, state)
+      i++
     }
-    i++
   }
   // Show empty state when filter matches no agents
   if (_filterEmpty) {
@@ -5008,6 +5195,27 @@ function updateChatWidget(container, params, state) {
   // Activity cards: auto-fold non-pinned cards that have a newer real message after them
   // Restore pinned state from container._pinnedActivityAgents
   if (!container._pinnedActivityAgents) container._pinnedActivityAgents = new Set()
+  // Helper: walk siblings after an element, stepping out of inline-wrap containers
+  function nextLogSibling(el) {
+    if (el.nextElementSibling) return el.nextElementSibling
+    // If inside an inline-wrap, step out to the wrap's next sibling
+    if (el.parentElement?.classList.contains('chat-activity-inline-wrap')) {
+      return el.parentElement.nextElementSibling
+    }
+    return null
+  }
+  // Check if a user message follows this card (possibly after stepping out of wrap)
+  function hasUserMessageAfter(startEl) {
+    let next = nextLogSibling(startEl)
+    while (next) {
+      if (next.classList.contains('chat-line') && next.classList.contains('from-user')) return true
+      if (next.classList.contains('chat-activity-card')) return false
+      if (next.classList.contains('chat-activity-inline-wrap')) return false
+      if (next.classList.contains('chat-line')) { next = next.nextElementSibling; continue }
+      next = next.nextElementSibling
+    }
+    return false
+  }
   const cards = log.querySelectorAll('.chat-activity-card')
   cards.forEach(card => {
     const agentId = card.dataset.agent
@@ -5016,18 +5224,9 @@ function updateChatWidget(container, params, state) {
       card.classList.add('pinned')
       card.classList.remove('will-fold', 'collapsed')
     } else {
-      // Auto-fold: only collapse when a USER message follows (not agent messages —
-      // those are summaries of what's in the card, so keep both visible)
-      let next = card.nextElementSibling
-      while (next) {
-        if (next.classList.contains('chat-line') && next.classList.contains('from-user')) {
-          card.classList.add('collapsed')
-          card.classList.remove('will-fold')
-          break
-        }
-        if (next.classList.contains('chat-activity-card')) break // another card, stop
-        if (next.classList.contains('chat-line')) { next = next.nextElementSibling; continue } // agent message, keep looking
-        next = next.nextElementSibling
+      if (hasUserMessageAfter(card)) {
+        card.classList.add('collapsed')
+        card.classList.remove('will-fold')
       }
     }
 
@@ -5037,13 +5236,8 @@ function updateChatWidget(container, params, state) {
       if (card.classList.contains('pinned')) {
         card.classList.remove('pinned')
         container._pinnedActivityAgents.delete(agentId)
-        // Re-evaluate fold (only user messages trigger fold)
-        let next = card.nextElementSibling
-        while (next) {
-          if (next.classList.contains('chat-line') && next.classList.contains('from-user')) { card.classList.add('collapsed'); break }
-          if (next.classList.contains('chat-activity-card')) break
-          next = next.nextElementSibling
-        }
+        // Re-evaluate fold
+        if (hasUserMessageAfter(card)) card.classList.add('collapsed')
       } else {
         card.classList.add('pinned')
         card.classList.remove('collapsed', 'will-fold')
@@ -5255,7 +5449,8 @@ function updateChatWidget(container, params, state) {
       } else if (dnf) {
         const matching = (state.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a))
         const expr = dnf.map(g => g.join(' & ')).join(' | ')
-        ghost.innerHTML = `<span style="color:var(--blue)">→ ${esc(expr)} (${matching.length})</span>`
+        const countSuffix = matching.length > 1 ? ` (${matching.length})` : ''
+        ghost.innerHTML = `<span style="color:var(--blue)">→ ${esc(expr)}${countSuffix}</span>`
         ghost.classList.toggle('hidden', inputVal.length > 30)
       } else {
         ghost.textContent = ''
@@ -5280,7 +5475,7 @@ function updateAgentsWidget(container, params, state) {
   const list = container.querySelector('.agents-list')
   if (!list) return
   // Skip re-render during active or pending drag to preserve pointer capture
-  if (dragLabel || dragAgent || dragGhost || _preDrag) return
+  if (dragLabel || dragAgent || dragGhost || _preDrag || container._resizing) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
   const agents0 = state.agents || []
   const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '')).join('|')
@@ -5297,10 +5492,13 @@ function updateAgentsWidget(container, params, state) {
   const agents = (state.agents || []).slice().map(a => {
     const name = a.friendly_name || a.name || a.id?.substring(0, 8)
     const ago = a.last_seen ? Math.floor((Date.now() - new Date(a.last_seen).getTime()) / 1000) : Infinity
-    const task = (state.tasks || []).find(t => t.agent === a.id && t.status !== 'done')
+    const allTasks = (state.tasks || []).filter(t => t.agent === a.id && t.status !== 'done')
+    const realTask = allTasks.find(t => !t.synthetic)
+    const syntheticTask = allTasks.find(t => t.synthetic)
+    const task = realTask || syntheticTask || null
     // Unseen messages FROM this agent TO the user (newer than per-agent seen ts)
     const unseenMsgs = (state.messages || []).filter(m => m.from === a.id && userAliases.has(m.to) && m.timestamp > getAgentSeenTs(a.id))
-    return { ...a, _name: name, _ago: ago, _task: task, _unseen: unseenMsgs.length, _unseenMsgs: unseenMsgs }
+    return { ...a, _name: name, _ago: ago, _task: task, _allTasks: allTasks, _syntheticTask: syntheticTask, _unseen: unseenMsgs.length, _unseenMsgs: unseenMsgs }
   })
 
   // Sort
@@ -5388,6 +5586,7 @@ function updateAgentsWidget(container, params, state) {
   ).join('')
 
   const arrow = (col) => sort.col === col ? `<span class="sort-arrow">${sort.asc ? '▲' : '▼'}</span>` : ''
+  const resizeHandle = '<span class="col-resize"></span>'
 
   const rows = displayAgents.filter(a => !a._hidden).map(a => {
     const active = isActive(a)
@@ -5403,7 +5602,7 @@ function updateAgentsWidget(container, params, state) {
     if (compacting) {
       badges.push(`<span class="agent-badge compacting-badge">compacting...</span>`)
     }
-    if (a._task) {
+    if (a._task && !a._task.synthetic) {
       const leadsMatch = a._task.description?.match(/^leads?\s+([\w-]+)$/i)
       if (leadsMatch) {
         const teamLabel = leadsMatch[1].trim()
@@ -5411,19 +5610,26 @@ function updateAgentsWidget(container, params, state) {
       } else {
         badges.push(`<span class="agent-badge">${esc(a._task.description?.substring(0, 30) || 'working')}</span>`)
       }
+    } else if (a._task?.synthetic) {
+      // Only synthetic task, no real task — already shown as msg badge above, skip text
     }
+    // Task list tooltip (hover on task cell shows all tasks)
+    const taskTooltipHtml = a._allTasks.length > 1 ? a._allTasks.map(t => {
+      const status = t.status || 'unknown'
+      const syn = t.synthetic ? ' (msg)' : ''
+      return `<div style="padding:2px 0;font-size:11px"><span class="task-status ${status}" style="font-size:9px;padding:1px 4px">${status}</span> ${esc(t.description || '')}${syn}</div>`
+    }).join('') : ''
     const labelChips = (a.labels || []).map(l => {
       const c = labelColor(l)
       return `<span class="label-chip" data-label="${esc(l)}" style="color:${c};opacity:0.5">${esc(l)}<span class="label-x">×</span></span>`
     }).join('')
     const sel = selectedAgent === a.id ? 'background:rgba(147,112,219,0.1);' : ''
-    const dim = active ? '' : 'opacity:0.45;'
-    const indent = a._isTeamMember ? 'padding-left:16px;' : ''
+    const rowOpacity = !active ? 'opacity:0.45;' : a._isTeamMember ? 'opacity:0.85;' : ''
+    const indent = a._isTeamMember ? 'padding-left:24px;' : ''
     const foldToggle = a._isTeamLead ? `<span class="team-fold-toggle" data-manager-id="${esc(a.id)}" style="cursor:pointer;opacity:0.4;margin-right:3px;font-size:10px">${a._isFolded ? '▸' : '▾'}</span>` : ''
     const teamUnseenBadge = a._teamUnseen ? `<span class="agent-msg-badge" style="opacity:0.6;margin-left:2px" title="${a._teamUnseen} unseen from team">+${a._teamUnseen}</span>` : ''
-    const memberOpacity = a._isTeamMember ? 'opacity:0.85;' : ''
-    return `<tr class="agent-item${a._isTeamMember ? ' team-member' : ''}${a._isTeamLead ? ' team-lead' : ''}" style="${sel}${dim}${memberOpacity}" data-agent-id="${esc(a.id)}"${a._teamLeadId ? ` data-team-lead="${esc(a._teamLeadId)}"` : ''}>
-      <td style="${indent}">${foldToggle}<span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${teamUnseenBadge}${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
+    return `<tr class="agent-item${a._isTeamMember ? ' team-member' : ''}${a._isTeamLead ? ' team-lead' : ''}" style="${sel}${rowOpacity}" data-agent-id="${esc(a.id)}"${a._teamLeadId ? ` data-team-lead="${esc(a._teamLeadId)}"` : ''}>
+      <td style="${indent}">${foldToggle}<span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${active && a._task ? '<span class="agent-working-icon" title="Working">&gt;_</span>' : ''}${teamUnseenBadge}${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
         const t = new Date(m.timestamp)
         const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
         const fromNick = agentLabel(state, m.from)
@@ -5434,17 +5640,19 @@ function updateAgentsWidget(container, params, state) {
       }).join('')}</div></span></span>` : ''}</td>
       <td><span class="agent-seen ${dotClass}" title="${dotTip}">${seenText}</span></td>
       <td class="agent-ctx-cell">${a.context_pct != null ? `<span class="agent-ctx" style="opacity:${a.context_pct > 80 ? '0.9' : a.context_pct > 60 ? '0.6' : '0.4'}">${a.context_pct}%</span>` : ''}</td>
-      <td>${badges.join(' ')}${!a._task && a.last_action ? `<span class="agent-last-action" title="${esc(a.last_action)}">${esc(a.last_action.substring(0, 40))}</span>` : ''}</td>
+      <td class="agent-msg-col">${a._syntheticTask ? `<span class="agent-msg-task-badge">${(() => { const n = parseInt(a._syntheticTask.description?.match(/(\d+)\s+message/)?.[1]) || 1; return n > 1 ? `<span style="opacity:0.4;font-size:9px">${n}×</span>` : '' })()}✉<span class="agent-msg-task-tooltip"><div class="agent-msg-tooltip-inner">${(() => { const msgs = (state.messages || []).filter(m => m.to === a.id && !m.read); return msgs.slice(-5).map(m => { const fromNick = agentLabel(state, m.from); const fromCls = getNickClass(m.from, state); const t = new Date(m.timestamp); const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'}); return `<div class="msg-item"><div class="msg-header"><span class="msg-nick"><span class="${fromCls}">${esc(fromNick)}</span></span><span class="msg-time">${timeStr}</span></div><div class="msg-text">${renderMarkdown(esc(m.text?.slice(0, 150) || ''))}</div></div>` }).join('') || '<div style="color:var(--text-dim);font-size:11px">No pending messages</div>' })()}</div></span></span>` : `<span class="agent-msg-task-badge" style="visibility:hidden">0✉</span>`}</td>
+      <td class="agent-task-cell" style="position:relative">${badges.join(' ')}${!a._task && a.last_action ? `<span class="agent-last-action" title="${esc(a.last_action)}">${esc(a.last_action.substring(0, 40))}</span>` : ''}${taskTooltipHtml ? `<div class="agent-task-tooltip">${taskTooltipHtml}</div>` : ''}</td>
       <td><span style="display:flex;flex-wrap:wrap;gap:2px;align-items:center">${labelChips}<span class="label-add-btn" title="Add label">+</span></span></td>
     </tr>`
   }).join('')
 
   list.innerHTML = warnings + `<table class="agents-table">
     <thead><tr>
-      <th data-sort="name">Name${arrow('name')}</th>
-      <th data-sort="seen">Seen${arrow('seen')}</th>
-      <th data-sort="ctx">Ctx${arrow('ctx')}</th>
-      <th data-sort="task">Task${arrow('task')}</th>
+      <th data-sort="name">Name${arrow('name')}${resizeHandle}</th>
+      <th data-sort="seen">Seen${arrow('seen')}${resizeHandle}</th>
+      <th data-sort="ctx">Ctx${arrow('ctx')}${resizeHandle}</th>
+      <th class="agent-msg-col-header" style="width:24px;padding:0"></th>
+      <th data-sort="task">Task${arrow('task')}${resizeHandle}</th>
       <th data-sort="labels">Labels${arrow('labels')}</th>
     </tr></thead>
     <tbody>${rows}</tbody>
@@ -5501,6 +5709,61 @@ function updateAgentsWidget(container, params, state) {
     })
   })
 
+  // Column resize drag handles — persist widths across re-renders
+  const colWidths = container._colWidths || {}
+  const table = list.querySelector('.agents-table')
+  const ths = list.querySelectorAll('th[data-sort]')
+  if (Object.keys(colWidths).length && table) {
+    table.style.tableLayout = 'fixed'
+  }
+  ths.forEach(th => {
+    const col = th.dataset.sort
+    if (colWidths[col]) th.style.width = colWidths[col]
+  })
+  list.querySelectorAll('.col-resize').forEach(handle => {
+    // Block clicks from bubbling to sort handler
+    handle.addEventListener('click', (e) => { e.stopPropagation(); e.preventDefault() })
+    handle.addEventListener('mousedown', (e) => {
+      e.preventDefault()
+      e.stopPropagation()
+      const th = handle.parentElement
+      const col = th.dataset.sort
+      const tbl = th.closest('table')
+      // Snapshot all column widths before switching to fixed layout
+      const allThs = tbl.querySelectorAll('th[data-sort]')
+      const snapWidths = []
+      allThs.forEach(t => snapWidths.push([t, t.offsetWidth]))
+      tbl.style.tableLayout = 'fixed'
+      snapWidths.forEach(([t, w]) => { t.style.width = w + 'px' })
+      const startX = e.clientX
+      const startW = th.offsetWidth
+      // Pause re-renders during drag
+      container._resizing = true
+      document.body.style.cursor = 'col-resize'
+      document.body.style.userSelect = 'none'
+      const onMove = (me) => {
+        me.preventDefault()
+        const newW = Math.max(30, startW + (me.clientX - startX))
+        th.style.width = newW + 'px'
+        if (col) { container._colWidths = container._colWidths || {}; container._colWidths[col] = newW + 'px' }
+      }
+      const onUp = () => {
+        container._resizing = false
+        document.body.style.cursor = ''
+        document.body.style.userSelect = ''
+        // Save all current widths so they persist across re-renders
+        allThs.forEach(t => {
+          const c = t.dataset.sort
+          if (c) { container._colWidths = container._colWidths || {}; container._colWidths[c] = t.style.width }
+        })
+        document.removeEventListener('mousemove', onMove)
+        document.removeEventListener('mouseup', onUp)
+      }
+      document.addEventListener('mousemove', onMove)
+      document.addEventListener('mouseup', onUp)
+    })
+  })
+
   // Team fold toggles
   list.querySelectorAll('.team-fold-toggle').forEach(toggle => {
     toggle.addEventListener('click', (e) => {
@@ -5511,6 +5774,105 @@ function updateAgentsWidget(container, params, state) {
       container._foldState = foldState
       list._agentsHash = '' // force re-render
       updateAgentsWidget(container, params, state)
+    })
+  })
+
+  // Agent name hover: mini chat preview (recent messages to/from this agent)
+  list.querySelectorAll('.agent-name').forEach(nameEl => {
+    let previewEl = null
+    let hoverTimer = null
+    const row = nameEl.closest('.agent-item')
+    if (!row) return
+    nameEl.addEventListener('mouseenter', (e) => {
+      const agentId = row.dataset.agentId
+      if (!agentId) return
+      hoverTimer = setTimeout(() => {
+        const allMsgs = (state.messages || []).filter(m =>
+          (m.from === agentId || m.to === agentId) && !m._activity
+        )
+        const recent = allMsgs.slice(-6)
+        if (!recent.length) return
+        const agent = (state.agents || []).find(a => a.id === agentId)
+        const label = agent?.friendly_name || agent?.name || agentId.substring(0, 8)
+        const msgHtml = recent.map(m => {
+          const fromNick = agentLabel(state, m.from)
+          const toNick = agentLabel(state, m.to)
+          const fromCls = getNickClass(m.from, state)
+          const toCls = getNickClass(m.to, state)
+          const t = new Date(m.timestamp)
+          const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
+          const text = m.text ? renderMarkdown(esc(m.text.length > 200 ? m.text.slice(0, 200) + '…' : m.text)) : ''
+          return `<div class="atp-msg"><span class="${fromCls}" style="font-weight:500">${esc(fromNick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}" style="font-weight:500">${esc(toNick)}</span> <span style="color:var(--text-dim);font-size:9px">${timeStr}</span><div style="margin-top:1px">${text}</div></div>`
+        }).join('')
+        previewEl = document.createElement('div')
+        previewEl.className = 'agent-terminal-preview agent-chat-preview'
+        previewEl.innerHTML = msgHtml
+        document.body.appendChild(previewEl)
+        const rect = nameEl.getBoundingClientRect()
+        previewEl.style.left = (rect.right + 8) + 'px'
+        previewEl.style.top = rect.top + 'px'
+        const pRect = previewEl.getBoundingClientRect()
+        if (pRect.right > window.innerWidth - 8) previewEl.style.left = (rect.left - pRect.width - 8) + 'px'
+        if (pRect.left < 8) previewEl.style.left = '8px'
+        if (pRect.bottom > window.innerHeight - 8) previewEl.style.top = (window.innerHeight - pRect.height - 8) + 'px'
+        if (pRect.top < 8) previewEl.style.top = '8px'
+      }, 300)
+    })
+    nameEl.addEventListener('mouseleave', () => {
+      clearTimeout(hoverTimer)
+      if (previewEl) { previewEl.remove(); previewEl = null }
+    })
+  })
+
+  // Working icon hover: terminal preview (tool calls, what agent is doing)
+  list.querySelectorAll('.agent-working-icon').forEach(icon => {
+    let previewEl = null
+    let hoverTimer = null
+    const row = icon.closest('.agent-item')
+    if (!row) return
+    icon.addEventListener('mouseenter', (e) => {
+      const agentId = row.dataset.agentId
+      if (!agentId) return
+      hoverTimer = setTimeout(() => {
+        fetchSessionLite(agentId)
+        const cached = window._sessionCache?.[agentId]
+        if (!cached?.data?.events?.length) return
+        const events = cached.data.events
+        const recent = events.slice(-20)
+        const lines = []
+        for (const ev of recent) {
+          if (ev.type !== 'assistant' || !ev.blocks) continue
+          for (const b of ev.blocks) {
+            if (b.type === 'tool_use') {
+              const name = humanizeToolName(b.name)
+              if (!name) continue
+              const arg = toolArgSummary(b.input, name)
+              lines.push(`<div class="atp-tool-card"><span class="tool-name">${esc(name)}</span>${arg ? ' <span style="color:var(--text-dim)">' + esc(arg.slice(0, 60)) + '</span>' : ''}</div>`)
+            } else if (b.type === 'text' && b.text) {
+              const snippet = b.text.split('\n')[0].slice(0, 120)
+              lines.push(`<div class="atp-text-line">${renderMarkdown(esc(snippet))}</div>`)
+            }
+          }
+        }
+        if (!lines.length) return
+        const shownLines = lines.slice(-8)
+        previewEl = document.createElement('div')
+        previewEl.className = 'agent-terminal-preview'
+        previewEl.innerHTML = `<div class="atp-tools">${shownLines.join('')}</div>`
+        document.body.appendChild(previewEl)
+        const rect = icon.getBoundingClientRect()
+        previewEl.style.left = (rect.right + 8) + 'px'
+        previewEl.style.top = rect.top + 'px'
+        const pRect = previewEl.getBoundingClientRect()
+        if (pRect.right > window.innerWidth - 8) previewEl.style.left = (rect.left - pRect.width - 8) + 'px'
+        if (pRect.left < 8) previewEl.style.left = '8px'
+        if (pRect.bottom > window.innerHeight - 8) previewEl.style.top = (window.innerHeight - pRect.height - 8) + 'px'
+        if (pRect.top < 8) previewEl.style.top = '8px'
+      }, 300)
+    })
+    icon.addEventListener('mouseleave', () => {
+      clearTimeout(hoverTimer)
+      if (previewEl) { previewEl.remove(); previewEl = null }
     })
   })
 
@@ -7836,6 +8198,28 @@ dv.onDidActivePanelChange(({ panel }) => {
 // --- SSE ---
 let _lastStateHash = ''
 function broadcastUpdate(state) {
+  // Merge local (optimistic) messages: if a local message matches an incoming one, drop the local copy
+  // Keep unconfirmed local messages (not yet delivered by SSE)
+  if (currentState?.messages) {
+    const locals = currentState.messages.filter(m => m._local)
+    if (locals.length) {
+      const incoming = state.messages || []
+      for (const lm of locals) {
+        const match = incoming.find(sm =>
+          sm.text === lm.text && sm.to === lm.to &&
+          Math.abs(new Date(sm.timestamp) - new Date(lm.timestamp)) < 10000
+        )
+        if (match) {
+          // SSE confirmed — drop local copy
+          lm._local = false
+        } else if (!lm._failed) {
+          // Not yet confirmed — keep in state
+          incoming.push(lm)
+        }
+      }
+      state.messages = incoming
+    }
+  }
   currentState = state
   // Quick hash — skip widget updates if state hasn't materially changed
   const msgs = state.messages || []
@@ -7905,6 +8289,36 @@ function updateTabBadges(state) {
 
 function connectSSE() {
   const evtSource = new EventSource('/events')
+  // Auto-retry failed messages on reconnect
+  evtSource.onopen = () => {
+    const queue = window._failedMessages || []
+    if (queue.length) {
+      window._failedMessages = []
+      for (const payload of queue) {
+        fetch('/api/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        }).then(res => {
+          if (res.ok) {
+            // Clear failed flag on retried local messages
+            if (currentState?.messages) {
+              for (const m of currentState.messages) {
+                if (m._failed && m.text === payload.message && m.to === payload.to) {
+                  m._failed = false
+                  m._local = true // will be deduped by next SSE update
+                }
+              }
+            }
+          }
+        }).catch(() => {
+          // Re-queue if still failing
+          window._failedMessages = window._failedMessages || []
+          window._failedMessages.push(payload)
+        })
+      }
+    }
+  }
   evtSource.onmessage = (e) => {
     try {
       const state = JSON.parse(e.data)
@@ -7919,8 +8333,12 @@ function connectSSE() {
       const cache = window._sessionCache || {}
       const existing = cache[agent]
       if (existing?.data) {
+        // Deduplicate: only append events newer than the last cached event
+        const lastTs = existing.data.events[existing.data.events.length - 1]?.timestamp
+        const newEvents = lastTs ? events.filter(ev => ev.timestamp > lastTs) : events
+        if (newEvents.length === 0) return
         // Append new events to existing cache, cap at 2000 to prevent unbounded growth
-        existing.data.events.push(...events)
+        existing.data.events.push(...newEvents)
         if (existing.data.events.length > 2000) {
           existing.data.events = existing.data.events.slice(-1500)
         }
@@ -8389,6 +8807,17 @@ loadFleetConfig().then(() => {
     for (const [key, val] of Object.entries(fleetConfig.theme)) {
       if (key && val) root.style.setProperty(`--${key}`, val)
     }
+  }
+  // Apply sizing config
+  const root = document.documentElement
+  if (fleetConfig.activityCardHeight) root.style.setProperty('--activity-card-height', fleetConfig.activityCardHeight)
+  if (fleetConfig.terminalCardHeight) root.style.setProperty('--terminal-card-height', fleetConfig.terminalCardHeight)
+  if (fleetConfig.chatPageSize) CHAT_PAGE_SIZE = parseInt(fleetConfig.chatPageSize)
+  // Inject custom CSS from ~/.fleet/custom.css
+  if (fleetConfig._customCSS) {
+    const style = document.createElement('style')
+    style.textContent = fleetConfig._customCSS
+    document.head.appendChild(style)
   }
 })
 

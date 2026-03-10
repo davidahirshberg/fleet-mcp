@@ -815,7 +815,7 @@ const server = http.createServer(async (req, res) => {
         if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
         if (message) {
           if (!state.messages) state.messages = [];
-          state.messages.push({ to: agent.id, from: 'web', text: message, timestamp: new Date().toISOString(), read: false });
+          state.messages.push({ to: agent.id, from: 'web', text: message, timestamp: new Date().toISOString(), read: false, _interrupt: true });
           fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         }
         if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no kitty window — message delivered via state file only' })); return; }
@@ -1380,6 +1380,10 @@ const server = http.createServer(async (req, res) => {
     try {
       const keymapPath = (config.keymap || KEYMAP_FILE).replace(/^~/, os.homedir());
       config._keymap = JSON.parse(fs.readFileSync(keymapPath, 'utf8'));
+    } catch {}
+    // Inline custom CSS if it exists
+    try {
+      config._customCSS = fs.readFileSync(path.join(FLEET_DIR, 'custom.css'), 'utf8');
     } catch {}
     res.writeHead(200, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify(config));

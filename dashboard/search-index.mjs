@@ -247,8 +247,12 @@ export class SearchIndex {
     let lineNum = offset?.line_offset || 0;
     let count = 0;
 
+    const insertStmt = this.db.prepare(`
+      INSERT INTO entries (source, project, session_id, line, role, timestamp, from_id, to_id, text)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
     const insertMany = this.db.transaction((entries) => {
-      for (const e of entries) this._insertEntry.run(...e);
+      for (const e of entries) insertStmt.run(...e);
     });
 
     const entries = [];
@@ -262,9 +266,12 @@ export class SearchIndex {
       let parsed;
       try { parsed = JSON.parse(line); } catch { continue; }
       const evtType = parsed.type || 'chat';
-      const text = parsed.message || parsed.text || parsed.description || '';
+      let text = parsed.message || parsed.text || parsed.description || '';
+      if (typeof text === 'object') text = text.text || JSON.stringify(text);
       if (!text) continue;
-      entries.push(['events', null, null, i + 1, evtType, parsed.timestamp || null, parsed.from || null, parsed.to || parsed.agent || null, text]);
+      let toField = parsed.to || parsed.agent || null;
+      if (Array.isArray(toField)) toField = toField.join(',');
+      entries.push(['events', null, null, i + 1, evtType, parsed.timestamp || null, parsed.from || null, toField, String(text)]);
       count++;
     }
 
