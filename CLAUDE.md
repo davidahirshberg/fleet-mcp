@@ -34,10 +34,6 @@ Send a message to another agent's inbox. Writes to state and kicks the recipient
 - `message`: Message to send
 - `to`: Optional. Session UUID, agent name, or friendly name. Omit to send to the manager. Use `"web"`, `"skip"`, or `"human"` to send to the dashboard — it receives messages via SSE (no agent registration needed).
 
-### wait_for_task(timeout?)
-
-Block until a task or message arrives for this agent. Uses `fs.watch` on the state file — resolves instantly when the file changes (no polling delay). Returns the task message or chat messages.
-
 ### task_list()
 
 List all active tasks and registered agents. Call at session start.
@@ -96,6 +92,15 @@ Send a kitty ESC interrupt to break into an agent that is mid-tool-chain. Manage
 - `agent`: Session UUID, agent name, or friendly name
 - `message`: Optional message delivered via chat before the interrupt
 
+### sleep(seconds, reason?)
+
+Instrumented sleep with dashboard countdown. Use instead of bash `sleep` when waiting for something. The dashboard shows a live countdown on the agent's card.
+
+- `seconds`: Duration (1–600)
+- `reason`: What you're waiting for (shown as "waiting Ns for \<reason\>")
+
+**Interruptable**: if a message or task arrives during sleep, the tool returns early with "Woke up after Xs of Ys — you have messages." Call `my_task()` to handle the interrupt, then `sleep(remaining)` to resume waiting.
+
 ## delegate vs chat
 
 - **delegate**: "Do this work." Creates a tracked task. Agent is notified via fs.watch.
@@ -112,22 +117,18 @@ All managers are peers — any manager can manage any agent. No hierarchy. `chat
 
 1. Agent starts, calls `register()` — added to agent registry with session UUID
 2. Manager calls `delegate(agent, ...)` — task written to state file
-3. Agent's `wait_for_task()` wakes via `fs.watch` — gets the task
+3. Agent sees 📬 (via PostToolUse hook or kitty kick) — calls `my_task()` to get the task
 4. Agent works, uses `chat()` to report progress
 5. Agent finishes, calls `task_done()`
-6. Agent calls `wait_for_task()` — wakes instantly on next state change
+6. Agent keeps working or uses `sleep()` — sees 📬 when the next task arrives
 
 ## Notification Model
 
-Two separate mechanisms for two separate concerns:
+Three-tier message delivery, from lightest to heaviest:
 
-**Notification** — `fs.watch` on the state file (`~/.claude/agent-tasks.json`). Every `saveState()` triggers all watching agents instantly. No kitty dependency, works for headless agents.
-
-- `delegate()` writes task → `saveState()` → watching agents wake up
-- `chat()` writes message → `saveState()` → watching agents wake up
-- `task_done()` with unblocked deps → `saveState()` → unblocked agents wake up
-
-**Interruption** — kitty ESC via `interrupt()`. For breaking into an agent that is mid-tool-chain and needs to stop. Sends `ESC` then `📬` + Enter to the agent's kitty window.
+1. **PostToolUse hook** — after every Claude Code tool call, a shell hook checks the state file for unread messages/tasks. If found, it injects 📬 as `additionalContext`. Zero latency for working agents.
+2. **`sleep()` wakeup** — if an agent is in `sleep()`, incoming messages resolve the sleep early. The agent gets "Woke up after Xs" and can call `my_task()`.
+3. **Kitty interrupt** — `interrupt()` sends ESC to a kitty window. For breaking into an agent that is truly stuck (mid-tool-chain, not responding to hooks). Last resort.
 
 **When you see 📬 as input, call `my_task()`.** This is the universal response. `my_task()` returns your current task and any unread messages.
 

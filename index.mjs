@@ -10,7 +10,6 @@
  *   - register(manager?, session_id?)    register this agent (all agents call this)
  *   - delegate(agent, description, message)  assign task (manager only)
  *   - chat(message, to?)                 send message + kick recipient
- *   - wait_for_task(timeout?)            block until task/message arrives
  *   - task_list()                        show active tasks + registered agents
  *   - task_done(agent?)                  mark task complete
  *   - task_check(win)                    read agent's kitty window (escape hatch)
@@ -168,29 +167,6 @@ function scanKittyWindows() {
 
 // ---- State helpers ----
 
-// Wait for state file to change, or timeout. Replaces blind polling.
-function waitForStateChange(maxMs) {
-  return new Promise(resolve => {
-    const timeout = setTimeout(() => { watcher.close(); resolve(); }, maxMs);
-    let watcher;
-    try {
-      watcher = fs.watch(STATE_FILE, { persistent: false }, () => {
-        clearTimeout(timeout);
-        watcher.close();
-        resolve();
-      });
-      watcher.on('error', () => {
-        clearTimeout(timeout);
-        watcher.close();
-        resolve();
-      });
-    } catch {
-      // fs.watch failed (file doesn't exist yet, etc.) — fall back to timeout
-      clearTimeout(timeout);
-      setTimeout(resolve, Math.min(maxMs, 5000));
-    }
-  });
-}
 
 function loadState() {
   if (fs.existsSync(STATE_FILE)) {
@@ -571,16 +547,6 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           message: { type: 'string', description: 'Message to send' },
         },
         required: ['message'],
-      },
-    },
-    {
-      name: 'wait_for_task',
-      description: 'Block until a task or message arrives for this agent. Call this when idle. Returns the task message or chat messages.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          timeout: { type: 'number', description: 'Max seconds to wait (default 600)' },
-        },
       },
     },
     {
@@ -1105,7 +1071,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         msg += `\n\n⚠ ~/.claude/reference/managing-agents.md not found. Symlink it:\n  ln -s ${repoRefPath} ${refPath}\n\nFor now, read ${path.join(__dirname, 'CLAUDE.md')} for tool reference.`;
       }
     } else {
-      msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, call wait_for_task() — it blocks until a task or message arrives (no polling needed).';
+      msg += '\n\nAfter registering: call my_task() to check for a task. If nothing, just keep working — you\'ll see 📬 when a task or message arrives.';
       msg += '\nWhen you see 📬 as input, call my_task() — it means you have a new task or message.';
       if (refExists) {
         msg += '\nSee ~/.claude/reference/managing-agents.md for how to work with the manager.';
@@ -1241,53 +1207,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     return { content: [{ type: 'text', text: `Message queued for ${to}${notifyMsg}.${warning}` }] };
   }
 
-  // ---- wait_for_task ----
-  if (name === 'wait_for_task') {
-    if (!ME) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
-    const timeoutMs = Math.min(args.timeout ?? 600, 600) * 1000;
-    const intervalMs = 5000;
-    const deadline = Date.now() + timeoutMs;
-
-    while (Date.now() < deadline) {
-      const state = loadState();
-
-      // Check for unread messages first
-      const unread = getUnread(state, ME);
-      if (unread.length > 0) {
-        markRead(state, ME);
-        saveState(state);
-        const formatted = unread.map(m => `[from ${m.from}] ${m.text}`).join('\n\n');
-        return { content: [{ type: 'text', text: `Messages received:\n\n${formatted}` }] };
-      }
-
-      // Check for blocked tasks whose deps are all done — transition to pending
-      for (const t of state.tasks) {
-        if (t.agent === ME && t.status === 'blocked' && !isBlocked(state, t)) {
-          t.status = 'pending';
-        }
-      }
-
-      // Check for a pending real task assigned to me (synthetic tasks are handled via messages above)
-      const task = state.tasks.find(t => t.agent === ME && t.status === 'pending' && !t.acknowledged && !t.synthetic);
-      if (task) {
-        task.acknowledged = true;
-        task.status = 'working';
-        task.last_checked = now();
-        saveState(state);
-        return {
-          content: [{
-            type: 'text',
-            text: `Task assigned [${task.id}]: ${task.description}\n\n${task.message}\n\nUse chat() to report progress, results, or issues. Call task_done() when finished.`,
-          }],
-        };
-      }
-
-      // Wait for state file change (fs.watch) instead of blind polling
-      await waitForStateChange(Math.min(intervalMs, deadline - Date.now()));
-    }
-
-    return { content: [{ type: 'text', text: 'No task or message received (timeout). Call wait_for_task() again to keep waiting.' }] };
-  }
 
   // ---- task_list ----
   if (name === 'task_list') {
@@ -1397,7 +1316,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     // Guide agents to wait for next task instead of going idle
     if (agent === ME) {
-      msg += '\n\nCall wait_for_task() to wait for your next assignment.';
+      msg += '\n\nKeep working or use sleep() — you\'ll see 📬 when the next task arrives.';
     }
     return { content: [{ type: 'text', text: msg }] };
   }
@@ -1472,7 +1391,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         dirty = true;
       }
     } else {
-      text = `Nothing new. Call wait_for_task() to block until a task or message arrives.`;
+      text = `Nothing new. Keep working or use sleep() — you'll see 📬 when a task or message arrives.`;
     }
 
     if (unread.length > 0) {
@@ -2298,13 +2217,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       };
       saveState(state);
     }
-    await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+    const startTime = Date.now();
+    // Race: sleep timer vs incoming message/task for this agent
+    const result = await new Promise(resolve => {
+      const timer = setTimeout(() => {
+        if (watcher) watcher.close();
+        resolve('completed');
+      }, seconds * 1000);
+      let watcher;
+      try {
+        watcher = fs.watch(STATE_FILE, { persistent: false }, () => {
+          // Check if there's a new message or task for this agent
+          const snap = loadState();
+          const hasUnread = (snap.messages || []).some(m => m.to === ME && !m.read);
+          const myTask = (snap.tasks || []).find(t => t.agent === ME && t.status !== 'done');
+          const taskChanged = myTask && (myTask.status === 'pending' || !myTask.acknowledged);
+          if (hasUnread || taskChanged) {
+            clearTimeout(timer);
+            watcher.close();
+            resolve('interrupted');
+          }
+          // Otherwise keep sleeping
+        });
+        watcher.on('error', () => {}); // ignore watch errors, timer still works
+      } catch {
+        // fs.watch not available — just use the timer
+      }
+    });
+    const elapsed = Math.round((Date.now() - startTime) / 1000);
     // Clear sleep state
     const state2 = loadState();
     const agent2 = (state2.agents || []).find(a => a.id === ME);
     if (agent2?._sleep) {
       delete agent2._sleep;
       saveState(state2);
+    }
+    if (result === 'interrupted') {
+      const label = reason
+        ? `Woke up after ${elapsed}s of ${seconds}s (was waiting for ${reason}) — you have messages. Call my_task().`
+        : `Woke up after ${elapsed}s of ${seconds}s — you have messages. Call my_task().`;
+      return { content: [{ type: 'text', text: label }] };
     }
     const label = reason ? `Waited ${seconds}s for ${reason}` : `Waited ${seconds}s`;
     return { content: [{ type: 'text', text: label }] };
