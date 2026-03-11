@@ -122,4 +122,4 @@ The dashboard (`node dashboard/server.mjs`, default port 5200) watches the state
 - Playback recordings of multi-agent sessions
 - Drag-and-drop tiling layout via dockview
 
-Playback recordings are stored in `~/.fleet/playback/` as SQLite databases.
+Playback recordings are stored in `~/.claude/playbacks/` as JSON files.

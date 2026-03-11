@@ -5884,9 +5884,9 @@ function updateAgentsWidget(container, params, state) {
   if (dragLabel || dragAgent || dragGhost || _preDrag || container._resizing) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
   const agents0 = state.agents || []
-  const hasSleep = agents0.some(a => a._sleep)
-  const sleepTick = hasSleep ? Math.floor(Date.now() / 1000) : 0
-  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '') + ':' + (a._sleep?.until || '')).join('|') + ':' + sleepTick
+  const hasTimers = agents0.some(a => a._timers?.length)
+  const timerTick = hasTimers ? Math.floor(Date.now() / 1000) : 0
+  const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '') + ':' + (a._timers?.map(t => t.until).join(',') || '')).join('|') + ':' + timerTick
   const taskHash = (state.tasks || []).filter(t => t.status !== 'done').map(t => t.agent + ':' + t.status + ':' + (t.description || '').slice(0, 30)).join('|')
   const seenHash = Object.keys(chatSeenByAgent).sort().map(k => k.slice(0,8) + ':' + chatSeenByAgent[k]).join(',')
   const msgHash = (state.messages || []).length + ':' + selectedAgent + ':' + seenHash
@@ -6010,10 +6010,12 @@ function updateAgentsWidget(container, params, state) {
     if (compacting) {
       badges.push(`<span class="agent-badge compacting-badge">compacting...</span>`)
     }
-    if (a._sleep) {
-      const remaining = Math.max(0, Math.ceil((new Date(a._sleep.until) - Date.now()) / 1000))
-      const sleepText = a._sleep.reason ? `waiting ${remaining}s for ${a._sleep.reason}` : `waiting ${remaining}s`
-      badges.push(`<span class="agent-badge" style="color:var(--text-dim);opacity:0.6">${esc(sleepText)}</span>`)
+    if (a._timers?.length) {
+      for (const t of a._timers) {
+        const remaining = Math.max(0, Math.ceil((new Date(t.until) - Date.now()) / 1000))
+        const timerText = `⏰ ${remaining}s → ${t.message}`
+        badges.push(`<span class="agent-badge" style="color:var(--text-dim);opacity:0.6">${esc(timerText)}</span>`)
+      }
     }
     if (a._task && !a._task.synthetic) {
       const leadsMatch = a._task.description?.match(/^leads?\s+([\w-]+)$/i)
@@ -9124,9 +9126,9 @@ function connectSSE() {
       broadcastUpdate(state)
     } catch {}
   }
-  // Tick countdown for sleeping agents (1s interval, only active when someone is sleeping)
+  // Tick countdown for agent timers (1s interval, only active when someone has timers)
   setInterval(() => {
-    if (currentState?.agents?.some(a => a._sleep)) broadcastUpdate(currentState)
+    if (currentState?.agents?.some(a => a._timers?.length)) broadcastUpdate(currentState)
   }, 1000)
   // Queue auto-flush: check every 3s if queued messages can be sent to idle agents
   setInterval(() => {

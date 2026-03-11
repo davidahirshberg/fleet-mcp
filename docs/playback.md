@@ -12,7 +12,7 @@ playback_record(title, sources, project?)
 - `sources`: Agent session IDs or log files to include
 - `project`: Optional project filter
 
-Recordings are stored as SQLite databases in `~/.fleet/playback/`.
+Recordings are stored as JSON files in `~/.claude/playbacks/`.
 
 ## Managing recordings
 

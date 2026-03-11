@@ -89,7 +89,7 @@ listen_on unix:/tmp/kitty-sock-{kitty_pid}
 | `chat(message, to?)` | Send a message. Omit `to` to message the manager. |
 | `task_done(agent?)` | Mark own task done (or another's, manager only). |
 | `task_list()` | List active tasks and registered agents. |
-| `sleep(seconds, reason?)` | Instrumented sleep with dashboard countdown. Interruptable. |
+| `timer(seconds, message)` | Non-blocking timer. Returns immediately, delivers 📬 when it fires. |
 
 ### Manager-only
 

@@ -6,100 +6,7 @@ Agent identity = session UUID (auto-detected from most recent JSONL). Kitty wind
 
 ## Tools
 
-### register(manager?, testing?, session_id?, name?)
-
-All agents call this at session start. Auto-detects the session UUID from the most recent JSONL in the project directory. Stores the agent in the registry with UUID as identity, kitty window ID (from `$KITTY_WINDOW_ID`) as notification address, and working directory (`$PWD`). Preserves any friendly name assigned by the manager across re-registrations.
-
-- `manager`: set true to register as manager (starts keepalive watcher)
-- `testing`: set true (with `manager=true`) to register as a secondary/test manager. Gets full manager privileges but does not replace the primary manager or start keepalive. See [Multi-Manager (Testing)](#multi-manager-testing).
-- `session_id`: Claude session ID (override auto-detection)
-- `name`: agent name (for headless agents without a session)
-
-### delegate(agent, description, message, after?, friendly_name?)
-
-Assign a task to an agent. Writes task to state and kicks the agent via kitty so they know to check. Manager only. Agent must be registered — rejects unknown identifiers.
-
-- `agent`: Session UUID, agent name, or friendly name
-- `description`: Short human-readable label (5-10 words)
-- `message`: Full task message
-- `after`: Optional. Task ID or array of IDs — task is blocked until all complete.
-- `friendly_name`: Optional. Set a friendly name for the agent (same as `name_agent`).
-
-Returns task ID. Use in `after` for dependent tasks.
-
-### chat(message, to?)
-
-Send a message to another agent's inbox. Writes to state and kicks the recipient via kitty. Recipient must be registered — rejects unknown identifiers.
-
-- `message`: Message to send
-- `to`: Optional. Session UUID, agent name, or friendly name. Omit to send to the manager. Use `"web"`, `"skip"`, or `"human"` to send to the dashboard — it receives messages via SSE (no agent registration needed).
-
-### task_list()
-
-List all active tasks and registered agents. Call at session start.
-
-### task_done(agent?)
-
-Mark a task done. No args = mark own task. Marking another agent's task requires manager. Automatically unblocks dependent tasks and kicks them via kitty.
-
-### task_check(win)
-
-**Escape hatch.** Read an agent's kitty terminal window directly. For when an agent is stuck or unresponsive. Takes a kitty window ID (this is the one place kitty IDs are used directly). If the window is gone, removes the agent from the registry.
-
-### my_task()
-
-Show own task, unread messages (reads them inline).
-
-### register_manager()
-
-Alias for `register(manager=true)`.
-
-### unregister_manager()
-
-Step down as manager. Manager only.
-
-### name_agent(agent, friendly_name)
-
-Set or change a friendly name for an agent. Manager only. Names are for manager/human communication — agents don't need to know their names.
-
-- `agent`: Session UUID, agent name, or friendly name
-- `friendly_name`: Human-readable name (e.g. "sims guy", "survival paper")
-
-Names persist across agent re-registrations. All tools that accept an agent identifier also accept friendly names.
-
-### respawn(agent, win?)
-
-Resume a dead agent session. Manager only. Looks up the agent's session ID and working directory from the registry, finds an idle kitty tab, and runs `cd <cwd> && claude --resume <session_id>`.
-
-- `agent`: Session UUID, agent name, or friendly name
-- `win`: Optional. Kitty window to use. Omit to auto-find an idle tab (prefers the agent's old window if alive, then any idle tab not assigned to another agent).
-
-Updates the agent's registry entry with the new kitty window.
-
-### spawn(cwd?, win?)
-
-Launch a fresh claude agent in a new kitty tab. Manager only. The new agent will call `register()` on startup per its CLAUDE.md guidance.
-
-- `cwd`: Working directory. Defaults to home directory.
-- `win`: Optional. Kitty window to use instead of creating a new tab.
-
-Returns the kitty window ID. Once the agent registers, find its UUID via `task_list()` and use that for `delegate()`.
-
-### interrupt(agent, message?)
-
-Send a kitty ESC interrupt to break into an agent that is mid-tool-chain. Manager only. NOT for routine notifications — those go through `fs.watch` automatically.
-
-- `agent`: Session UUID, agent name, or friendly name
-- `message`: Optional message delivered via chat before the interrupt
-
-### sleep(seconds, reason?)
-
-Instrumented sleep with dashboard countdown. Use instead of bash `sleep` when waiting for something. The dashboard shows a live countdown on the agent's card.
-
-- `seconds`: Duration (1–600)
-- `reason`: What you're waiting for (shown as "waiting Ns for \<reason\>")
-
-**Interruptable**: if a message or task arrives during sleep, the tool returns early with "Woke up after Xs of Ys — you have messages." Call `my_task()` to handle the interrupt, then `sleep(remaining)` to resume waiting.
+See **[agent-guide.md](agent-guide.md)** for the full tool reference (parameters, usage, conventions). Symlink to `~/.claude/reference/fleet.md`.
 
 ## delegate vs chat
 
@@ -120,15 +27,16 @@ All managers are peers — any manager can manage any agent. No hierarchy. `chat
 3. Agent sees 📬 (via PostToolUse hook or kitty kick) — calls `my_task()` to get the task
 4. Agent works, uses `chat()` to report progress
 5. Agent finishes, calls `task_done()`
-6. Agent keeps working or uses `sleep()` — sees 📬 when the next task arrives
+6. Agent keeps working or uses `timer()` — sees 📬 when something arrives
 
 ## Notification Model
 
-Three-tier message delivery, from lightest to heaviest:
+Two-tier message delivery, from lightest to heaviest:
 
 1. **PostToolUse hook** — after every Claude Code tool call, a shell hook checks the state file for unread messages/tasks. If found, it injects 📬 as `additionalContext`. Zero latency for working agents.
-2. **`sleep()` wakeup** — if an agent is in `sleep()`, incoming messages resolve the sleep early. The agent gets "Woke up after Xs" and can call `my_task()`.
-3. **Kitty interrupt** — `interrupt()` sends ESC to a kitty window. For breaking into an agent that is truly stuck (mid-tool-chain, not responding to hooks). Last resort.
+2. **Kitty interrupt** — `interrupt()` sends ESC to a kitty window. For breaking into an agent that is truly stuck (mid-tool-chain, not responding to hooks). Last resort.
+
+`timer()` notifications also deliver via the state file — the PostToolUse hook picks them up.
 
 **When you see 📬 as input, call `my_task()`.** This is the universal response. `my_task()` returns your current task and any unread messages.
 

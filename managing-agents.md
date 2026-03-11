@@ -60,7 +60,7 @@ With `agent-read` and `agent-kick` available, a meta session can actively interv
 - `register(manager?, session_id?, name?)` — register this agent. **All agents call this at session start.** Adds to the agent registry so kicks work. Captures `$PWD` as working directory. Pass `manager=true` for the manager session.
 - `delegate(agent, description, message, after?, friendly_name?)` — assign a task. Writes to state and kicks the agent via kitty. `agent` is a session UUID, agent name, or friendly name. Agent must be registered. Optional `after` for dependencies. Optional `friendly_name` to name the agent on first delegation.
 - `chat(message, to?)` — send a message. Writes to state and kicks the recipient via kitty. Omit `to` to send to the manager.
-- `sleep(seconds, reason?)` — instrumented sleep with dashboard countdown. Interruptable — wakes early on incoming messages.
+- `timer(seconds, message)` — non-blocking timer. Returns immediately, delivers 📬 when it fires. Use instead of bash `sleep && ...`.
 - `task_list()` — show all active tasks + registered agents. **Call at session start.** Shows friendly names when set.
 - `task_done(agent?)` — mark a task done. No args = mark own task. Marking another agent's task requires manager. Automatically unblocks dependent tasks and kicks them.
 - `task_check(win)` — **escape hatch.** Read an agent's kitty terminal directly. For stuck/unresponsive agents only.
@@ -89,7 +89,7 @@ Agents must be registered for kicks to work. Headless agents (no kitty) get noti
 3. Agent sees 📬, calls `my_task()` — gets the task
 4. Agent works, uses `chat()` to report progress
 5. Agent finishes, calls `task_done()`
-6. Agent uses `sleep()` to wait — wakes on next task/message
+6. Agent keeps working or uses `timer()` for delayed checks
 
 ### Agent types
 
@@ -134,7 +134,7 @@ Use `after` to chain tasks: `delegate(agent=18, description="build paper", messa
 
 **Manager**: `register_manager()` then `task_list()`. Register stores your session UUID and kitty window, adds you to the registry, and starts the keepalive watcher. Task list recovers monitoring state.
 
-**Workers**: `register()` then `my_task()`. Register adds you to the registry so notifications reach you. Then work or `sleep()` until a task arrives.
+**Workers**: `register()` then `my_task()`. Register adds you to the registry so notifications reach you. Then work or wait — the PostToolUse hook delivers 📬 when a task arrives.
 
 ### The keepalive watcher
 

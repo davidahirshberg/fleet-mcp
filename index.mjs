@@ -394,6 +394,15 @@ function getAgent(state, id) {
   return prefixMatches.length === 1 ? prefixMatches[0] : null;
 }
 
+// Set friendly_name on an agent. Returns error string if name is taken, null on success.
+function nameAgent(state, agent, friendlyName) {
+  const conflict = state.agents.find(a => a.id !== agent.id && (a.friendly_name === friendlyName || a.name === friendlyName));
+  if (conflict) return `Name "${friendlyName}" is already taken by ${conflict.friendly_name || conflict.name || conflict.id}.`;
+  agent.friendly_name = friendlyName;
+  setTabTitle(agent.kitty_win, friendlyName);
+  return null;
+}
+
 function removeAgent(state, id) {
   if (!state.agents) return;
   state.agents = state.agents.filter(a => a.id !== id && a.name !== id && a.friendly_name !== id);
@@ -810,15 +819,15 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
       },
     },
     {
-      name: 'sleep',
-      description: 'Instrumented sleep — visible countdown in the dashboard. Use instead of bash sleep when waiting for something.',
+      name: 'timer',
+      description: 'Set a non-blocking timer. Returns immediately — you get a 📬 notification when it fires. Use instead of `sleep X && ...` in bash.',
       inputSchema: {
         type: 'object',
         properties: {
-          seconds: { type: 'number', description: 'Duration in seconds' },
-          reason: { type: 'string', description: 'What you\'re waiting for (shown as "waiting Ns for <reason>")' },
+          seconds: { type: 'number', description: 'Duration in seconds (1–600)' },
+          message: { type: 'string', description: 'Reminder message delivered when timer fires (e.g. "check build status")' },
         },
-        required: ['seconds'],
+        required: ['seconds', 'message'],
       },
     },
     // ---- Playback tools ----
@@ -1131,7 +1140,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Set friendly name if provided
     if (args.friendly_name) {
-      if (agentEntry) agentEntry.friendly_name = args.friendly_name;
+      const err = nameAgent(state, agentEntry, args.friendly_name);
+      if (err) return { content: [{ type: 'text', text: err }], isError: true };
     }
 
     const blocked = blockedBy.length > 0 && blockedBy.some(depId => {
@@ -1433,9 +1443,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const agent = getAgent(state, agentId);
     if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not registered.` }], isError: true };
     const oldName = agent.friendly_name;
-    agent.friendly_name = friendlyName;
+    const err = nameAgent(state, agent, friendlyName);
+    if (err) return { content: [{ type: 'text', text: err }], isError: true };
     saveState(state);
-    setTabTitle(agent.kitty_win, friendlyName);
     const msg = oldName
       ? `Renamed ${agent.id}: "${oldName}" → "${friendlyName}"`
       : `Named ${agent.id}: "${friendlyName}"`;
@@ -1891,8 +1901,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     for (const t of targets) {
       try {
         // Send /mcp + Enter via kitty to trigger Claude Code's MCP restart
+        // Must send ESC after /mcp to dismiss autocomplete menu, then Enter
         const sock = execSync(`ls -t /tmp/kitty-sock-* 2>/dev/null | head -1`, { encoding: 'utf8', timeout: 3000 }).trim();
-        execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${t.kitty_win}" '/mcp\n'`, { timeout: 5000 });
+        const match = `--match "id:${t.kitty_win}"`;
+        execSync(`kitty @ --to "unix:${sock}" send-text ${match} '\\x1b'`, { timeout: 5000 });
+        execSync(`kitty @ --to "unix:${sock}" send-text ${match} '/mcp'`, { timeout: 5000 });
+        execSync(`kitty @ --to "unix:${sock}" send-text ${match} '\\x1b'`, { timeout: 5000 });
+        execSync(`kitty @ --to "unix:${sock}" send-text ${match} '\\r'`, { timeout: 5000 });
         results.push(`${t.friendly_name || t.id}: sent`);
       } catch {
         results.push(`${t.friendly_name || t.id}: failed`);
@@ -2215,63 +2230,50 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
   }
 
-  // ---- sleep (instrumented) ----
-  if (name === 'sleep') {
+  // ---- timer (non-blocking) ----
+  if (name === 'timer') {
     const seconds = Math.min(Math.max(args.seconds || 10, 1), 600);
-    const reason = args.reason || null;
+    const message = args.message || 'Timer fired';
     const state = loadState();
     const agent = (state.agents || []).find(a => a.id === ME);
     if (agent) {
-      agent._sleep = {
+      if (!agent._timers) agent._timers = [];
+      const timerId = `timer-${Date.now()}`;
+      agent._timers.push({
+        id: timerId,
         until: new Date(Date.now() + seconds * 1000).toISOString(),
-        reason,
-        started: new Date().toISOString(),
-      };
+        message,
+      });
       saveState(state);
-    }
-    const startTime = Date.now();
-    // Race: sleep timer vs incoming message/task for this agent
-    const result = await new Promise(resolve => {
-      const timer = setTimeout(() => {
-        if (watcher) watcher.close();
-        resolve('completed');
-      }, seconds * 1000);
-      let watcher;
-      try {
-        watcher = fs.watch(STATE_FILE, { persistent: false }, () => {
-          // Check if there's a new message or task for this agent
-          const snap = loadState();
-          const hasUnread = (snap.messages || []).some(m => m.to === ME && !m.read);
-          const myTask = (snap.tasks || []).find(t => t.agent === ME && t.status !== 'done');
-          const taskChanged = myTask && (myTask.status === 'pending' || !myTask.acknowledged);
-          if (hasUnread || taskChanged) {
-            clearTimeout(timer);
-            watcher.close();
-            resolve('interrupted');
+      // Fire after delay: deliver message to self via state file
+      setTimeout(() => {
+        try {
+          const s = loadState();
+          // Add message to self
+          if (!s.messages) s.messages = [];
+          s.messages.push({
+            to: ME,
+            from: ME,
+            text: `⏰ ${message}`,
+            timestamp: new Date().toISOString(),
+            read: false,
+            _timer: true,
+          });
+          // Remove this timer from agent state
+          const a = (s.agents || []).find(a => a.id === ME);
+          if (a?._timers) {
+            a._timers = a._timers.filter(t => t.id !== timerId);
+            if (a._timers.length === 0) delete a._timers;
           }
-          // Otherwise keep sleeping
-        });
-        watcher.on('error', () => {}); // ignore watch errors, timer still works
-      } catch {
-        // fs.watch not available — just use the timer
-      }
-    });
-    const elapsed = Math.round((Date.now() - startTime) / 1000);
-    // Clear sleep state
-    const state2 = loadState();
-    const agent2 = (state2.agents || []).find(a => a.id === ME);
-    if (agent2?._sleep) {
-      delete agent2._sleep;
-      saveState(state2);
+          saveState(s);
+          // Kick self via kitty if we have a window
+          if (a?.kitty_win) {
+            try { kickAgent(a.kitty_win); } catch {}
+          }
+        } catch {}
+      }, seconds * 1000);
     }
-    if (result === 'interrupted') {
-      const label = reason
-        ? `Woke up after ${elapsed}s of ${seconds}s (was waiting for ${reason}) — you have messages. Call my_task().`
-        : `Woke up after ${elapsed}s of ${seconds}s — you have messages. Call my_task().`;
-      return { content: [{ type: 'text', text: label }] };
-    }
-    const label = reason ? `Waited ${seconds}s for ${reason}` : `Waited ${seconds}s`;
-    return { content: [{ type: 'text', text: label }] };
+    return { content: [{ type: 'text', text: `Timer set: ${seconds}s → "${message}". You'll get 📬 when it fires.` }] };
   }
 
   // ---- playback_record ----
