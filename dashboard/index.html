@@ -159,14 +159,48 @@
     transform: translateY(-50%);
     font-size: 11px;
     opacity: 0.3;
-    pointer-events: none;
+    pointer-events: auto;
+    cursor: pointer;
     z-index: 2;
     white-space: nowrap;
     transition: opacity 0.15s;
     font-family: inherit;
   }
   .chat-input-wrap:hover .chat-target-ghost { opacity: 0.5; }
-  .chat-target-ghost.hidden { opacity: 0; }
+  .chat-target-ghost:hover { opacity: 0.8 !important; }
+  .chat-target-ghost.hidden { opacity: 0; pointer-events: none; }
+  .chat-target-ghost.has-mode { opacity: 0.7; }
+  .pill-menu {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    min-width: 120px;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    font-size: 12px;
+  }
+  .pill-menu-item {
+    padding: 5px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+  }
+  .pill-menu-item:hover { background: var(--hover); color: var(--text); }
+  .pill-menu-item.active { color: var(--text); }
+  .pill-menu-item .pill-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: transparent; border: 1px solid var(--text-dim);
+    flex-shrink: 0;
+  }
+  .pill-menu-item.active .pill-dot { border: none; }
+  .pill-menu-item.active.queue-item .pill-dot { background: var(--cyan); }
+  .pill-menu-item.active.interrupt-item .pill-dot { background: var(--orange); }
   .chat-widget {
     display: flex;
     flex-direction: column;
@@ -2273,13 +2307,48 @@
   body.demo-mode .chat-input-bar textarea,
   body.demo-mode .chat-send { pointer-events: none; }
 
+  /* Command palette */
+  .cmd-palette-overlay {
+    display: none; position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.5); align-items: flex-start; justify-content: center; padding-top: 15vh;
+  }
+  .cmd-palette-overlay.open { display: flex; }
+  .cmd-palette {
+    width: 500px; max-height: 400px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column;
+  }
+  .cmd-palette input {
+    width: 100%; padding: 12px 16px; background: var(--surface); border: none;
+    border-bottom: 1px solid var(--border); color: var(--text); font-size: 14px;
+    font-family: inherit; outline: none;
+  }
+  .cmd-palette input::placeholder { color: var(--text-dim); }
+  .cmd-palette-list { overflow-y: auto; flex: 1; padding: 4px 0; }
+  .cmd-palette-section { padding: 6px 16px 2px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .cmd-palette-item {
+    padding: 8px 16px; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+    border-left: 2px solid transparent;
+  }
+  .cmd-palette-item:hover, .cmd-palette-item.selected {
+    background: rgba(147,112,219,0.15); border-left-color: var(--accent);
+  }
+  .cmd-palette-item .shortcut { color: var(--text-dim); font-size: 11px; }
+
 </style>
 </head>
 <body>
 <div id="app"></div>
+<div class="cmd-palette-overlay" id="command-palette">
+  <div class="cmd-palette">
+    <input type="text" placeholder="Type a command or search..." autocomplete="off" spellcheck="false">
+    <div class="cmd-palette-list"></div>
+  </div>
+</div>
 <script type="module">
 import { DockviewComponent } from 'dockview-core'
 import 'dockview-core/dist/styles/dockview.css'
+import { tinykeys } from 'https://cdn.jsdelivr.net/npm/tinykeys@3.0.0/+esm'
 
 
 // --- Config ---
@@ -2440,11 +2509,16 @@ const playbackCtrl = {
           const sendDelay = 300
           if (this.currentT >= ev.t + sendDelay) {
             messages.push({ _evType: ev.type, from, to, text, timestamp: mkTs(ev.t) })
-          } else if (this.currentT >= typingStart) {
-            const elapsed = this.currentT - typingStart
-            const charRate = text.length / typingDur
-            const revealed = Math.floor(elapsed * charRate)
-            typing = { text: text.slice(0, Math.min(revealed, text.length)), to }
+          } else {
+            // Don't let cache advance past this event until the message is pushed
+            // (fixes: at low speeds, cache advances during typing phase, message never appears)
+            if (cacheIdx > i) cacheIdx = i
+            if (this.currentT >= typingStart) {
+              const elapsed = this.currentT - typingStart
+              const charRate = text.length / typingDur
+              const revealed = Math.floor(elapsed * charRate)
+              typing = { text: text.slice(0, Math.min(revealed, text.length)), to }
+            }
           }
           // else: event is in the future and typing hasn't started — skip
         } else if (ev.t <= this.currentT) {
@@ -2495,11 +2569,15 @@ const playbackCtrl = {
                 text: fullText,
                 timestamp: mkTs(ev.t),
               })
-            } else if (this.currentT >= typingStart) {
-              const elapsed = this.currentT - typingStart
-              const charRate = fullText.length / typingDur
-              const revealed = Math.floor(elapsed * charRate)
-              typing = { text: fullText.slice(0, Math.min(revealed, fullText.length)), to: ev.sourceId || 'assistant' }
+            } else {
+              // Don't let cache advance past this event until the message is pushed
+              if (cacheIdx > i) cacheIdx = i
+              if (this.currentT >= typingStart) {
+                const elapsed = this.currentT - typingStart
+                const charRate = fullText.length / typingDur
+                const revealed = Math.floor(elapsed * charRate)
+                typing = { text: fullText.slice(0, Math.min(revealed, fullText.length)), to: ev.sourceId || 'assistant' }
+              }
             }
           }
         } else if (ev.t > this.currentT) {
@@ -3740,7 +3818,11 @@ function createChatWidget(container, params) {
         <div class="chat-input-wrap">
           <div class="chat-ghost"></div>
           <span class="chat-target-ghost"></span>
-          <textarea rows="1" placeholder="Message..." class="chat-input" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
+          <div class="pill-menu" style="display:none">
+            <div class="pill-menu-item queue-item" data-mode="queue"><span class="pill-dot"></span>Queue</div>
+            <div class="pill-menu-item interrupt-item" data-mode="interrupt"><span class="pill-dot"></span>Interrupt</div>
+          </div>
+          <textarea rows="1" placeholder="" class="chat-input" autocorrect="off" autocapitalize="off" spellcheck="false"></textarea>
         </div>
         <span class="chat-input-status"></span>
       </div>
@@ -3956,11 +4038,12 @@ function createChatWidget(container, params) {
 
   async function flushQueue(ctr, chatLog, chatInput, chatParams) {
     const buf = ctr._queueBuffer || []
+    const targets = ctr._modeTargets ? [...ctr._modeTargets] : []
     ctr._queueMode = false
     ctr._modeTargets = null
     ctr._queueBuffer = []
     ctr.querySelector('.chat-input-bar').classList.remove('queue-mode')
-    chatInput.placeholder = 'Message...'
+    updatePillMode()
     // Unfade queued messages in the chat log
     for (const el of chatLog.querySelectorAll('.chat-queued')) {
       el.style.opacity = '1'
@@ -3968,7 +4051,6 @@ function createChatWidget(container, params) {
     }
     if (buf.length === 0) return
     // Send all queued messages
-    const targets = ctr._modeTargets ? [...ctr._modeTargets] : []
     if (targets.length === 0 && ctr._chatTarget) targets.push(ctr._chatTarget)
     if (targets.length === 0 && ctr._labelFilter?.length && currentState) {
       (currentState.agents || []).filter(a => agentMatchesDnf(ctr._labelFilter, a)).forEach(a => targets.push(a.id))
@@ -4039,7 +4121,31 @@ function createChatWidget(container, params) {
     if (container._terminalCard) { container._terminalCard.remove(); container._terminalCard = null }
     container._terminalMode = false
     inputStatus.textContent = ''
-    input.placeholder = 'Message...'
+  }
+
+  function updatePillMode() {
+    if (!targetGhost) return
+    let prefix = ''
+    if (container._queueMode) prefix = '<span style="color:var(--cyan)">queue</span> '
+    else if (container._interruptMode) prefix = '<span style="color:var(--orange)">interrupt</span> '
+    targetGhost.classList.toggle('has-mode', !!(container._queueMode || container._interruptMode))
+    const target = container._chatTarget
+    const dnf = container._labelFilter?.length > 0 ? container._labelFilter : null
+    if (target && currentState) {
+      const label = agentLabel(currentState, target)
+      const cls = getNickClass(target, currentState)
+      targetGhost.innerHTML = `${prefix}<span class="${cls}">→ ${esc(label)}</span>`
+      targetGhost.classList.remove('hidden')
+    } else if (dnf && currentState) {
+      const matching = (currentState.agents || []).filter(a => agentMatchesDnf(dnf, a))
+      const expr = dnf.map(g => g.join(' & ')).join(' | ')
+      const countSuffix = matching.length > 1 ? ` (${matching.length})` : ''
+      targetGhost.innerHTML = `${prefix}<span style="color:var(--blue)">→ ${esc(expr)}${countSuffix}</span>`
+      targetGhost.classList.remove('hidden')
+    } else if (prefix) {
+      targetGhost.innerHTML = prefix
+      targetGhost.classList.remove('hidden')
+    }
   }
 
   async function send() {
@@ -4057,13 +4163,11 @@ function createChatWidget(container, params) {
     // /queue — toggle queue mode. Messages held until each target goes idle.
     if (msg === '/queue' || msg.startsWith('/queue ')) {
       if (container._queueMode) {
-        // Toggle off
+        // Toggle off — don't flush, just exit mode
         container._queueMode = false
         container._modeTargets = null
         container.querySelector('.chat-input-bar').classList.remove('queue-mode')
-        input.placeholder = 'Message...'
-        flushQueue(container, log, input, params)
-        if (currentState) try { updateChatWidget(container, container._widgetParams, currentState) } catch {}
+        updatePillMode()
         return
       }
       const rest = msg.slice(6).trim()
@@ -4091,41 +4195,50 @@ function createChatWidget(container, params) {
       container._modeTargets = new Set(targets)
       container._queueBuffer = []
       container._queueAgentWasWorking = {}
-      for (const t of targets) container._queueAgentWasWorking[t] = true
+      for (const t of targets) {
+        const agent = (currentState?.agents || []).find(a => a.id === t)
+        const ago = agent?.last_seen ? Math.floor((Date.now() - new Date(agent.last_seen).getTime()) / 1000) : Infinity
+        container._queueAgentWasWorking[t] = ago < 15
+      }
       container.querySelector('.chat-input-bar').classList.add('queue-mode')
-      input.placeholder = 'Queued message...'
-      if (currentState) try { updateChatWidget(container, container._widgetParams, currentState) } catch {}
+      updatePillMode()
       return
     }
-    // /interrupt [agent] [message] — send interrupt immediately (no toggle)
-    if (msg.startsWith('/interrupt')) {
-      const rest = msg.slice('/interrupt'.length).trim()
-      let target = container._chatTarget
-      let interruptMsg = rest
-      if (rest && currentState) {
-        const firstWord = rest.split(/\s+/)[0]
-        const match = (currentState.agents || []).find(a =>
-          a.friendly_name === firstWord || a.name === firstWord ||
-          (a.friendly_name?.toLowerCase() === firstWord.toLowerCase()) ||
-          (a.name?.toLowerCase() === firstWord.toLowerCase())
-        )
-        if (match) {
-          target = match.id
-          interruptMsg = rest.slice(firstWord.length).trim()
-        }
-      }
-      if (!target) {
-        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Select an agent or specify one: /interrupt &lt;agent&gt; message</div>`
+    // /interrupt — toggle interrupt mode. Messages sent as interrupts (kitty ESC + chat).
+    if (msg === '/interrupt' || msg.startsWith('/interrupt ')) {
+      if (container._interruptMode) {
+        // Toggle off
+        container._interruptMode = false
+        container._modeTargets = null
+        container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
+        updatePillMode()
         return
       }
-      try {
-        const body = { agent: target }
-        if (interruptMsg) body.message = interruptMsg
-        const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-        const data = await res.json()
-        if (data.error) log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(data.error)}</div>`
-      } catch (err) { log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>` }
-      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      const rest = msg.slice('/interrupt'.length).trim()
+      let targets = []
+      if (rest && currentState) {
+        for (const name of rest.split(/\s+/)) {
+          const match = (currentState.agents || []).find(a =>
+            a.friendly_name === name || a.name === name || a.id === name ||
+            (a.friendly_name?.toLowerCase() === name.toLowerCase()) ||
+            (a.name?.toLowerCase() === name.toLowerCase())
+          )
+          if (match) targets.push(match.id)
+        }
+      }
+      if (targets.length === 0 && container._chatTarget) targets.push(container._chatTarget)
+      if (targets.length === 0 && container._labelFilter?.length && currentState) {
+        targets = (currentState.agents || []).filter(a => agentMatchesDnf(container._labelFilter, a)).map(a => a.id)
+      }
+      if (targets.length === 0) {
+        log.innerHTML += `<div class="chat-line" style="color:var(--orange)">No targets for interrupt mode</div>`
+        if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+        return
+      }
+      container._interruptMode = true
+      container._modeTargets = new Set(targets)
+      container.querySelector('.chat-input-bar').classList.add('interrupt-mode')
+      updatePillMode()
       return
     }
     if (msg.startsWith('/')) {
@@ -4175,6 +4288,30 @@ function createChatWidget(container, params) {
       return
     }
     container._autoScroll = true
+    // Interrupt mode: send as interrupt (kitty ESC + chat) instead of regular chat
+    if (container._interruptMode) {
+      const targets = container._modeTargets ? [...container._modeTargets] : [target]
+      for (const t of targets) {
+        try {
+          const body = { agent: t }
+          if (msg) body.message = msg
+          const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          const data = await res.json()
+          if (data.error) {
+            log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed (${esc(t.substring(0,8))}): ${esc(data.error)}</div>`
+          }
+        } catch (err) {
+          log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>`
+        }
+      }
+      // Auto-toggle off after sending interrupt
+      container._interruptMode = false
+      container._modeTargets = null
+      container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
+      updatePillMode()
+      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      return
+    }
     // Queue mode: buffer messages locally instead of sending
     if (container._queueMode) {
       if (!container._queueBuffer) container._queueBuffer = []
@@ -4185,6 +4322,10 @@ function createChatWidget(container, params) {
       renderChatAttachments()
       if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
       return
+    }
+    // Flush any queued messages first to maintain temporal order
+    if (container._queueBuffer?.length) {
+      await flushQueue(container, log, input, params)
     }
     {
       // Send as chat — optimistic display + retry on failure
@@ -4384,7 +4525,40 @@ function createChatWidget(container, params) {
 
   container._queueMode = false
   container._queueBuffer = []
+  container._interruptMode = false
 
+  // Pill menu — click target ghost to toggle queue/interrupt modes
+  const pillMenu = container.querySelector('.pill-menu')
+  if (targetGhost && pillMenu) {
+    targetGhost.addEventListener('click', e => {
+      e.stopPropagation()
+      // Don't open if no target
+      if (!container._chatTarget && !(container._labelFilter?.length > 0)) return
+      const showing = pillMenu.style.display !== 'none'
+      if (showing) { pillMenu.style.display = 'none'; return }
+      // Update active states
+      pillMenu.querySelector('.queue-item').classList.toggle('active', !!container._queueMode)
+      pillMenu.querySelector('.interrupt-item').classList.toggle('active', !!container._interruptMode)
+      pillMenu.style.display = ''
+    })
+    pillMenu.addEventListener('click', e => {
+      const item = e.target.closest('.pill-menu-item')
+      if (!item) return
+      e.stopPropagation()
+      const mode = item.dataset.mode
+      pillMenu.style.display = 'none'
+      // Synthesize the slash command by injecting it and calling send
+      if (mode === 'queue') {
+        input.value = '/queue'
+        send()
+      } else if (mode === 'interrupt') {
+        input.value = '/interrupt'
+        send()
+      }
+    })
+    // Close pill menu on outside click
+    document.addEventListener('click', () => { pillMenu.style.display = 'none' })
+  }
 
   // Image paste support
   input.addEventListener('paste', async e => {
@@ -5637,17 +5811,9 @@ function updateChatWidget(container, params, state) {
       input.placeholder = ''
     } else if (container._streamSource) {
       input.value = ''
-      const target = container._chatTarget ? agentLabel(state, container._chatTarget) : ''
-      input.placeholder = target ? `Message (to ${target})...` : 'Message...'
+      input.placeholder = ''
     } else {
-      const dnf = container._labelFilter && container._labelFilter.length > 0 ? container._labelFilter : null
-      const target = container._chatTarget
-      // Ghost pill shows the target — only use placeholder when there's no target at all
-      if (target || dnf) {
-        input.placeholder = ''
-      } else {
-        input.placeholder = 'Message...'
-      }
+      input.placeholder = ''
     }
     // Show agent status indicator (compacting / unreachable)
     const statusEl = container.querySelector('.chat-input-status')
@@ -5666,7 +5832,9 @@ function updateChatWidget(container, params, state) {
       const inputVal = input.value || ''
       // Mode prefix for pill
       let modePrefix = ''
-      if (container._queueMode) modePrefix = '<span style="color:var(--cyan)">queued</span> '
+      if (container._queueMode) modePrefix = '<span style="color:var(--cyan)">queue</span> '
+      else if (container._interruptMode) modePrefix = '<span style="color:var(--orange)">interrupt</span> '
+      ghost.classList.toggle('has-mode', !!(container._queueMode || container._interruptMode))
       if (target) {
         const label = agentLabel(state, target)
         const agent = (state.agents || []).find(a => a.id === target)
@@ -5681,6 +5849,7 @@ function updateChatWidget(container, params, state) {
         ghost.classList.toggle('hidden', inputVal.length > 30)
       } else {
         ghost.innerHTML = modePrefix || ''
+        ghost.classList.toggle('hidden', !modePrefix)
       }
     }
   }
@@ -5701,6 +5870,8 @@ function createAgentsWidget(container, params) {
 function updateAgentsWidget(container, params, state) {
   const list = container.querySelector('.agents-list')
   if (!list) return
+  // Clean up orphaned hover previews (left behind when agents table re-renders mid-hover)
+  document.querySelectorAll('.agent-terminal-preview').forEach(el => el.remove())
   // Skip re-render during active or pending drag to preserve pointer capture
   if (dragLabel || dragAgent || dragGhost || _preDrag || container._resizing) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
@@ -5863,7 +6034,7 @@ function updateAgentsWidget(container, params, state) {
     const foldToggle = a._isTeamLead ? `<span class="team-fold-toggle" data-manager-id="${esc(a.id)}" style="cursor:pointer;opacity:0.4;margin-right:3px;font-size:10px">${a._isFolded ? '▸' : '▾'}</span>` : ''
     const teamUnseenBadge = a._teamUnseen ? `<span class="agent-msg-badge" style="opacity:0.6;margin-left:2px" title="${a._teamUnseen} unseen from team">+${a._teamUnseen}</span>` : ''
     return `<tr class="agent-item${a._isTeamMember ? ' team-member' : ''}${a._isTeamLead ? ' team-lead' : ''}" style="${sel}${rowOpacity}" data-agent-id="${esc(a.id)}"${a._teamLeadId ? ` data-team-lead="${esc(a._teamLeadId)}"` : ''}>
-      <td style="${indent}">${foldToggle}<span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${active && a._task ? '<span class="agent-working-icon" title="Working">&gt;_</span>' : ''}${teamUnseenBadge}${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
+      <td style="${indent}">${foldToggle}<span class="agent-name ${getNickClass(a.id, state)}" data-agent-label="${esc(a._name)}">${esc(a._name)}</span>${a._ago < 30 ? '<span class="agent-working-icon" title="Working">&gt;_</span>' : ''}${teamUnseenBadge}${a._unseen ? `<span class="agent-msg-badge" draggable="true" data-agent-id="${esc(a.id)}" data-agent-name="${esc(a._name)}">${a._unseen}<span class="agent-msg-tooltip"><div class="agent-msg-tooltip-inner">${a._unseenMsgs.map(m => {
         const t = new Date(m.timestamp)
         const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
         const fromNick = agentLabel(state, m.from)
@@ -6058,7 +6229,7 @@ function updateAgentsWidget(container, params, state) {
     })
   })
 
-  // Working icon hover: terminal preview (tool calls, what agent is doing)
+  // Working icon hover: mini activity card preview
   list.querySelectorAll('.agent-working-icon').forEach(icon => {
     let previewEl = null
     let hoverTimer = null
@@ -6069,30 +6240,26 @@ function updateAgentsWidget(container, params, state) {
       if (!agentId) return
       hoverTimer = setTimeout(() => {
         fetchSessionLite(agentId)
-        const cached = window._sessionCache?.[agentId]
-        if (!cached?.data?.events?.length) return
-        const events = cached.data.events
-        const recent = events.slice(-20)
-        const lines = []
-        for (const ev of recent) {
-          if (ev.type !== 'assistant' || !ev.blocks) continue
-          for (const b of ev.blocks) {
-            if (b.type === 'tool_use') {
-              const name = humanizeToolName(b.name)
-              if (!name) continue
-              const arg = toolArgSummary(b.input, name)
-              lines.push(`<div class="atp-tool-card"><span class="tool-name">${esc(name)}</span>${arg ? ' <span style="color:var(--text-dim)">' + esc(arg.slice(0, 60)) + '</span>' : ''}</div>`)
-            } else if (b.type === 'text' && b.text) {
-              const snippet = b.text.split('\n')[0].slice(0, 120)
-              lines.push(`<div class="atp-text-line">${renderMarkdown(esc(snippet))}</div>`)
-            }
-          }
-        }
-        if (!lines.length) return
-        const shownLines = lines.slice(-8)
+        const evts = getActivityEvents(agentId)
+        if (!evts.length) return
+        // Show last ~8 tool steps, same format as inline activity cards
+        const toolEvts = evts.filter(e => e._activity && e._toolName).slice(-8)
+        if (!toolEvts.length) return
+        const agent = (state.agents || []).find(a => a.id === agentId)
+        const label = agent?.friendly_name || agent?.name || agentId.substring(0, 8)
+        const steps = dedupTools(toolEvts).map(t => {
+          const detail = t._toolDetail ? `<div style="color:var(--text-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px">${esc(t._toolDetail.slice(0, 120))}</div>` : ''
+          return `<div class="tool-step"><span style="color:var(--text)">${esc(t._toolName)}</span>${t._toolArg ? ` <span style="color:var(--text-dim)">${esc(t._toolArg.slice(0, 60))}</span>` : ''}${detail}</div>`
+        }).join('')
+        const lastEvt = toolEvts[toolEvts.length - 1]
+        const ctxPct = lastEvt?._ctxPct != null ? `<span class="activity-ctx">${lastEvt._ctxPct}%</span>` : ''
         previewEl = document.createElement('div')
         previewEl.className = 'agent-terminal-preview'
-        previewEl.innerHTML = `<div class="atp-tools">${shownLines.join('')}</div>`
+        previewEl.style.padding = '0'
+        previewEl.innerHTML = `<div class="chat-activity-card" style="margin:0;border:none">
+          <div class="activity-header"><span class="activity-agent ${getNickClass(agentId, state)}">${esc(label)}</span>${ctxPct}</div>
+          <div class="activity-detail" style="max-height:250px">${steps}</div>
+        </div>`
         document.body.appendChild(previewEl)
         const rect = icon.getBoundingClientRect()
         previewEl.style.left = (rect.right + 8) + 'px'
@@ -8749,9 +8916,10 @@ function syncStreamSources() {
     if (!inst || !panel.group) continue
     // Don't reassign playback widgets themselves
     if (inst.widget === WIDGETS.playback) continue
-    // Don't bind stream to chat panels with a live chat target — they show live data
-    if (inst.widget === WIDGETS.chat && inst.container._chatTarget) {
-      // Clear any stale stream source from a previous sync
+    // Don't propagate stream to outer chat panels — only inner playback chats
+    // (created with _isPlaybackWidget) should have _streamSource.
+    // Propagating to outer chats causes the 3s activity interval to clear the textarea.
+    if (inst.widget === WIDGETS.chat && !inst.container._isPlaybackWidget) {
       if (inst.container._streamSource) {
         inst.container._streamSource = null
         if (currentState) {
@@ -8936,55 +9104,49 @@ function connectSSE() {
     try {
       const state = JSON.parse(e.data)
       broadcastUpdate(state)
-      // Auto-flush queued messages per-target when agent transitions working → idle
-      for (const [, inst] of panelInstances) {
-        if (inst.widget !== WIDGETS?.chat || !inst.container._queueMode) continue
-        const ctr = inst.container
-        const targets = ctr._modeTargets
-        if (!targets || targets.size === 0) continue
-        const wasWorking = ctr._queueAgentWasWorking || {}
-        for (const t of [...targets]) {
-          const agentTask = (state.tasks || []).find(tk => tk.agent === t && tk.status !== 'done' && !tk.synthetic)
-          const isWorking = agentTask && agentTask.status === 'working'
-          if (wasWorking[t] && !isWorking) {
-            // This target went idle — flush queued messages to it
-            const buf = ctr._queueBuffer || []
-            for (const item of buf) {
-              const payload = { message: item.msg, to: t }
-              if (item.isRaw) payload._raw = true
-              if (item.attachments?.length) payload.attachments = item.attachments
-              fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => {})
-            }
-            targets.delete(t)
-            // Unfade queued messages
-            const chatLog = ctr.querySelector('.chat-log')
-            if (chatLog) {
-              for (const el of chatLog.querySelectorAll('.chat-queued')) {
-                el.style.opacity = '1'
-                el.classList.remove('chat-queued')
-              }
-            }
-          }
-          wasWorking[t] = isWorking
-        }
-        ctr._queueAgentWasWorking = wasWorking
-        // If all targets flushed, turn off queue mode
-        if (targets.size === 0) {
-          ctr._queueMode = false
-          ctr._modeTargets = null
-          ctr._queueBuffer = []
-          ctr.querySelector('.chat-input-bar')?.classList.remove('queue-mode')
-          const chatInput = ctr.querySelector('.chat-input')
-          if (chatInput) chatInput.placeholder = 'Message...'
-          if (currentState) try { updateChatWidget(ctr, ctr._widgetParams, currentState) } catch {}
-        }
-      }
     } catch {}
   }
   // Tick countdown for sleeping agents (1s interval, only active when someone is sleeping)
   setInterval(() => {
     if (currentState?.agents?.some(a => a._sleep)) broadcastUpdate(currentState)
   }, 1000)
+  // Queue auto-flush: check every 3s if queued messages can be sent to idle agents
+  setInterval(() => {
+    for (const [, inst] of panelInstances) {
+      if (inst.widget !== WIDGETS?.chat || !inst.container._queueMode) continue
+      const ctr = inst.container
+      const targets = ctr._modeTargets
+      if (!targets || targets.size === 0) continue
+      const buf = ctr._queueBuffer || []
+      if (buf.length === 0) continue
+      for (const t of [...targets]) {
+        const agent = (currentState?.agents || []).find(a => a.id === t)
+        const ago = agent?.last_seen ? Math.floor((Date.now() - new Date(agent.last_seen).getTime()) / 1000) : Infinity
+        if (ago >= 15) {
+          // Target is idle — flush queued messages
+          for (const item of buf) {
+            const payload = { message: item.msg, to: t }
+            if (item.isRaw) payload._raw = true
+            if (item.attachments?.length) payload.attachments = item.attachments
+            fetch('/api/chat', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }).catch(() => {})
+          }
+          targets.delete(t)
+        }
+      }
+      // If all targets flushed, turn off queue mode
+      if (targets.size === 0) {
+        ctr._queueMode = false
+        ctr._modeTargets = null
+        ctr._queueBuffer = []
+        ctr.querySelector('.chat-input-bar')?.classList.remove('queue-mode')
+        const pillGhost = ctr.querySelector('.chat-target-ghost')
+        if (pillGhost) pillGhost.classList.remove('has-mode')
+        const chatLog = ctr.querySelector('.chat-log')
+        if (chatLog) for (const el of chatLog.querySelectorAll('.chat-queued')) { el.style.opacity = '1'; el.classList.remove('chat-queued') }
+        if (currentState) try { updateChatWidget(ctr, ctr._widgetParams, currentState) } catch {}
+      }
+    }
+  }, 3000)
   // Session updates: new JSONL events from agent sessions (replaces polling)
   evtSource.addEventListener('session', (e) => {
     try {
@@ -9321,24 +9483,6 @@ function executeCommand(cmd) {
   return null // not a command, send as chat
 }
 
-// --- Keymap Engine (tinykeys) ---
-
-function focusWidget(name) {
-  for (const panel of dv.panels) {
-    if (panel.id === name || panel.id.startsWith(name + '-')) {
-      panel.api.setActive()
-      // Focus first input if exists
-      const inst = panelInstances.get(panel.id)
-      if (inst) {
-        const input = inst.container.querySelector('input, textarea')
-        if (input) setTimeout(() => input.focus(), 50)
-      }
-      return
-    }
-  }
-}
-
-
 
 // --- Apply config settings ---
 loadFleetConfig().then(() => {
@@ -9365,6 +9509,210 @@ loadFleetConfig().then(() => {
     document.head.appendChild(style)
   }
 })
+
+// --- Keymap Engine (tinykeys) ---
+
+function focusWidget(name) {
+  for (const panel of dv.panels) {
+    if (panel.id === name || panel.id.startsWith(name + '-')) {
+      panel.api.setActive()
+      const inst = panelInstances.get(panel.id)
+      if (inst) {
+        const input = inst.container.querySelector('input, textarea')
+        if (input) setTimeout(() => input.focus(), 50)
+      }
+      return
+    }
+  }
+}
+
+function toggleCommandPalette() {
+  const overlay = document.getElementById('command-palette')
+  if (overlay.classList.contains('open')) { window.closePalette() } else { window.openPalette() }
+}
+
+// Default keymap — overridden by ~/.fleet/keymap.json
+const DEFAULT_KEYMAP = {
+  '$mod+Shift+KeyS': 'split-chat',
+  '$mod+Shift+KeyV': 'vsplit-terminal',
+  '$mod+KeyW': 'close-panel',
+  '$mod+KeyK': 'command-palette',
+  'g g': 'focus-agents',
+  'g c': 'focus-chat',
+  'g s': 'focus-search',
+  'g t': 'focus-terminal',
+}
+
+const ACTIONS = {
+  'split-chat': () => executeCommand('/sp chat'),
+  'vsplit-terminal': () => executeCommand('/vsp terminal'),
+  'close-panel': () => executeCommand('/close'),
+  'command-palette': () => toggleCommandPalette(),
+  'focus-agents': () => focusWidget('agents'),
+  'focus-chat': () => focusWidget('chat'),
+  'focus-search': () => focusWidget('search'),
+  'focus-terminal': () => focusWidget('terminal'),
+  'focus-tasks': () => focusWidget('tasks'),
+  'reset-layout': () => executeCommand('/reset'),
+  'only': () => executeCommand('/only'),
+}
+
+let _keymapUnsubscribe = null
+
+function initKeymap() {
+  if (_keymapUnsubscribe) _keymapUnsubscribe()
+
+  const userBindings = fleetConfig._keymap?.bindings || {}
+  const timeout = fleetConfig._keymap?.timeout || 300
+  const merged = { ...DEFAULT_KEYMAP, ...userBindings }
+
+  const bindings = {}
+  for (const [keys, action] of Object.entries(merged)) {
+    const handler = typeof action === 'string' ? ACTIONS[action] : null
+    if (handler) {
+      bindings[keys] = (e) => {
+        // Don't intercept if typing in an input/textarea (unless it's a $mod combo)
+        const tag = document.activeElement?.tagName
+        if ((tag === 'INPUT' || tag === 'TEXTAREA') && !keys.includes('$mod')) return
+        e.preventDefault()
+        handler()
+      }
+    }
+  }
+
+  _keymapUnsubscribe = tinykeys(window, bindings, { timeout })
+}
+
+// Init keymap after config loads
+loadFleetConfig().then(() => initKeymap())
+
+// --- Command Palette ---
+
+// Build reverse map from action name to shortcut string for display
+function shortcutForAction(actionName) {
+  const userBindings = fleetConfig._keymap?.bindings || {}
+  const merged = { ...DEFAULT_KEYMAP, ...userBindings }
+  for (const [keys, action] of Object.entries(merged)) {
+    if (action === actionName) {
+      return keys.replace('$mod', '⌘').replace('Shift+', '⇧').replace('Key', '')
+    }
+  }
+  return ''
+}
+
+{
+  const overlay = document.getElementById('command-palette')
+  const input = overlay.querySelector('input')
+  const list = overlay.querySelector('.cmd-palette-list')
+  let actions = []
+  let selectedIdx = 0
+
+  window.openPalette = openPalette
+  window.closePalette = closePalette
+
+  function openPalette() {
+    buildActions()
+    input.value = ''
+    renderList('')
+    overlay.classList.add('open')
+    input.focus()
+  }
+
+  function closePalette() {
+    overlay.classList.remove('open')
+  }
+
+  function buildActions() {
+    actions = []
+
+    // Panel actions
+    for (const name of WIDGET_NAMES) {
+      const title = name.charAt(0).toUpperCase() + name.slice(1)
+      actions.push({ title: `Open ${title}`, section: 'Panels', handler: () => executeCommand(`/sp ${name}`) })
+      actions.push({ title: `VSplit ${title}`, section: 'Panels', handler: () => executeCommand(`/vsp ${name}`) })
+      actions.push({ title: `Tab ${title}`, section: 'Panels', handler: () => executeCommand(`/tab ${name}`) })
+    }
+
+    // Agent actions
+    for (const a of (currentState?.agents || [])) {
+      const label = a.friendly_name || a.name || a.id?.substring(0, 8)
+      actions.push({ title: `Chat with ${label}`, section: 'Agents', handler: () => {
+        selectedAgent = a.id
+        localStorage.setItem('fleet-selected-agent', a.id)
+        if (currentState) broadcastUpdate(currentState)
+      }})
+      actions.push({ title: `Terminal: ${label}`, section: 'Agents', handler: () => {
+        dv.addPanel({ id: `terminal-${Date.now()}`, component: 'terminal', title: `Terminal: ${label}`, params: { agentId: a.id } })
+      }})
+      if (a.kitty_win) {
+        actions.push({ title: `Interrupt ${label}`, section: 'Agents', handler: () =>
+          fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ agent: a.id }) })
+        })
+      }
+    }
+
+    // Layout commands
+    actions.push({ title: 'Reset layout', section: 'Layout', handler: () => executeCommand('/reset') })
+    actions.push({ title: 'Close other panels', section: 'Layout', handler: () => executeCommand('/only') })
+    const savedLayouts = JSON.parse(localStorage.getItem('fleet-layouts') || '{}')
+    for (const name of Object.keys(savedLayouts)) {
+      actions.push({ title: `Load layout: ${name}`, section: 'Layout', handler: () => executeCommand(`/load ${name}`) })
+    }
+
+    // Navigation — show tinykeys shortcuts
+    actions.push({ title: 'Focus chat', section: 'Navigation', shortcut: shortcutForAction('focus-chat'), handler: () => focusWidget('chat') })
+    actions.push({ title: 'Focus agents', section: 'Navigation', shortcut: shortcutForAction('focus-agents'), handler: () => focusWidget('agents') })
+    actions.push({ title: 'Focus search', section: 'Navigation', shortcut: shortcutForAction('focus-search'), handler: () => focusWidget('search') })
+    actions.push({ title: 'Focus terminal', section: 'Navigation', shortcut: shortcutForAction('focus-terminal'), handler: () => focusWidget('terminal') })
+  }
+
+  function renderList(query) {
+    const q = query.toLowerCase()
+    const filtered = q ? actions.filter(a => a.title.toLowerCase().includes(q) || (a.section||'').toLowerCase().includes(q)) : actions
+    selectedIdx = 0
+    list.innerHTML = ''
+    let lastSection = ''
+    filtered.forEach((action, i) => {
+      if (action.section && action.section !== lastSection) {
+        lastSection = action.section
+        const sec = document.createElement('div')
+        sec.className = 'cmd-palette-section'
+        sec.textContent = action.section
+        list.appendChild(sec)
+      }
+      const item = document.createElement('div')
+      item.className = 'cmd-palette-item' + (i === 0 ? ' selected' : '')
+      item.innerHTML = `<span>${esc(action.title)}</span>${action.shortcut ? `<span class="shortcut">${action.shortcut}</span>` : ''}`
+      item.addEventListener('click', () => { closePalette(); action.handler() })
+      item.addEventListener('mouseenter', () => {
+        list.querySelectorAll('.cmd-palette-item').forEach(el => el.classList.remove('selected'))
+        item.classList.add('selected')
+        selectedIdx = i
+      })
+      item._action = action
+      item._idx = i
+      list.appendChild(item)
+    })
+  }
+
+  input.addEventListener('input', () => renderList(input.value))
+
+  input.addEventListener('keydown', (e) => {
+    const items = list.querySelectorAll('.cmd-palette-item')
+    if (e.key === 'ArrowDown') { e.preventDefault(); selectedIdx = Math.min(selectedIdx + 1, items.length - 1) }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); selectedIdx = Math.max(selectedIdx - 1, 0) }
+    else if (e.key === 'Enter') {
+      e.preventDefault()
+      if (items[selectedIdx]?._action) { closePalette(); items[selectedIdx]._action.handler() }
+      return
+    } else if (e.key === 'Escape') { closePalette(); return }
+    else return
+    items.forEach((el, i) => el.classList.toggle('selected', i === selectedIdx))
+    items[selectedIdx]?.scrollIntoView({ block: 'nearest' })
+  })
+
+  overlay.addEventListener('click', (e) => { if (e.target === overlay) closePalette() })
+}
 
 // --- UI Event Collector ---
 const _uiEventBuffer = [];

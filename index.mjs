@@ -114,7 +114,18 @@ function sessionFromRoster() {
   return null;
 }
 
-const MY_SESSION = sessionFromRoster() || detectSessionId();
+// Roster gives us the last-known session for this kitty window.
+// But after a continuation (new JSONL, same window), roster is stale.
+// Always run detectSessionId() too — if it finds a different, more recent session, prefer it.
+const _rosterSession = sessionFromRoster();
+const _detectedSession = detectSessionId();
+const MY_SESSION = (() => {
+  if (!_rosterSession) return _detectedSession;
+  if (!_detectedSession) return _rosterSession;
+  if (_rosterSession === _detectedSession) return _rosterSession;
+  // Both exist but differ — detected is from JSONL mtime, likely more current
+  return _detectedSession;
+})();
 let MY_FLEET_ID = null;
 let ME = MY_SESSION;
 
@@ -960,10 +971,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       entry.registered_at = now();
       if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
       if (agentName) entry.name = agentName;
-      // Track session history
+      // Track session history — append, don't replace, so search index finds all sessions
       if (sessionId) {
         entry.session_id = sessionId;
-        entry.session_ids = [sessionId];
+        if (!entry.session_ids) entry.session_ids = [];
+        if (!entry.session_ids.includes(sessionId)) entry.session_ids.push(sessionId);
       }
     } else {
       // New agent — fleet ID is prefixed to distinguish from session UUIDs
