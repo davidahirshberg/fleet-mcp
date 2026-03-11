@@ -1403,15 +1403,6 @@
       }
     },
     {
-      "t": 459000,
-      "type": "name_change",
-      "source": "editorial",
-      "data": {
-        "agent": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
-        "friendly_name": "chief"
-      }
-    },
-    {
       "t": 460716,
       "type": "chat",
       "source": "events",
@@ -1439,15 +1430,6 @@
         "from": "web",
         "to": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
         "text": "seems like agents are using markdown and TeX in very reasonable ways but not in ways that renders. thoughts?\n\n[activity] 1 ×2 Read: appendix_folder/appendix_b_rewrite.tex\n2 ×3 Edit: appendix_folder/appendix_b_rewrite.tex\n3 Edit: appendix_folder/appendix_b_rewrite.tex\n4 ×2 Edit: appendix_folder/appendix_b_rewrite.tex\n5 E (from activity:cda22959-083f-4a2c-b842-923f4a8f23ee:2026-03-09T22:02:58.274Z)"
-      }
-    },
-    {
-      "t": 578000,
-      "type": "name_change",
-      "source": "editorial",
-      "data": {
-        "agent": "e667a693-a0bf-4804-8820-108d0c576ec3",
-        "friendly_name": "ops"
       }
     },
     {
@@ -6926,6 +6908,15 @@
       }
     },
     {
+      "t": 20490000,
+      "type": "name_change",
+      "source": "editorial",
+      "data": {
+        "agent": "e667a693-a0bf-4804-8820-108d0c576ec3",
+        "friendly_name": "ops"
+      }
+    },
+    {
       "t": 20501931,
       "type": "chat",
       "source": "events",
@@ -7001,6 +6992,15 @@
       "data": {
         "panel": "subtitle",
         "narration": "Now Skip needs to rebuild his fleet. He gives this new agent a name: \"ops.\" The problem? His chief of staff — the one who just died with kitty — was also named \"ops.\""
+      }
+    },
+    {
+      "t": 20558000,
+      "type": "name_change",
+      "source": "editorial",
+      "data": {
+        "agent": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
+        "friendly_name": "chief"
       }
     },
     {
@@ -9173,15 +9173,6 @@
       }
     },
     {
-      "t": 25000000,
-      "type": "name_change",
-      "source": "editorial",
-      "data": {
-        "agent": "e667a693-a0bf-4804-8820-108d0c576ec3",
-        "friendly_name": "fixer"
-      }
-    },
-    {
       "t": 25423438,
       "type": "chat",
       "source": "events",
@@ -9544,6 +9535,15 @@
         "from": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
         "to": "web",
         "text": "Done. I'm **fixer**. What needs fixing?"
+      }
+    },
+    {
+      "t": 26885000,
+      "type": "name_change",
+      "source": "editorial",
+      "data": {
+        "agent": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
+        "friendly_name": "fixer"
       }
     },
     {
@@ -10694,6 +10694,15 @@
         "from": "web",
         "to": "fleet:98d8b8a0",
         "text": "same deal with paperboy"
+      }
+    },
+    {
+      "t": 29485000,
+      "type": "name_change",
+      "source": "editorial",
+      "data": {
+        "agent": "c88bafbf-47e8-4055-b31b-b7d1d80f1474",
+        "friendly_name": "chief"
       }
     },
     {
