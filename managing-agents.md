@@ -53,14 +53,14 @@ With `agent-read` and `agent-kick` available, a meta session can actively interv
 
 ## Managing Multiple Agents
 
-**Use the fleet MCP server.** All agents have the `fleet` MCP server (`~/work/fleet/`), configured in `~/.claude/mcp.json`. Communication is MCP-native: agents receive work via `wait_for_task()` and send messages via `chat()`. No kitty terminal scraping for normal communication. State persists in `~/.claude/agent-tasks.json` across compaction and session restarts.
+**Use the fleet MCP server.** All agents have the `fleet` MCP server (`~/work/fleet/`), configured in `~/.claude/mcp.json`. Communication is MCP-native: agents receive work via `my_task()` and send messages via `chat()`. No kitty terminal scraping for normal communication. State persists in `~/.claude/agent-tasks.json` across compaction and session restarts.
 
 ### Tools
 
 - `register(manager?, session_id?, name?)` — register this agent. **All agents call this at session start.** Adds to the agent registry so kicks work. Captures `$PWD` as working directory. Pass `manager=true` for the manager session.
 - `delegate(agent, description, message, after?, friendly_name?)` — assign a task. Writes to state and kicks the agent via kitty. `agent` is a session UUID, agent name, or friendly name. Agent must be registered. Optional `after` for dependencies. Optional `friendly_name` to name the agent on first delegation.
 - `chat(message, to?)` — send a message. Writes to state and kicks the recipient via kitty. Omit `to` to send to the manager.
-- `wait_for_task(timeout?)` — block until a task or message arrives. Agents call this when idle. Polls every 5s.
+- `sleep(seconds, reason?)` — instrumented sleep with dashboard countdown. Interruptable — wakes early on incoming messages.
 - `task_list()` — show all active tasks + registered agents. **Call at session start.** Shows friendly names when set.
 - `task_done(agent?)` — mark a task done. No args = mark own task. Marking another agent's task requires manager. Automatically unblocks dependent tasks and kicks them.
 - `task_check(win)` — **escape hatch.** Read an agent's kitty terminal directly. For stuck/unresponsive agents only.
@@ -80,16 +80,16 @@ The state file is the source of truth. Kitty is the doorbell:
 - `chat()` writes message → kicks recipient via kitty
 - `task_done()` with unblocked deps → kicks each unblocked agent
 
-Agents must be registered for kicks to work. Headless agents (no kitty) must poll via `wait_for_task()`.
+Agents must be registered for kicks to work. Headless agents (no kitty) get notifications via `fs.watch` — no polling needed.
 
 ### Agent lifecycle
 
 1. Agent starts, calls `register()` — added to agent registry
 2. Manager calls `delegate(agent, ...)` — task written to state, agent kicked via kitty
-3. Agent sees the kick, calls `wait_for_task()` or `my_task()` — gets the task
+3. Agent sees 📬, calls `my_task()` — gets the task
 4. Agent works, uses `chat()` to report progress
 5. Agent finishes, calls `task_done()`
-6. Agent waits for next kick or calls `wait_for_task()` to poll
+6. Agent uses `sleep()` to wait — wakes on next task/message
 
 ### Agent types
 
@@ -128,13 +128,13 @@ If you'd want to know when it's done, use `delegate()`. Work assigned via `chat(
 
 ### Task dependencies
 
-Use `after` to chain tasks: `delegate(agent=18, description="build paper", message="...", after="w16-xxx")`. The task stays blocked until all deps complete, then activates — agent's `wait_for_task()` picks it up. Chain multiple: `after: ["w16-xxx", "w18-yyy"]`.
+Use `after` to chain tasks: `delegate(agent=18, description="build paper", message="...", after="w16-xxx")`. The task stays blocked until all deps complete, then activates — agent sees 📬 and picks it up via `my_task()`. Chain multiple: `after: ["w16-xxx", "w18-yyy"]`.
 
 ### Session start
 
 **Manager**: `register_manager()` then `task_list()`. Register stores your session UUID and kitty window, adds you to the registry, and starts the keepalive watcher. Task list recovers monitoring state.
 
-**Workers**: `register()` then `wait_for_task()` or `my_task()`. Register adds you to the registry so kicks reach you. Then wait for work.
+**Workers**: `register()` then `my_task()`. Register adds you to the registry so notifications reach you. Then work or `sleep()` until a task arrives.
 
 ### The keepalive watcher
 

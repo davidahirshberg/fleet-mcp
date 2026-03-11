@@ -66,11 +66,11 @@ On startup, each fleet MCP process calls `detectSessionId()`:
 
 Every `saveState()` triggers all agents watching the state file. This is the main notification path for delegate, chat, and task_done. Works instantly, works headless, no kitty dependency.
 
-When an agent calls `wait_for_task()`, it sets up an `fs.watch` watcher on `agent-tasks.json` and blocks until the file changes. Then it reads the state to find new tasks or messages.
+Every `saveState()` triggers all agents watching the state file. The PostToolUse hook checks for unread messages after every tool call, injecting 📬 as context. Agents in `sleep()` wake up early when messages arrive.
 
 ### 2. Kitty kicks (secondary — for interrupts)
 
-For breaking into an agent that's mid-tool-chain (not blocking on `wait_for_task()`). Sends ESC + 📬 via kitty remote control.
+For breaking into an agent that's mid-tool-chain and not responding to hooks. Sends ESC + 📬 via kitty remote control.
 
 **The kick script** (`bin/agent-kick`) does:
 1. Tries all `/tmp/kitty-sock-*` sockets to find the one that has the target window (not just the newest — stale sockets can exist)

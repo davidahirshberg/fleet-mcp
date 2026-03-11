@@ -25,8 +25,8 @@ Shows your current task and reads unread messages inline. Call this:
 - At session start (after register)
 - When you finish a subtask and want to check for messages
 
-### wait_for_task(timeout?)
-Blocks until a task or message arrives. Uses `fs.watch` — resolves instantly when the state file changes. Call this when you have no work and are waiting for a delegation.
+### sleep(seconds, reason?)
+Instrumented sleep with dashboard countdown. Use instead of bash `sleep` when waiting. Interruptable — if a message or task arrives during sleep, it returns early with "Woke up after Xs of Ys — you have messages." Call `my_task()` to handle the interrupt.
 
 ### chat(message, to?)
 Send a message. Omit `to` to message whoever delegated your current task (falls back to any live manager). Use `to: "web"` to message the human via the dashboard.
@@ -43,11 +43,11 @@ List all active tasks and registered agents. Useful at session start to understa
 
 ## Working on a task
 
-1. `register()` → `my_task()` or `wait_for_task()`
+1. `register()` → `my_task()` to check for a task
 2. Read the task, acknowledge it by starting work
 3. Use `chat()` to report progress on longer tasks
 4. Call `task_done()` when finished
-5. Call `wait_for_task()` to get the next assignment
+5. Use `sleep()` to wait — you'll see 📬 when the next task arrives
 
 ## Pushing back
 
