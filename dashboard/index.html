@@ -5332,6 +5332,16 @@ function updateChatWidget(container, params, state) {
     })
   }
 
+  // Inject frozen activity snapshots for compacting agents (so the card persists)
+  if (!isPlaybackRender && window._compactionSnapshots) {
+    for (const [agentId, evts] of window._compactionSnapshots) {
+      // Only inject if we don't already have live activity for this agent
+      if (!activityEvents.some(e => e.from === agentId && e._activity)) {
+        activityEvents = activityEvents.concat(evts)
+      }
+    }
+  }
+
   // Inject compacting/unreachable as inline timeline events (positioned by timestamp)
   if (!container._streamSource) {
     const target = container._chatTarget
@@ -8989,11 +8999,21 @@ function broadcastUpdate(state) {
     }
   }
   // Track compacting/unreachable transitions client-side (server doesn't send timestamps)
+  // Snapshot activity events when agent starts compacting (so the card persists)
+  if (!window._compactionSnapshots) window._compactionSnapshots = new Map()
   const prevAgents = currentState?.agents || []
   for (const a of (state.agents || [])) {
     const prev = prevAgents.find(p => p.id === a.id)
     if (a.compacting) {
       a.compacting_since = prev?.compacting_since || new Date().toISOString()
+      // Snapshot on transition to compacting
+      if (!prev?.compacting && !window._compactionSnapshots.has(a.id)) {
+        const evts = getActivityEvents(a.id)
+        if (evts.length) window._compactionSnapshots.set(a.id, evts)
+      }
+    } else {
+      // Clear snapshot once agent resumes (new activity will flow)
+      window._compactionSnapshots.delete(a.id)
     }
     if (!a.compacting && a.last_seen && !isActive(a)) {
       a.unreachable_since = prev?.unreachable_since || a.last_seen
