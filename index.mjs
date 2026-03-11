@@ -2100,7 +2100,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- job_register ----
   if (name === 'job_register') {
-    const { job_id, label, output_dir, output_pattern, total_reps, cluster } = input;
+    const { job_id, label, output_dir, output_pattern, total_reps, cluster } = args;
     const host = cluster || 'qtm';
     const manifestLine = `${job_id}\t${output_dir}\t${output_pattern}\t${total_reps}\t${label}`;
 
@@ -2126,7 +2126,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- job_check ----
   if (name === 'job_check') {
-    const host = input.cluster || 'qtm';
+    const host = args.cluster || 'qtm';
     const localDir = path.join(os.homedir(), '.claude', 'cluster-status');
 
     try {
@@ -2146,8 +2146,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     let jobs = status.jobs || [];
-    if (input.job_id) {
-      jobs = jobs.filter(j => j.id === input.job_id);
+    if (args.job_id) {
+      jobs = jobs.filter(j => j.id === args.job_id);
     }
 
     const lines = [];
@@ -2173,8 +2173,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         const queueStatus = j.in_queue ? ` | ${j.running}R ${j.pending}P` : ' | done';
         lines.push(`  ${j.id} ${j.label}: ${bar} ${j.completed}/${j.total} (${pct}%)${queueStatus}`);
       }
-    } else if (input.job_id) {
-      lines.push(`Job ${input.job_id} not found in manifest.`);
+    } else if (args.job_id) {
+      lines.push(`Job ${args.job_id} not found in manifest.`);
     } else {
       lines.push('No tracked jobs. Use job_register after sbatch.');
     }
@@ -2184,9 +2184,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- job_log ----
   if (name === 'job_log') {
-    const { job_id, task_id, stderr } = input;
-    const host = input.cluster || 'qtm';
-    const nlines = input.lines || 50;
+    const { job_id, task_id, stderr } = args;
+    const host = args.cluster || 'qtm';
+    const nlines = args.lines || 50;
     const ext = stderr ? 'err' : 'out';
 
     let cmd;
@@ -2217,8 +2217,8 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- sleep (instrumented) ----
   if (name === 'sleep') {
-    const seconds = Math.min(Math.max(input.seconds || 10, 1), 600);
-    const reason = input.reason || null;
+    const seconds = Math.min(Math.max(args.seconds || 10, 1), 600);
+    const reason = args.reason || null;
     const state = loadState();
     const agent = (state.agents || []).find(a => a.id === ME);
     if (agent) {
