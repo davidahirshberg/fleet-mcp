@@ -69,6 +69,8 @@ function tldaFetch(apiPath, opts = {}) {
 function logEvent(event) {
   const entry = { ...event, timestamp: new Date().toISOString() };
   try { fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n'); } catch {}
+  // Inline index into chat history DB
+  try { searchIndex.insertChatEvent(entry); } catch {}
 }
 
 // --- Search index ---
@@ -83,10 +85,16 @@ try {
   const evCount = searchIndex.indexAllSessions(state);
   if (evCount > 0) console.log(`Session events: ${evCount} events indexed`);
 } catch (e) { console.error('Session events index failed:', e.message); }
+// Index chat history on startup
+try {
+  const chatCount = searchIndex.indexChatEvents();
+  if (chatCount > 0) console.log(`Chat history: ${chatCount} events indexed`);
+} catch (e) { console.error('Chat history index failed:', e.message); }
 // Re-index session events every 5s (lightweight incremental), full text search every 60s
 let _lastFullIndex = Date.now();
 setInterval(() => {
   try { searchIndex.indexAllSessions(loadState()); } catch {}
+  try { searchIndex.indexChatEvents(); } catch {}
   if (Date.now() - _lastFullIndex > 60000) {
     _lastFullIndex = Date.now();
     searchIndex.buildIncremental().catch(() => {});
@@ -585,6 +593,44 @@ const server = http.createServer(async (req, res) => {
 
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ events: resolved }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // --- Chat History (DB-backed, infinite scroll) ---
+  if (url.pathname === '/api/chat/history' && req.method === 'GET') {
+    const limit = Math.min(parseInt(url.searchParams.get('limit') || '50'), 200);
+    const before = url.searchParams.get('before') || null;
+    const agent = url.searchParams.get('agent') || null;
+
+    try {
+      const events = searchIndex.queryChatHistory({ before, agent, limit: limit + 1 });
+      const hasMore = events.length > limit;
+      if (hasMore) events.shift(); // remove oldest (was the extra)
+
+      // Resolve agent names from current state
+      const state = loadState();
+      const agentMap = {};
+      for (const a of (state.agents || [])) {
+        agentMap[a.id] = a.friendly_name || a.name || a.id;
+        if (a.name) agentMap[a.name] = a.friendly_name || a.name;
+      }
+      agentMap['web'] = 'skip';
+      agentMap['skip'] = 'skip';
+      agentMap['human'] = 'skip';
+
+      const resolved = events.map(e => ({
+        ...e,
+        fromLabel: agentMap[e.from] || (e.from ? e.from.substring(0, 8) : ''),
+        toLabel: agentMap[e.to] || agentMap[e.agent] || (e.to ? e.to.substring(0, 8) : ''),
+      }));
+
+      const nextCursor = hasMore && events.length > 0 ? events[0].timestamp : null;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ events: resolved, hasMore, nextCursor }));
     } catch (e) {
       res.writeHead(500, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ error: e.message }));

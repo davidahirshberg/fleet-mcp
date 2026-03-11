@@ -309,6 +309,10 @@
     white-space: pre-wrap;
     word-break: break-word;
   }
+  .chat-activity-card .activity-text-block.scrollable {
+    max-height: calc(12 * 1.5em);
+    overflow-y: auto;
+  }
   /* Terminal card: inline live terminal in chat */
   .chat-terminal-card {
     margin: 4px 0;
@@ -550,6 +554,13 @@
     opacity: 0.5;
   }
   .chat-stale-link:hover { color: var(--accent); opacity: 0.8; }
+  .chat-db-sentinel {
+    text-align: center;
+    padding: 6px;
+    font-size: 10px;
+    color: var(--text-dim);
+    opacity: 0.5;
+  }
   /* Agent terminal hover preview in agents panel */
   .agent-terminal-preview {
     position: fixed;
@@ -5022,10 +5033,10 @@ function renderActivityGroup(group, state) {
   const detailHtml = segments.map(seg => {
     if (seg.type === 'text') {
       const t = seg.item
-      const lines = (t._text || '').split('\n').slice(0, 8)
-      const text = lines.join('\n').slice(0, 600)
-      const truncated = (t._text || '').length > 600 || (t._text || '').split('\n').length > 8
-      return `<div class="activity-text-block">${esc(text)}${truncated ? ' …' : ''}</div>`
+      const fullText = t._text || ''
+      const allLines = fullText.split('\n')
+      const long = allLines.length > 12 || fullText.length > 800
+      return `<div class="activity-text-block${long ? ' scrollable' : ''}">${esc(fullText)}</div>`
     }
     // Tool run card: draggable, foldable, with line numbers and dedup
     const deduped = dedupTools(seg.items)
@@ -5076,7 +5087,7 @@ function renderChatLine(m, state) {
   const isFromUser = !sender
   const userAliases = new Set(['web', 'skip', 'human'])
   const isAmbient = !isFromUser && !userAliases.has(m.to) && !userAliases.has(m.from)
-  const receipt = isFromUser ? (m.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px" title="Read">✓</span>' : '') : ''
+  const receipt = isFromUser && m._isLastUserMsg && m.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px;opacity:0.4">✓</span>' : ''
   // Multi-target: show all cc recipients
   let toHtml
   if (m.cc && m.cc.length > 1) {
@@ -5168,6 +5179,35 @@ function renderChatLine(m, state) {
 }
 
 let CHAT_PAGE_SIZE = 100
+
+// Fetch older chat history from DB for infinite scroll
+async function fetchChatHistory(container, before, agent) {
+  if (container._dbLoading || container._dbExhausted) return
+  container._dbLoading = true
+  container._dbFetchedAt = Date.now()
+  try {
+    const params = new URLSearchParams({ limit: '50' })
+    if (before) params.set('before', before)
+    if (agent) params.set('agent', agent)
+    const res = await fetch(`/api/chat/history?${params}`)
+    if (!res.ok) { container._dbLoading = false; return }
+    const data = await res.json()
+    if (!data.events || data.events.length === 0) {
+      container._dbExhausted = true
+      container._dbLoading = false
+      return
+    }
+    if (!container._dbHistory) container._dbHistory = []
+    // Prepend older events (they come in chronological order)
+    container._dbHistory = data.events.concat(container._dbHistory)
+    container._dbHasMore = data.hasMore
+    container._dbNextCursor = data.nextCursor
+    if (!data.hasMore) container._dbExhausted = true
+  } catch (e) {
+    console.warn('Chat history fetch failed:', e)
+  }
+  container._dbLoading = false
+}
 
 function repositionTldaIframes(container, log) {
   if (!container._tldaOverlay) return
@@ -5284,6 +5324,38 @@ function updateChatWidget(container, params, state) {
     // Skip in playback mode — already filtered above with friendly name resolution
     const target = container._chatTarget
     filtered = msgs.filter(m => m.from === target || m.to === target)
+  }
+
+  // Merge DB-backed chat history (older messages from SQLite)
+  if (!container._streamSource) {
+    const currentTarget = container._chatTarget || 'all'
+    if (container._dbTargetKey !== currentTarget) {
+      container._dbHistory = null
+      container._dbExhausted = false
+      container._dbLoading = false
+      container._dbTargetKey = currentTarget
+    }
+    if (container._dbHistory && container._dbHistory.length > 0) {
+      const inMemKeys = new Set(filtered.map(m => (m.timestamp || '') + '|' + (m.from || '') + '|' + (m.text || '').slice(0, 60)))
+      const dbMsgs = container._dbHistory
+        .filter(e => {
+          if (e.event_type !== 'chat' && e.event_type !== 'delegate' && e.event_type !== 'task_done') return false
+          const key = (e.timestamp || '') + '|' + (e.from || '') + '|' + (e.text || '').slice(0, 60)
+          return !inMemKeys.has(key)
+        })
+        .map(e => ({
+          from: e.from,
+          to: e.to,
+          text: e.text,
+          timestamp: e.timestamp,
+          read: true,
+          _fromDb: true,
+          _evType: e.event_type,
+        }))
+      if (dbMsgs.length > 0) {
+        filtered = [...dbMsgs, ...filtered]
+      }
+    }
   }
 
   // Merge activity events from session data (fetched client-side)
@@ -5408,8 +5480,11 @@ function updateChatWidget(container, params, state) {
     ? typingObj.text : undefined
   const lastActivity = lastMsg?._activity ? (lastMsg._toolName || '') : ''
   const targetKey = container._chatTarget || 'all'
-  const structHash = targetKey + ':' + msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity
-  const fullHash = structHash + ':' + lastText.length + ':' + (typingForThis || '')
+  const dbLen = container._dbHistory?.length || 0
+  const dbExh = container._dbExhausted ? 1 : 0
+  const structHash = targetKey + ':' + msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity + ':' + dbLen + ':' + dbExh
+  const lastReceipt = lastMsg?.read ? 'R' : ''
+  const fullHash = structHash + ':' + lastText.length + ':' + (typingForThis || '') + ':' + lastReceipt
 
   if (log._chatHash === fullHash) {
     // Still update typing even if messages unchanged
@@ -5434,7 +5509,7 @@ function updateChatWidget(container, params, state) {
         const rendered = renderMarkdown(esc(lastText))
         const sender = (state.agents || []).find(a => a.id === lastMsg?.from)
         const isFromUser = !sender
-        const receipt = isFromUser ? (lastMsg?.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px" title="Read">✓</span>' : '') : ''
+        const receipt = isFromUser && lastMsg?.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px;opacity:0.4">✓</span>' : ''
         nickEnd.insertAdjacentHTML('afterend', ` ${rendered}${receipt}`)
       }
       log._chatHash = fullHash
@@ -5454,8 +5529,26 @@ function updateChatWidget(container, params, state) {
 
   // Full rebuild — group consecutive activity events by agent, render chat lines individually
   // Stale messages link: show at top when all messages are loaded
-  const staleLink = !hasMore && total > 0 ? `<div class="chat-stale-link">Older messages in search →</div>` : ''
-  let renderedLines = staleLink + (hasMore ? `<div class="chat-load-more" data-total="${total}">↑ ${startIdx} older messages — click to load</div>` : '')
+  let topSentinel = ''
+  if (hasMore) {
+    topSentinel = `<div class="chat-load-more" data-total="${total}">↑ ${startIdx} older messages — click to load</div>`
+  } else if (total > 0 && !container._streamSource && !container._dbExhausted) {
+    topSentinel = `<div class="chat-db-sentinel">↑ Load older messages</div>`
+  } else if (total > 0 && container._dbExhausted) {
+    topSentinel = `<div class="chat-db-sentinel" style="opacity:0.3;cursor:default">Beginning of chat history</div>`
+  } else if (total > 0) {
+    topSentinel = `<div class="chat-stale-link">Older messages in search →</div>`
+  }
+  let renderedLines = topSentinel
+  // Tag the last user message for receipt display (transient — only shown on most recent)
+  const userAliasSet = new Set(['web', 'skip', 'human'])
+  for (let k = 0; k < visible.length; k++) delete visible[k]._isLastUserMsg
+  for (let k = visible.length - 1; k >= 0; k--) {
+    if (userAliasSet.has(visible[k].from) && !visible[k]._activity && !visible[k]._compacting) {
+      visible[k]._isLastUserMsg = true
+      break
+    }
+  }
   let i = 0
   while (i < visible.length) {
     const m = visible[i]
@@ -5584,6 +5677,28 @@ function updateChatWidget(container, params, state) {
         }
       })
     }
+  }
+
+  // DB history: scroll-to-top triggers fetch of older messages from SQLite
+  // Uses scroll event (fires only from user interaction) instead of IntersectionObserver
+  // (which fires on DOM changes too, causing infinite loops)
+  if (!container._dbExhausted && !container._streamSource && total > 0) {
+    if (container._dbScrollHandler) log.removeEventListener('scroll', container._dbScrollHandler)
+    const cursor = container._dbNextCursor || withActivity[0]?.timestamp || filtered[0]?.timestamp
+    container._dbScrollHandler = () => {
+      if (log.scrollTop > 100 || container._dbLoading || container._dbExhausted) return
+      if (Date.now() - (container._dbFetchedAt || 0) < 1000) return
+      container._autoScroll = false
+      const sh = log.scrollHeight
+      const st = log.scrollTop
+      fetchChatHistory(container, cursor, container._chatTarget).then(() => {
+        updateChatWidget(container, params, state)
+        requestAnimationFrame(() => {
+          log.scrollTop = log.scrollHeight - sh + st
+        })
+      })
+    }
+    log.addEventListener('scroll', container._dbScrollHandler)
   }
 
   // Animate fresh interrupt lines: remove .fresh after 2 frames to trigger fade transition
@@ -5883,7 +5998,7 @@ function updateAgentsWidget(container, params, state) {
   // Skip re-render during active or pending drag to preserve pointer capture
   if (dragLabel || dragAgent || dragGhost || _preDrag || container._resizing) return
   // Hash-based skip: only rebuild if agents, tasks, or messages materially changed
-  const agents0 = state.agents || []
+  const agents0 = (state.agents || []).filter(a => !a.dead)
   const hasTimers = agents0.some(a => a._timers?.length)
   const timerTick = hasTimers ? Math.floor(Date.now() / 1000) : 0
   const agentHash = agents0.map(a => a.id + ':' + (a.friendly_name || '') + ':' + (a.labels?.join(',') || '') + ':' + (a.context_pct ?? '') + ':' + (a.compacting ? 'C' : '') + ':' + (a._timers?.map(t => t.until).join(',') || '')).join('|') + ':' + timerTick

@@ -115,17 +115,12 @@ function sessionFromRoster() {
 }
 
 // Roster gives us the last-known session for this kitty window.
-// But after a continuation (new JSONL, same window), roster is stale.
-// Always run detectSessionId() too — if it finds a different, more recent session, prefer it.
+// Prefer roster when available — it was set by the agent that last owned this window.
+// Fall back to detectSessionId() for brand new agents with no breadcrumb.
+// After a continuation (compaction creates new JSONL), register() updates the roster.
 const _rosterSession = sessionFromRoster();
 const _detectedSession = detectSessionId();
-const MY_SESSION = (() => {
-  if (!_rosterSession) return _detectedSession;
-  if (!_detectedSession) return _rosterSession;
-  if (_rosterSession === _detectedSession) return _rosterSession;
-  // Both exist but differ — detected is from JSONL mtime, likely more current
-  return _detectedSession;
-})();
+let MY_SESSION = _rosterSession || _detectedSession;
 let MY_FLEET_ID = null;
 let ME = MY_SESSION;
 
@@ -199,62 +194,58 @@ function saveState(state) {
       // Clear compacting flag — agent is alive and making MCP calls
       delete me.compacting;
       delete me.compacting_since;
-      // Set session ID (don't accumulate — stale IDs from identity confusion persist otherwise)
-      if (MY_SESSION) {
-        me.session_id = MY_SESSION;
-        me.session_ids = [MY_SESSION];
-      }
+      // Session ID is set by register() only — don't overwrite on every save
+      // (avoids stale MY_SESSION clobbering a correct value after compaction)
     }
   }
 
   // Sync synthetic message tasks before pruning
   syncSyntheticTasks(state);
 
-  // Prune: drop done tasks older than 24h, read messages older than 1h
-  // Synthetic done tasks are pruned immediately (they auto-resolve, no history needed)
   const now_ = Date.now();
+
+  // Periodic agent liveness: every 5 minutes, mark agents dead if both
+  // heartbeat-dead (>10min) and no live kitty window.
+  if (now_ - _lastAgentPrune > 5 * 60 * 1000) {
+    _lastAgentPrune = now_;
+    for (const a of state.agents) {
+      if (a.id === ME || a.dead) continue;
+      const lastSeenMs = a.last_seen ? now_ - new Date(a.last_seen).getTime() : Infinity;
+      if (lastSeenMs < ALIVE_THRESHOLD_MS) continue;
+      if (a.kitty_win && kittyWindowExists(a.kitty_win)) continue;
+      a.dead = true;
+      delete a.kitty_win;
+      logEvent({ type: 'auto_prune', agent: a.id, name: a.friendly_name || a.name, reason: 'dead_heartbeat_no_window' });
+    }
+  }
+
+  // Compute live/dead sets once, after liveness check
+  const deadIds = new Set((state.agents || []).filter(a => a.dead).map(a => a.id));
+  const liveIds = new Set((state.agents || []).filter(a => !a.dead).map(a => a.id));
+  const humanAliases = new Set(['web', 'human', 'skip']);
+
+  // Prune done tasks (24h) and done synthetics (immediately)
   state.tasks = state.tasks.filter(t => {
     if (t.status !== 'done') return true;
-    if (t.synthetic) return false; // prune done synthetic tasks immediately
+    if (t.synthetic) return false;
     return (now_ - new Date(t.completed_at || t.delegated_at).getTime()) < 86400000;
   });
+
+  // Expire stale synthetic tasks: for dead/missing agents immediately, others after 1h
+  state.tasks = state.tasks.filter(t => {
+    if (!t.synthetic || t.status === 'done') return true;
+    if (deadIds.has(t.agent) || !liveIds.has(t.agent)) return false;
+    return (now_ - new Date(t.delegated_at).getTime()) < 3600000;
+  });
+
+  // Prune messages: dead/missing agent recipients immediately, others after 1h when read
   state.messages = state.messages.filter(m => {
     const age = now_ - new Date(m.timestamp).getTime();
-    // Messages to web/human/skip are display-only — prune after 1h regardless of read state
-    if (['web', 'human', 'skip'].includes(m.to)) return age < 3600000;
+    if (humanAliases.has(m.to)) return age < 3600000;
+    if (deadIds.has(m.to) || (!liveIds.has(m.to) && !humanAliases.has(m.to))) return false;
     if (!m.read) return true;
     return age < 3600000;
   });
-
-  // Periodic agent pruning: every 5 minutes, remove agents that are both
-  // heartbeat-dead (>10min) and have no live kitty window.
-  // Avoids expensive kitty checks on every save.
-  if (now_ - _lastAgentPrune > 5 * 60 * 1000) {
-    _lastAgentPrune = now_;
-    const before = state.agents.length;
-    state.agents = state.agents.filter(a => {
-      if (a.id === ME) return true; // never prune self
-      const lastSeenMs = a.last_seen ? now_ - new Date(a.last_seen).getTime() : Infinity;
-      if (lastSeenMs < ALIVE_THRESHOLD_MS) return true; // heartbeat alive
-      // Heartbeat dead — check kitty window
-      if (a.kitty_win && kittyWindowExists(a.kitty_win)) return true;
-      // Both dead — prune
-      logEvent({ type: 'auto_prune', agent: a.id, name: a.friendly_name || a.name, reason: 'dead_heartbeat_no_window' });
-      return false;
-    });
-    // Also mark orphan tasks for pruned agents as abandoned
-    if (state.agents.length < before) {
-      const liveIds = new Set(state.agents.map(a => a.id));
-      for (const t of state.tasks) {
-        if (t.status !== 'done' && !t.synthetic && !liveIds.has(t.agent)) {
-          t.status = 'done';
-          t.completed_at = new Date().toISOString();
-          t._abandoned = true;
-          logEvent({ type: 'auto_prune', action: 'abandon_task', task: t.id, agent: t.agent });
-        }
-      }
-    }
-  }
 
   fs.mkdirSync(`${os.homedir()}/.claude`, { recursive: true });
   fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
@@ -273,9 +264,9 @@ function syncSyntheticTasks(state) {
     unreadByAgent[m.to].push(m);
   }
 
-  // For each agent: create, update, or resolve synthetic tasks
-  const allAgentIds = new Set(state.agents.map(a => a.id));
-  // Also check recipients that might be 'web' etc — skip those
+  // For each live agent: create, update, or resolve synthetic tasks
+  const liveAgents = state.agents.filter(a => !a.dead);
+  const allAgentIds = new Set(liveAgents.map(a => a.id));
   for (const agentId of allAgentIds) {
     const existing = state.tasks.find(t => t.agent === agentId && t.synthetic && t.status !== 'done');
     const unread = unreadByAgent[agentId] || [];
@@ -408,6 +399,24 @@ function removeAgent(state, id) {
   state.agents = state.agents.filter(a => a.id !== id && a.name !== id && a.friendly_name !== id);
 }
 
+// Clear kitty_win from all roster breadcrumbs that claim this window,
+// except the one belonging to `exceptFleetId`. Prevents stale breadcrumbs
+// from poisoning sessionFromRoster() when a window gets reused.
+function clearRosterWindow(win, exceptFleetId) {
+  try {
+    const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
+    const files = fs.readdirSync(rosterDir).filter(f => f.endsWith('.json'));
+    for (const f of files) {
+      const fp = path.join(rosterDir, f);
+      const b = JSON.parse(fs.readFileSync(fp, 'utf8'));
+      if (b.kitty_win === win && b.fleet_id !== exceptFleetId) {
+        b.kitty_win = null;
+        fs.writeFileSync(fp, JSON.stringify(b, null, 2));
+      }
+    }
+  } catch { /* best effort */ }
+}
+
 function setTabTitle(win, title) {
   if (!win || !title) return;
   try {
@@ -438,18 +447,19 @@ function agentAlive(agent) {
   return false;
 }
 
-// Lazy cleanup: check if agent's kitty window still exists. Remove if not.
+// Lazy cleanup: check if agent's kitty window still exists. Mark dead if not.
 function checkAgent(state, id) {
   const agent = getAgent(state, id);
   if (!agent) return false;
   if (agent.kitty_win) {
     if (!kittyWindowExists(agent.kitty_win)) {
-      removeAgent(state, id);
+      agent.dead = true;
+      delete agent.kitty_win;
       saveState(state);
       return false;
     }
   }
-  return true;
+  return !agent.dead;
 }
 
 // ---- Message helpers ----
@@ -947,6 +957,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!state.agents) state.agents = [];
 
     const sessionId = args.session_id || MY_SESSION;
+    // Update MY_SESSION if caller provided a newer session_id (e.g. after compaction)
+    if (args.session_id && args.session_id !== MY_SESSION) {
+      MY_SESSION = args.session_id;
+    }
 
     // 3-way identity matching:
     // 1. Match by session_id → same agent, known session
@@ -1003,9 +1017,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     entry.last_seen = now();
-    // Clear compacting flag (set by PreCompact hook) — agent is back
+    // Clear status flags — agent is back
     delete entry.compacting;
     delete entry.compacting_since;
+    delete entry.dead;
     // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
@@ -1244,6 +1259,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         let label = a.friendly_name ? `"${a.friendly_name}"` : (a.name || a.id);
         if (a.friendly_name && a.name) label += ` (${a.name})`;
         if (a.friendly_name) label += ` [${a.id}]`;
+        if (a.dead) label += ' [dead]';
         if (a.is_manager) label += ' [manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
@@ -1516,8 +1532,38 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
     const agentId = args.agent;
     const state = loadState();
-    const agent = getAgent(state, agentId);
-    if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not found in registry.` }], isError: true };
+    let agent = getAgent(state, agentId);
+
+    // Fall back to roster breadcrumbs if not in live registry
+    if (!agent) {
+      try {
+        const rosterFiles = fs.readdirSync(ROSTER_DIR).filter(f => f.endsWith('.json'));
+        for (const f of rosterFiles) {
+          const b = JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, f), 'utf8'));
+          if (b.fleet_id === agentId || b.friendly_name === agentId || b.name === agentId ||
+              b.session_id === agentId || (b.session_ids && b.session_ids.includes(agentId))) {
+            // Re-add to registry from roster
+            agent = {
+              id: b.fleet_id,
+              session_id: b.session_id,
+              session_ids: b.session_ids || [],
+              kitty_win: b.kitty_win,
+              cwd: b.cwd,
+              friendly_name: b.friendly_name,
+              name: b.name,
+              registered_at: b.registered_at,
+              last_seen: new Date().toISOString(),
+              is_manager: b.is_manager || false,
+            };
+            if (!state.agents) state.agents = [];
+            state.agents.push(agent);
+            break;
+          }
+        }
+      } catch (e) { /* roster dir missing or unreadable */ }
+    }
+
+    if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not found in registry or roster.` }], isError: true };
     if (!agent.session_id) return { content: [{ type: 'text', text: `Agent ${agentId} has no session_id — can't resume.` }], isError: true };
 
     // Find a kitty window to use
@@ -1552,6 +1598,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `No idle kitty tab found. Open a new terminal tab and try again, or pass win explicitly.` }], isError: true };
     }
 
+    // Clear stale roster entries for this window before the agent's MCP boots
+    clearRosterWindow(targetWin, agent.id);
+
     // Build the command: cd to cwd if available, then claude --resume
     const parts = [];
     if (agent.cwd) parts.push(`cd ${JSON.stringify(agent.cwd)}`);
@@ -1569,9 +1618,33 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `Failed to send to kitty win ${targetWin}: ${e.message}` }], isError: true };
     }
 
-    // Update registry: new kitty window
+    // Update registry: new kitty window, clear dead flag
     agent.kitty_win = targetWin;
+    delete agent.dead;
     saveState(state);
+
+    // Update roster breadcrumb with new kitty window so MCP session detection works
+    try {
+      const safeId = agent.id.replace(/[^a-zA-Z0-9_:-]/g, '_');
+      const rosterPath = path.join(ROSTER_DIR, `${safeId}.json`);
+      if (fs.existsSync(rosterPath)) {
+        const breadcrumb = JSON.parse(fs.readFileSync(rosterPath, 'utf8'));
+        breadcrumb.kitty_win = targetWin;
+        fs.writeFileSync(rosterPath, JSON.stringify(breadcrumb, null, 2));
+      } else {
+        // Create breadcrumb if missing
+        fs.mkdirSync(ROSTER_DIR, { recursive: true });
+        fs.writeFileSync(rosterPath, JSON.stringify({
+          fleet_id: agent.id,
+          session_id: agent.session_id,
+          session_ids: agent.session_ids || [],
+          kitty_win: targetWin,
+          cwd: agent.cwd || null,
+          friendly_name: agent.friendly_name || null,
+          name: agent.name || null,
+        }, null, 2));
+      }
+    } catch {}
 
     const label = agent.friendly_name || agent.name || agent.id;
     setTabTitle(targetWin, label);
@@ -1596,6 +1669,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         targetWin = parseInt(winId, 10);
         if (isNaN(targetWin)) throw new Error(`kitty launch returned unexpected value: ${winId}`);
       }
+
+      // Clear stale roster entries for this window before the new agent's MCP boots
+      clearRosterWindow(targetWin, null);
 
       // Send claude command
       const cmd = `cd ${JSON.stringify(cwd)} && claude`;
@@ -1924,25 +2000,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const removed = [];
     const orphaned = [];
 
-    state.agents = agents.filter(a => {
-      if (a.id === ME) return true;
+    for (const a of agents) {
+      if (a.id === ME || a.dead) continue;
       const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
-      if (lastSeenMs < ALIVE_THRESHOLD_MS) return true;
-      if (a.kitty_win && kittyWindowExists(a.kitty_win)) return true;
+      if (lastSeenMs < ALIVE_THRESHOLD_MS) continue;
+      if (a.kitty_win && kittyWindowExists(a.kitty_win)) continue;
+      a.dead = true;
+      delete a.kitty_win;
       removed.push({ id: a.id, name: a.friendly_name || a.name, last_seen: a.last_seen });
       logEvent({ type: 'cleanup', agent: a.id, name: a.friendly_name || a.name, reason: 'dead' });
-      return false;
-    });
+    }
 
+    // Tasks for dead agents stay active — they can be respawned or reassigned
     if (removed.length > 0) {
-      const liveIds = new Set(state.agents.map(a => a.id));
       for (const t of state.tasks) {
-        if (t.status !== 'done' && !t.synthetic && !liveIds.has(t.agent)) {
-          t.status = 'done';
-          t.completed_at = new Date().toISOString();
-          t._abandoned = true;
+        if (t.status !== 'done' && !t.synthetic && removed.some(r => r.id === t.agent)) {
           orphaned.push({ id: t.id, agent: t.agent, description: t.description });
-          logEvent({ type: 'cleanup', action: 'abandon_task', task: t.id, agent: t.agent });
         }
       }
     }

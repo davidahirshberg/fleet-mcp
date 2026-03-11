@@ -135,6 +135,24 @@ export class SearchIndex {
       CREATE INDEX IF NOT EXISTS idx_session_events_file ON session_events(file_path, line_num);
       CREATE UNIQUE INDEX IF NOT EXISTS idx_session_events_unique ON session_events(file_path, line_num);
 
+      -- Chat history (persistent, survives state pruning)
+      CREATE TABLE IF NOT EXISTS chat_events (
+        id INTEGER PRIMARY KEY,
+        timestamp TEXT NOT NULL,
+        event_type TEXT NOT NULL,
+        from_id TEXT,
+        to_id TEXT,
+        agent_id TEXT,
+        text TEXT NOT NULL,
+        metadata TEXT,
+        source_line INTEGER
+      );
+
+      CREATE INDEX IF NOT EXISTS idx_chat_ts ON chat_events(timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_from ON chat_events(from_id, timestamp DESC);
+      CREATE INDEX IF NOT EXISTS idx_chat_to ON chat_events(to_id, timestamp DESC);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_chat_dedup ON chat_events(timestamp, event_type, from_id, to_id);
+
       -- UI events for playback/UX analysis
       CREATE TABLE IF NOT EXISTS ui_events (
         id INTEGER PRIMARY KEY,
@@ -184,6 +202,39 @@ export class SearchIndex {
     this._countEvents = this.db.prepare(`
       SELECT COUNT(*) as c FROM session_events WHERE agent_id = ?
     `);
+
+    // Chat history statements
+    this._insertChatEvent = this.db.prepare(`
+      INSERT OR IGNORE INTO chat_events (timestamp, event_type, from_id, to_id, agent_id, text, metadata, source_line)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    this._insertChatEventMany = this.db.transaction((rows) => {
+      for (const r of rows) this._insertChatEvent.run(...r);
+    });
+    this._queryChatBefore = this.db.prepare(`
+      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata
+      FROM chat_events
+      WHERE timestamp < ?
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._queryChatBeforeAgent = this.db.prepare(`
+      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata
+      FROM chat_events
+      WHERE timestamp < ? AND (from_id = ? OR to_id = ?)
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._queryChatLatest = this.db.prepare(`
+      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata
+      FROM chat_events
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._queryChatLatestAgent = this.db.prepare(`
+      SELECT id, timestamp, event_type, from_id, to_id, agent_id, text, metadata
+      FROM chat_events
+      WHERE from_id = ? OR to_id = ?
+      ORDER BY timestamp DESC LIMIT ?
+    `);
+    this._chatEventCount = this.db.prepare(`SELECT COUNT(*) as c FROM chat_events`);
 
     // UI events statements
     this._insertUIEvent = this.db.prepare(`
@@ -470,6 +521,155 @@ export class SearchIndex {
 
   insertUIEvents(events) {
     if (events.length > 0) this._insertUIEventMany(events);
+  }
+
+  // --- Chat History ---
+
+  // Map JSONL event types to chat-renderable types
+  static CHAT_EVENT_TYPES = new Set(['chat', 'delegate', 'task_done', 'name_change', 'auto_prune', 'deregister', 'cleanup', 'identity_match', 'adopt', 'rehydrate']);
+
+  indexChatEvents() {
+    if (!fs.existsSync(LOG_FILE)) return 0;
+    const stat = fs.statSync(LOG_FILE);
+    const offsetKey = LOG_FILE + ':chat';
+    const offset = this._getOffset.get(offsetKey);
+    if (offset && offset.byte_offset >= stat.size) return 0;
+
+    const startByte = offset?.byte_offset || 0;
+    let lineNum = offset?.line_offset || 0;
+
+    const fd = fs.openSync(LOG_FILE, 'r');
+    const buf = Buffer.alloc(stat.size - startByte);
+    fs.readSync(fd, buf, 0, buf.length, startByte);
+    fs.closeSync(fd);
+
+    const chunk = buf.toString('utf8');
+    const lines = chunk.split('\n');
+    const rows = [];
+
+    for (const line of lines) {
+      lineNum++;
+      if (!line.trim()) continue;
+      let parsed;
+      try { parsed = JSON.parse(line); } catch { continue; }
+
+      const evType = parsed.type || 'chat';
+      if (!SearchIndex.CHAT_EVENT_TYPES.has(evType)) continue;
+
+      const ts = parsed.timestamp || null;
+      if (!ts) continue;
+
+      let text = '';
+      let fromId = parsed.from || null;
+      let toId = parsed.to || parsed.agent || null;
+      let agentId = parsed.agent || null;
+      let metadata = null;
+
+      if (evType === 'chat') {
+        text = parsed.message || parsed.text || '';
+      } else if (evType === 'delegate') {
+        text = parsed.description || '';
+        const meta = {};
+        if (parsed.task_id) meta.taskId = parsed.task_id;
+        if (parsed.message) meta.message = typeof parsed.message === 'string' ? parsed.message.slice(0, 500) : '';
+        metadata = JSON.stringify(meta);
+      } else if (evType === 'task_done') {
+        text = parsed.description || '';
+        if (parsed.task_id) metadata = JSON.stringify({ taskId: parsed.task_id });
+      } else if (evType === 'name_change') {
+        text = `renamed → ${parsed.friendly_name || '?'}`;
+        if (parsed.friendly_name) metadata = JSON.stringify({ friendly_name: parsed.friendly_name });
+      } else if (evType === 'auto_prune' || evType === 'cleanup') {
+        text = `agent pruned: ${parsed.reason || ''}`;
+        agentId = parsed.agent || null;
+        if (parsed.reason) metadata = JSON.stringify({ reason: parsed.reason });
+      } else if (evType === 'deregister') {
+        text = `deregistered: ${parsed.reason || ''}`;
+        agentId = parsed.agent || null;
+      } else if (evType === 'identity_match' || evType === 'adopt' || evType === 'rehydrate') {
+        text = `${evType}: ${parsed.reason || ''}`;
+        agentId = parsed.agent || null;
+        if (parsed.reason) metadata = JSON.stringify({ reason: parsed.reason });
+      }
+
+      if (!text) continue;
+      if (Array.isArray(toId)) toId = toId[0] || null;
+
+      rows.push([ts, evType, fromId, toId, agentId, String(text), metadata, lineNum]);
+    }
+
+    if (rows.length > 0) this._insertChatEventMany(rows);
+    this._setOffset.run(offsetKey, stat.size, lineNum, stat.mtimeMs);
+    return rows.length;
+  }
+
+  // Insert a single chat event (called inline when logEvent fires)
+  insertChatEvent(parsed) {
+    const evType = parsed.type || 'chat';
+    if (!SearchIndex.CHAT_EVENT_TYPES.has(evType)) return;
+    const ts = parsed.timestamp || new Date().toISOString();
+
+    let text = '';
+    let fromId = parsed.from || null;
+    let toId = parsed.to || parsed.agent || null;
+    let agentId = parsed.agent || null;
+    let metadata = null;
+
+    if (evType === 'chat') {
+      text = parsed.message || parsed.text || '';
+    } else if (evType === 'delegate') {
+      text = parsed.description || '';
+      const meta = {};
+      if (parsed.task_id) meta.taskId = parsed.task_id;
+      if (parsed.message) meta.message = typeof parsed.message === 'string' ? parsed.message.slice(0, 500) : '';
+      metadata = JSON.stringify(meta);
+    } else if (evType === 'task_done') {
+      text = parsed.description || '';
+      if (parsed.task_id) metadata = JSON.stringify({ taskId: parsed.task_id });
+    } else if (evType === 'name_change') {
+      text = `renamed → ${parsed.friendly_name || '?'}`;
+      if (parsed.friendly_name) metadata = JSON.stringify({ friendly_name: parsed.friendly_name });
+    } else {
+      text = `${evType}: ${parsed.reason || ''}`;
+      agentId = parsed.agent || null;
+      if (parsed.reason) metadata = JSON.stringify({ reason: parsed.reason });
+    }
+
+    if (!text) return;
+    if (Array.isArray(toId)) toId = toId[0] || null;
+
+    try {
+      this._insertChatEvent.run(ts, evType, fromId, toId, agentId, String(text), metadata, null);
+    } catch { /* dedup constraint */ }
+  }
+
+  queryChatHistory({ before, agent, limit = 50 } = {}) {
+    let rows;
+    if (before && agent) {
+      rows = this._queryChatBeforeAgent.all(before, agent, agent, limit);
+    } else if (before) {
+      rows = this._queryChatBefore.all(before, limit);
+    } else if (agent) {
+      rows = this._queryChatLatestAgent.all(agent, agent, limit);
+    } else {
+      rows = this._queryChatLatest.all(limit);
+    }
+    // Reverse to chronological order
+    rows.reverse();
+    return rows.map(r => ({
+      id: r.id,
+      timestamp: r.timestamp,
+      event_type: r.event_type,
+      from: r.from_id,
+      to: r.to_id,
+      agent: r.agent_id,
+      text: r.text,
+      metadata: r.metadata ? JSON.parse(r.metadata) : null,
+    }));
+  }
+
+  chatEventCount() {
+    return this._chatEventCount.get().c;
   }
 
   indexSessionEvents(filePath, agentId, sessionId) {
