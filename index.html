@@ -159,14 +159,48 @@
     transform: translateY(-50%);
     font-size: 11px;
     opacity: 0.3;
-    pointer-events: none;
+    pointer-events: auto;
+    cursor: pointer;
     z-index: 2;
     white-space: nowrap;
     transition: opacity 0.15s;
     font-family: inherit;
   }
   .chat-input-wrap:hover .chat-target-ghost { opacity: 0.5; }
-  .chat-target-ghost.hidden { opacity: 0; }
+  .chat-target-ghost:hover { opacity: 0.8 !important; }
+  .chat-target-ghost.hidden { opacity: 0; pointer-events: none; }
+  .chat-target-ghost.has-mode { opacity: 0.7; }
+  .pill-menu {
+    position: absolute;
+    bottom: calc(100% + 4px);
+    right: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 0;
+    min-width: 120px;
+    z-index: 100;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.3);
+    font-size: 12px;
+  }
+  .pill-menu-item {
+    padding: 5px 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    color: var(--text-dim);
+  }
+  .pill-menu-item:hover { background: var(--hover); color: var(--text); }
+  .pill-menu-item.active { color: var(--text); }
+  .pill-menu-item .pill-dot {
+    width: 6px; height: 6px; border-radius: 50%;
+    background: transparent; border: 1px solid var(--text-dim);
+    flex-shrink: 0;
+  }
+  .pill-menu-item.active .pill-dot { border: none; }
+  .pill-menu-item.active.queue-item .pill-dot { background: var(--cyan); }
+  .pill-menu-item.active.interrupt-item .pill-dot { background: var(--orange); }
   .chat-widget {
     display: flex;
     flex-direction: column;
@@ -183,6 +217,7 @@
   }
   /* Activity cards */
   .chat-activity-card {
+    position: relative;
     margin: 3px 0;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -190,7 +225,6 @@
     font-family: 'SF Mono','Menlo',monospace;
     font-size: 11px;
     color: var(--text-dim);
-    overflow: hidden;
     cursor: pointer;
     user-select: none;
     transition: opacity 0.3s, border-color 0.3s;
@@ -258,6 +292,7 @@
     white-space: nowrap;
     overflow-x: auto;
     scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.1) transparent;
   }
   .chat-activity-card .activity-detail .tool-step-hidden {
     color: var(--text-dim);
@@ -358,32 +393,23 @@
     font-size: 11px;
     cursor: grab;
     max-height: 150px;
-    overflow-y: auto;
+    overflow: auto;
   }
   .tool-run-card:hover { border-color: rgba(255,255,255,0.12); }
   .tool-run-card .tool-run-body { padding: 3px 0; }
   .tool-line {
-    display: flex;
-    align-items: baseline;
-    gap: 0;
     padding: 0 6px;
     line-height: 1.6;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-wrap: wrap;
   }
   .tool-line:hover { background: rgba(255,255,255,0.04); }
   .tool-detail {
-    width: 100%;
     color: var(--text-dim);
     font-size: 11px;
     opacity: 0.7;
     padding-left: 28px;
     line-height: 1.4;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .edit-diff {
     display: flex;
@@ -475,15 +501,20 @@
   }
   .tool-name { color: var(--blue); font-weight: 500; flex-shrink: 0; }
   .tool-sep { color: var(--text-dim); opacity: 0.4; }
-  .tool-arg { color: var(--text-dim); opacity: 0.7; overflow: hidden; text-overflow: ellipsis; }
+  .tool-arg { color: var(--text-dim); opacity: 0.7; }
   .chat-activity-card .activity-badge {
-    float: right;
+    position: absolute;
+    top: 2px;
+    right: 8px;
     font-size: 11px;
     color: var(--text-dim);
     opacity: 0.6;
-    margin-left: 12px;
     white-space: nowrap;
     line-height: 1.5;
+    z-index: 1;
+    background: rgba(22,22,37,0.85);
+    padding: 0 4px;
+    border-radius: 3px;
   }
   .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
   .chat-activity-card .activity-badge .activity-signal { margin-left: 4px; }
@@ -2273,12 +2304,46 @@
   body.demo-mode .chat-input-bar textarea,
   body.demo-mode .chat-send { pointer-events: none; }
 
+  /* Command palette */
+  .cmd-palette-overlay {
+    display: none; position: fixed; inset: 0; z-index: 9999;
+    background: rgba(0,0,0,0.5); align-items: flex-start; justify-content: center; padding-top: 15vh;
+  }
+  .cmd-palette-overlay.open { display: flex; }
+  .cmd-palette {
+    width: 500px; max-height: 400px; background: var(--bg); border: 1px solid var(--border);
+    border-radius: 8px; overflow: hidden; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    display: flex; flex-direction: column;
+  }
+  .cmd-palette input {
+    width: 100%; padding: 12px 16px; background: var(--surface); border: none;
+    border-bottom: 1px solid var(--border); color: var(--text); font-size: 14px;
+    font-family: inherit; outline: none;
+  }
+  .cmd-palette input::placeholder { color: var(--text-dim); }
+  .cmd-palette-list { overflow-y: auto; flex: 1; padding: 4px 0; }
+  .cmd-palette-section { padding: 6px 16px 2px; color: var(--text-dim); font-size: 11px; text-transform: uppercase; letter-spacing: 0.5px; }
+  .cmd-palette-item {
+    padding: 8px 16px; cursor: pointer; display: flex; align-items: center; justify-content: space-between;
+    border-left: 2px solid transparent;
+  }
+  .cmd-palette-item:hover, .cmd-palette-item.selected {
+    background: rgba(147,112,219,0.15); border-left-color: var(--accent);
+  }
+  .cmd-palette-item .shortcut { color: var(--text-dim); font-size: 11px; }
+
 </style>
-  <script type="module" crossorigin src="/fleet-mcp/assets/index-CcAmcErc.js"></script>
+  <script type="module" crossorigin src="/fleet-mcp/assets/index-7xbBhnw2.js"></script>
   <link rel="stylesheet" crossorigin href="/fleet-mcp/assets/index-zoVzIH4_.css">
 </head>
 <body>
 <div id="app"></div>
+<div class="cmd-palette-overlay" id="command-palette">
+  <div class="cmd-palette">
+    <input type="text" placeholder="Type a command or search..." autocomplete="off" spellcheck="false">
+    <div class="cmd-palette-list"></div>
+  </div>
+</div>
 </body>
 </html>
 

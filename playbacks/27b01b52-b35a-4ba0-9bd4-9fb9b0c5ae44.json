@@ -1,0 +1,542 @@
+{
+  "id": "27b01b52-b35a-4ba0-9bd4-9fb9b0c5ae44",
+  "version": 1,
+  "title": "Fleet Tutorial — How to Use the Dashboard",
+  "created": "2026-03-10T18:32:01.596Z",
+  "sources": [
+    {
+      "type": "synthetic",
+      "description": "Tutorial demo"
+    }
+  ],
+  "time_range": {
+    "start": "2026-03-10T18:28:31.596Z",
+    "end": "2026-03-10T18:32:01.596Z"
+  },
+  "duration_ms": 210000,
+  "edits": [
+    {
+      "op": "layout",
+      "t": 0,
+      "panels": [
+        {
+          "widget": "chat",
+          "position": "top-left",
+          "title": "Fleet Chat"
+        },
+        {
+          "widget": "agents",
+          "position": "top-right",
+          "title": "Agents",
+          "tabs": [
+            {
+              "widget": "tasks",
+              "title": "Tasks"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "tags": [
+    "tutorial",
+    "demo"
+  ],
+  "agents": [
+    {
+      "id": "tutorial-manager-0001",
+      "friendly_name": "manager",
+      "is_manager": true
+    },
+    {
+      "id": "tutorial-alice-0002",
+      "friendly_name": "alice"
+    },
+    {
+      "id": "tutorial-bob-0003",
+      "friendly_name": "bob"
+    },
+    {
+      "id": "tutorial-carol-0004",
+      "friendly_name": "carol"
+    },
+    {
+      "id": "web",
+      "friendly_name": "Skip"
+    }
+  ],
+  "events": [
+    {
+      "t": 0,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "Welcome to Fleet — a dashboard for coordinating AI agents. This tutorial will show you how it works."
+      }
+    },
+    {
+      "t": 2000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "web",
+        "to": "tutorial-manager-0001",
+        "text": "Hey manager, what's the status?"
+      }
+    },
+    {
+      "t": 5000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "web",
+        "text": "Morning! Three agents online — alice, bob, and carol. All idle, ready for work."
+      }
+    },
+    {
+      "t": 8000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "web",
+        "to": "tutorial-manager-0001",
+        "text": "Great. Let's get them going."
+      }
+    },
+    {
+      "t": 15000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "The **chat panel** (left) shows messages between you and your agents. The **agents panel** (right) shows who's online."
+      }
+    },
+    {
+      "t": 30000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "Managers **delegate** tasks to agents. Watch the agents panel as tasks are assigned."
+      }
+    },
+    {
+      "t": 33000,
+      "type": "delegate",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "tutorial-alice-0002",
+        "taskId": "task-alice-1",
+        "description": "Write unit tests for auth module",
+        "text": "Write comprehensive unit tests for the authentication module. Cover login, logout, token refresh, and password reset flows."
+      }
+    },
+    {
+      "t": 36000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-alice-0002",
+        "to": "tutorial-manager-0001",
+        "text": "On it — reading the auth module now."
+      }
+    },
+    {
+      "t": 40000,
+      "type": "delegate",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "tutorial-bob-0003",
+        "taskId": "task-bob-1",
+        "description": "Fix pagination bug in search API",
+        "text": "The search API returns duplicate results when paginating past page 3. Investigate and fix."
+      }
+    },
+    {
+      "t": 43000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-bob-0003",
+        "to": "tutorial-manager-0001",
+        "text": "Looking into the pagination issue."
+      }
+    },
+    {
+      "t": 48000,
+      "type": "delegate",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "tutorial-carol-0004",
+        "taskId": "task-carol-1",
+        "description": "Update API documentation",
+        "text": "The API docs are out of date. Update all endpoint descriptions, add examples for new endpoints, fix broken links."
+      }
+    },
+    {
+      "t": 51000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-carol-0004",
+        "to": "tutorial-manager-0001",
+        "text": "Starting the docs update."
+      }
+    },
+    {
+      "t": 55000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "Each agent now has a task. Check the **Tasks** tab to see what everyone's working on."
+      }
+    },
+    {
+      "t": 65000,
+      "type": "tool_call",
+      "source": "events",
+      "sourceId": "tutorial-alice-0002",
+      "data": {
+        "tool": "Read",
+        "input": {
+          "file_path": "/src/auth/auth.service.ts"
+        }
+      }
+    },
+    {
+      "t": 66000,
+      "type": "tool_result",
+      "source": "events",
+      "sourceId": "tutorial-alice-0002",
+      "data": {
+        "summary": "Read 245 lines from auth.service.ts"
+      }
+    },
+    {
+      "t": 70000,
+      "type": "tool_call",
+      "source": "events",
+      "sourceId": "tutorial-alice-0002",
+      "data": {
+        "tool": "Write",
+        "input": {
+          "file_path": "/src/auth/__tests__/auth.test.ts",
+          "content": "// unit tests..."
+        }
+      }
+    },
+    {
+      "t": 71000,
+      "type": "tool_result",
+      "source": "events",
+      "sourceId": "tutorial-alice-0002",
+      "data": {
+        "summary": "Wrote 180 lines to auth.test.ts"
+      }
+    },
+    {
+      "t": 75000,
+      "type": "tool_call",
+      "source": "events",
+      "sourceId": "tutorial-bob-0003",
+      "data": {
+        "tool": "Grep",
+        "input": {
+          "pattern": "OFFSET.*LIMIT",
+          "path": "/src/search/"
+        }
+      }
+    },
+    {
+      "t": 76000,
+      "type": "tool_result",
+      "source": "events",
+      "sourceId": "tutorial-bob-0003",
+      "data": {
+        "summary": "Found 3 matches in search.controller.ts"
+      }
+    },
+    {
+      "t": 80000,
+      "type": "tool_call",
+      "source": "events",
+      "sourceId": "tutorial-bob-0003",
+      "data": {
+        "tool": "Edit",
+        "input": {
+          "file_path": "/src/search/search.controller.ts",
+          "old_string": "offset = page * limit",
+          "new_string": "offset = (page - 1) * limit"
+        }
+      }
+    },
+    {
+      "t": 81000,
+      "type": "tool_result",
+      "source": "events",
+      "sourceId": "tutorial-bob-0003",
+      "data": {
+        "summary": "Applied edit to search.controller.ts"
+      }
+    },
+    {
+      "t": 85000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "Agents work independently — reading files, making edits, running tests. You can see their **activity cards** in chat."
+      }
+    },
+    {
+      "t": 90000,
+      "type": "tool_call",
+      "source": "events",
+      "sourceId": "tutorial-carol-0004",
+      "data": {
+        "tool": "Read",
+        "input": {
+          "file_path": "/docs/api-reference.md"
+        }
+      }
+    },
+    {
+      "t": 91000,
+      "type": "tool_result",
+      "source": "events",
+      "sourceId": "tutorial-carol-0004",
+      "data": {
+        "summary": "Read 520 lines from api-reference.md"
+      }
+    },
+    {
+      "t": 95000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-bob-0003",
+        "to": "tutorial-manager-0001",
+        "text": "Found the bug — off-by-one in pagination offset. Fix is in."
+      }
+    },
+    {
+      "t": 98000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "tutorial-bob-0003",
+        "text": "Nice. Run the tests?"
+      }
+    },
+    {
+      "t": 100000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-bob-0003",
+        "to": "tutorial-manager-0001",
+        "text": "All passing. 47 tests, 0 failures."
+      }
+    },
+    {
+      "t": 105000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "**Try it now:** Click on an agent name in the agents panel to filter the chat to just their messages."
+      }
+    },
+    {
+      "t": 110000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-alice-0002",
+        "to": "tutorial-manager-0001",
+        "text": "Tests written — 12 test cases covering all auth flows. Running now..."
+      }
+    },
+    {
+      "t": 115000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-carol-0004",
+        "to": "tutorial-manager-0001",
+        "text": "Updated 8 endpoints, added 15 examples. Found 3 broken links — fixing those now."
+      }
+    },
+    {
+      "t": 120000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-alice-0002",
+        "to": "tutorial-manager-0001",
+        "text": "11 passing, 1 failing — the token refresh test hits a race condition. Investigating."
+      }
+    },
+    {
+      "t": 130000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "**Quiz time.** Bob just sent a message. But you're filtered to alice. Can you find it? Hint: check the notification badges."
+      }
+    },
+    {
+      "t": 132000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-bob-0003",
+        "to": "tutorial-manager-0001",
+        "text": "Hey — I also noticed the sort order is wrong on the results. Should I fix that too?"
+      }
+    },
+    {
+      "t": 140000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "Click bob's name (or the badge) in the agents panel to see his message. Then click \"All\" or the chat tab to go back to the full view."
+      }
+    },
+    {
+      "t": 150000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "web",
+        "to": "tutorial-bob-0003",
+        "text": "Yeah, fix the sort too."
+      }
+    },
+    {
+      "t": 153000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-bob-0003",
+        "to": "web",
+        "text": "Done."
+      }
+    },
+    {
+      "t": 155000,
+      "type": "task_done",
+      "source": "events",
+      "data": {
+        "agent": "tutorial-bob-0003",
+        "taskId": "task-bob-1",
+        "description": "Fix pagination bug in search API"
+      }
+    },
+    {
+      "t": 158000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "When agents finish, they mark tasks done. Watch the **Tasks** tab — bob's task just completed."
+      }
+    },
+    {
+      "t": 165000,
+      "type": "task_done",
+      "source": "events",
+      "data": {
+        "agent": "tutorial-alice-0002",
+        "taskId": "task-alice-1",
+        "description": "Write unit tests for auth module"
+      }
+    },
+    {
+      "t": 167000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-alice-0002",
+        "to": "tutorial-manager-0001",
+        "text": "All 12 tests passing now. The race condition was a missing await on token invalidation."
+      }
+    },
+    {
+      "t": 175000,
+      "type": "task_done",
+      "source": "events",
+      "data": {
+        "agent": "tutorial-carol-0004",
+        "taskId": "task-carol-1",
+        "description": "Update API documentation"
+      }
+    },
+    {
+      "t": 177000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-carol-0004",
+        "to": "tutorial-manager-0001",
+        "text": "Docs updated — 8 endpoints, 15 examples, all links verified."
+      }
+    },
+    {
+      "t": 180000,
+      "type": "chat",
+      "source": "events",
+      "data": {
+        "from": "tutorial-manager-0001",
+        "to": "web",
+        "text": "All three tasks complete. Auth tests written, pagination fixed, docs updated."
+      }
+    },
+    {
+      "t": 185000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "That's Fleet. Agents register, managers delegate, everyone communicates through chat. The dashboard shows it all in real time."
+      }
+    },
+    {
+      "t": 195000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "**Recap:** Click agent names to filter chat. Watch the Tasks tab for progress. Activity cards show what agents are doing under the hood."
+      }
+    },
+    {
+      "t": 205000,
+      "type": "marker",
+      "source": "editorial",
+      "data": {
+        "text": "END — Fleet Tutorial",
+        "style": "chapter"
+      }
+    },
+    {
+      "t": 210000,
+      "type": "focus",
+      "source": "editorial",
+      "data": {
+        "panel": "subtitle",
+        "narration": "You're ready. Go coordinate some agents."
+      }
+    }
+  ]
+}
