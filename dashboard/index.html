@@ -8022,7 +8022,7 @@ function createPlaybackWidget(container, params) {
     // Clear the title to allow typing a search query
     searchInput.value = ''
     dropdown.style.display = ''
-    showDropdownResults(_allPlaybacks)
+    showDropdownResults(_allPlaybacks.filter(pb => !pb.unlisted))
   })
   searchInput.addEventListener('blur', () => {
     setTimeout(() => {
@@ -8035,9 +8035,9 @@ function createPlaybackWidget(container, params) {
     const q = searchInput.value.toLowerCase().trim()
     if (q.startsWith('/')) { dropdown.style.display = 'none'; return }
     dropdown.style.display = ''
-    if (!q) { showDropdownResults(_allPlaybacks); return }
+    if (!q) { showDropdownResults(_allPlaybacks.filter(pb => !pb.unlisted)); return }
     const filtered = _allPlaybacks.filter(pb =>
-      pb.title.toLowerCase().includes(q) || pb.id.startsWith(q)
+      (pb.title.toLowerCase().includes(q) || pb.id.startsWith(q)) && !pb.unlisted
     )
     showDropdownResults(filtered)
   })
@@ -9253,7 +9253,13 @@ if (!_isDemoMode) {
     for (const a of state.agents || []) {
       fetchSessionLite(a.id)
     }
-  }).catch(() => {})
+  }).catch(() => {
+    // No live server — static site. Load default playback if available.
+    fetch('./playbacks/index.json').then(r => r.ok ? r.json() : []).then(index => {
+      const def = index.find(pb => pb.default) || index.find(pb => !pb.unlisted)
+      if (def) window.location.replace('?playback=' + def.id)
+    }).catch(() => {})
+  })
   connectSSE()
 }
 

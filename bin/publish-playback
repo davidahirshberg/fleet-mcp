@@ -30,10 +30,12 @@ const args = process.argv.slice(2);
 
 if (args.length === 0 || args[0] === '--help') {
   console.log(`Usage:
-  publish-playback <id>          Build & add playback to dist/
-  publish-playback --list        List available playbacks
-  publish-playback --deploy      Deploy dist/ to GH Pages
-  publish-playback <id> --deploy Build, add, and deploy in one step
+  publish-playback <id>                    Build & add playback to dist/
+  publish-playback <id> --unlisted         Add but hide from dropdown
+  publish-playback <id> --default          Set as landing page playback
+  publish-playback --list                  List available playbacks
+  publish-playback --deploy                Deploy dist/ to GH Pages
+  publish-playback <id> --deploy           Build, add, and deploy in one step
 `);
   process.exit(0);
 }
@@ -51,6 +53,8 @@ if (args[0] === '--list') {
 }
 
 const shouldDeploy = args.includes('--deploy');
+const isUnlisted = args.includes('--unlisted');
+const isDefault = args.includes('--default');
 const playbackId = args.find(a => !a.startsWith('--'));
 
 // Step 1: Build dashboard if dist/ doesn't exist or --force
@@ -81,15 +85,30 @@ if (playbackId) {
   const outPath = path.join(PUBLISHED_DIR, `${playback.id}.json`);
   fs.copyFileSync(path.join(PLAYBACKS_DIR, match), outPath);
   console.log(`Added: ${playback.title} (${playback.id.slice(0, 8)})`);
+  if (isUnlisted) console.log('  (unlisted)');
+  if (isDefault) console.log('  (default)');
+
+  // Persist flags in metadata file
+  const metaPath = path.join(PUBLISHED_DIR, 'meta.json');
+  let meta = {};
+  try { meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')); } catch {}
+  if (!meta[playback.id]) meta[playback.id] = {};
+  if (isUnlisted) meta[playback.id].unlisted = true;
+  if (isDefault) {
+    // Clear previous default
+    for (const id of Object.keys(meta)) meta[id].default = false;
+    meta[playback.id].default = true;
+  }
+  fs.writeFileSync(metaPath, JSON.stringify(meta, null, 2));
 
   // Update playbacks/index.json (listing of all published playbacks)
-  const published = fs.readdirSync(PUBLISHED_DIR).filter(f => f.endsWith('.json') && f !== 'index.json');
+  const published = fs.readdirSync(PUBLISHED_DIR).filter(f => f.endsWith('.json') && f !== 'index.json' && f !== 'meta.json');
   const index = published.map(f => {
     try {
       const pb = JSON.parse(fs.readFileSync(path.join(PUBLISHED_DIR, f), 'utf8'));
       const counts = {};
       for (const e of pb.events) counts[e.type] = (counts[e.type] || 0) + 1;
-      return {
+      const entry = {
         id: pb.id,
         title: pb.title,
         created: pb.created,
@@ -98,6 +117,9 @@ if (playbackId) {
         event_types: counts,
         sources: pb.sources,
       };
+      if (meta[pb.id]?.unlisted) entry.unlisted = true;
+      if (meta[pb.id]?.default) entry.default = true;
+      return entry;
     } catch { return null; }
   }).filter(Boolean).sort((a, b) => new Date(b.created) - new Date(a.created));
   fs.writeFileSync(path.join(PUBLISHED_DIR, 'index.json'), JSON.stringify(index, null, 2));
