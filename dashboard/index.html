@@ -217,6 +217,7 @@
   }
   /* Activity cards */
   .chat-activity-card {
+    position: relative;
     margin: 3px 0;
     border: 1px solid var(--border);
     border-radius: 4px;
@@ -224,7 +225,6 @@
     font-family: 'SF Mono','Menlo',monospace;
     font-size: 11px;
     color: var(--text-dim);
-    overflow: hidden;
     cursor: pointer;
     user-select: none;
     transition: opacity 0.3s, border-color 0.3s;
@@ -292,6 +292,7 @@
     white-space: nowrap;
     overflow-x: auto;
     scrollbar-width: thin;
+    scrollbar-color: rgba(255,255,255,0.1) transparent;
   }
   .chat-activity-card .activity-detail .tool-step-hidden {
     color: var(--text-dim);
@@ -392,32 +393,23 @@
     font-size: 11px;
     cursor: grab;
     max-height: 150px;
-    overflow-y: auto;
+    overflow: auto;
   }
   .tool-run-card:hover { border-color: rgba(255,255,255,0.12); }
   .tool-run-card .tool-run-body { padding: 3px 0; }
   .tool-line {
-    display: flex;
-    align-items: baseline;
-    gap: 0;
     padding: 0 6px;
     line-height: 1.6;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    flex-wrap: wrap;
   }
   .tool-line:hover { background: rgba(255,255,255,0.04); }
   .tool-detail {
-    width: 100%;
     color: var(--text-dim);
     font-size: 11px;
     opacity: 0.7;
     padding-left: 28px;
     line-height: 1.4;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
   .edit-diff {
     display: flex;
@@ -509,15 +501,20 @@
   }
   .tool-name { color: var(--blue); font-weight: 500; flex-shrink: 0; }
   .tool-sep { color: var(--text-dim); opacity: 0.4; }
-  .tool-arg { color: var(--text-dim); opacity: 0.7; overflow: hidden; text-overflow: ellipsis; }
+  .tool-arg { color: var(--text-dim); opacity: 0.7; }
   .chat-activity-card .activity-badge {
-    float: right;
+    position: absolute;
+    top: 2px;
+    right: 8px;
     font-size: 11px;
     color: var(--text-dim);
     opacity: 0.6;
-    margin-left: 12px;
     white-space: nowrap;
     line-height: 1.5;
+    z-index: 1;
+    background: rgba(22,22,37,0.85);
+    padding: 0 4px;
+    border-radius: 3px;
   }
   .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
   .chat-activity-card .activity-badge .activity-signal { margin-left: 4px; }
@@ -4817,17 +4814,17 @@ function toolArgSummary(input, toolName) {
   // Fleet-specific: show the meaningful args
   if (n === 'name') return `${input.agent} → ${input.friendly_name}`
   if (n === 'label') return `${input.agent}: ${(input.labels || []).join(', ')}`
-  if (n === 'delegate') return `${input.agent}: ${(input.description || '').slice(0, 40)}`
-  if (n === 'interrupt') return `${input.agent}${input.message ? ' — ' + input.message.slice(0, 30) : ''}`
-  if (n === 'chat') return `→${input.to || 'manager'}: ${(input.message || '').slice(0, 40)}`
+  if (n === 'delegate') return `${input.agent}: ${input.description || ''}`
+  if (n === 'interrupt') return `${input.agent}${input.message ? ' — ' + input.message : ''}`
+  if (n === 'chat') return `→${input.to || 'manager'}: ${input.message || ''}`
   if (input.to) return input.to
   if (input.agent) return input.agent
   if (input.file_path) return input.file_path.split('/').slice(-2).join('/')
   if (input.path) return input.path.split('/').slice(-2).join('/')
-  if (input.command) return input.command.slice(0, 60)
+  if (input.command) return input.command
   if (input.pattern) return input.pattern
-  if (input.message) return input.message.slice(0, 40)
-  if (input.query) return input.query.slice(0, 40)
+  if (input.message) return input.message
+  if (input.query) return input.query
   return ''
 }
 
@@ -4842,7 +4839,7 @@ function toolContentDetail(name, input) {
     if (ns && os) {
       // Show first meaningful line of the new content
       const newLines = ns.split('\n').filter(l => l.trim())
-      const snippet = newLines[0]?.trim().slice(0, 80) || ''
+      const snippet = newLines[0]?.trim() || ''
       const addCount = ns.split('\n').length
       const delCount = os.split('\n').length
       return snippet ? `+${addCount}/-${delCount}: ${snippet}` : `+${addCount}/-${delCount}`
@@ -4852,7 +4849,7 @@ function toolContentDetail(name, input) {
   if (n === 'write') {
     const content = input.content || ''
     const lines = content.split('\n')
-    const firstLine = lines.find(l => l.trim())?.trim().slice(0, 80) || ''
+    const firstLine = lines.find(l => l.trim())?.trim() || ''
     return firstLine ? `${lines.length} lines: ${firstLine}` : `${lines.length} lines`
   }
   if (n === 'read') {
@@ -4876,7 +4873,7 @@ function toolContentDetail(name, input) {
   }
   if (n === 'agent') {
     const desc = input.description || input.prompt || ''
-    return desc.slice(0, 80)
+    return desc
   }
   return ''
 }
@@ -4993,10 +4990,10 @@ function renderActivityGroup(group, state) {
   // Collapsed header: last text or tool summary with count
   let headerSummary = ''
   if (lastText) {
-    headerSummary = esc(lastText._text.split('\n')[0].slice(0, 60))
+    headerSummary = esc(lastText._text.split('\n')[0])
   } else if (lastTool) {
     const extra = tools.length > 1 ? ` <span class="activity-more">(+${tools.length - 1} more)</span>` : ''
-    headerSummary = `${esc(lastTool._toolName)}: ${esc((lastTool._toolArg || '').slice(0, 30))}${extra}`
+    headerSummary = `${esc(lastTool._toolName)}: ${esc(lastTool._toolArg || '')}${extra}`
   }
 
   // Badge overlay: agent name + ctx% + count — floats right on first line of detail
@@ -5035,8 +5032,8 @@ function renderActivityGroup(group, state) {
     const toolLines = deduped.map(t => {
       const num = lineNum++
       const countHtml = t._count > 1 ? `<span class="tool-count">×${t._count}</span>` : ''
-      const arg = t._toolArg ? esc(t._toolArg.slice(0, 80)) : ''
-      const detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail.slice(0, 120))}</div>` : ''
+      const arg = t._toolArg ? esc(t._toolArg) : ''
+      const detail = t._toolDetail ? `<div class="tool-detail">${esc(t._toolDetail)}</div>` : ''
       const isEdit = (t._toolName || '').toLowerCase() === 'edit' && t._toolInput?.old_string && t._toolInput?.new_string
       const hasDiff = isEdit ? ' has-diff' : ''
       const diffHtml = isEdit ? renderEditDiff(t._toolInput) : ''
@@ -5063,7 +5060,8 @@ function renderActivityGroup(group, state) {
       <span class="activity-signal"></span>
       ${ctxHtml}
     </div>
-    <div class="activity-detail"><div class="activity-detail-inner">${badge}${detailHtml}</div></div>
+    ${badge}
+    <div class="activity-detail"><div class="activity-detail-inner">${detailHtml}</div></div>
   </div>`
 }
 
@@ -6248,8 +6246,8 @@ function updateAgentsWidget(container, params, state) {
         const agent = (state.agents || []).find(a => a.id === agentId)
         const label = agent?.friendly_name || agent?.name || agentId.substring(0, 8)
         const steps = dedupTools(toolEvts).map(t => {
-          const detail = t._toolDetail ? `<div style="color:var(--text-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px">${esc(t._toolDetail.slice(0, 120))}</div>` : ''
-          return `<div class="tool-step"><span style="color:var(--text)">${esc(t._toolName)}</span>${t._toolArg ? ` <span style="color:var(--text-dim)">${esc(t._toolArg.slice(0, 60))}</span>` : ''}${detail}</div>`
+          const detail = t._toolDetail ? `<div style="color:var(--text-dim);font-size:10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:300px">${esc(t._toolDetail)}</div>` : ''
+          return `<div class="tool-step"><span style="color:var(--text)">${esc(t._toolName)}</span>${t._toolArg ? ` <span style="color:var(--text-dim);overflow:hidden;text-overflow:ellipsis">${esc(t._toolArg)}</span>` : ''}${detail}</div>`
         }).join('')
         const lastEvt = toolEvts[toolEvts.length - 1]
         const ctxPct = lastEvt?._ctxPct != null ? `<span class="activity-ctx">${lastEvt._ctxPct}%</span>` : ''
@@ -6948,9 +6946,9 @@ function renderSessionEvents(events) {
           if (b.input) {
             if (b.input.file_path) filePath = b.input.file_path
             else if (b.input.path) filePath = b.input.path
-            else if (b.input.command) argsHtml = '<span class="term-tool-args">(' + esc(b.input.command.slice(0, 120)) + ')</span>'
+            else if (b.input.command) argsHtml = '<span class="term-tool-args">(' + esc(b.input.command) + ')</span>'
             else if (b.input.pattern) argsHtml = '<span class="term-tool-args">(' + esc(b.input.pattern) + ')</span>'
-            else if (b.input.query) argsHtml = '<span class="term-tool-args">(' + esc(b.input.query.slice(0, 80)) + ')</span>'
+            else if (b.input.query) argsHtml = '<span class="term-tool-args">(' + esc(b.input.query) + ')</span>'
           }
 
           let fileHeader = ''
