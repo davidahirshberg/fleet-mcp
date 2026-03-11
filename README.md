@@ -6,37 +6,20 @@ MCP server + dashboard for coordinating multiple [Claude Code](https://docs.anth
 
 ## Quickstart
 
-### 1. Install
+### 1. Install & configure
 
 ```bash
-git clone <repo-url> fleet
-cd fleet
-npm install
+npx github:davidahirshberg/fleet-mcp
 ```
 
-### 2. Configure
-
-Add the MCP server to Claude Code (`~/.claude/settings.json`):
-
-```json
-{
-  "mcpServers": {
-    "fleet": {
-      "command": "node",
-      "args": ["/path/to/fleet/index.mjs"]
-    }
-  }
-}
-```
-
-Add this to your `CLAUDE.md` (global or per-project):
+This clones the repo, adds the MCP server to your Claude Code settings, and symlinks the agent reference guide. Then add this to your `CLAUDE.md` (global or per-project):
 
 ```markdown
 Call `register()` with the `fleet` MCP server at session start. If you see **📬** as input,
 call `my_task()` — it means you have a new task or message.
 ```
 
-### 3. Try it
+### 2. Try it
 
 Open two kitty tabs, each running `claude`.
 
@@ -56,7 +39,7 @@ Open two kitty tabs, each running `claude`.
 
 The manager sees the message. That's it — two agents talking through fleet.
 
-### 4. Dashboard (optional)
+### 3. Dashboard (optional)
 
 ```bash
 node dashboard/server.mjs          # default port 5200

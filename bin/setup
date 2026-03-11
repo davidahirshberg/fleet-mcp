@@ -1,0 +1,76 @@
+#!/usr/bin/env node
+/**
+ * Fleet setup script.
+ *
+ * Usage:
+ *   npx github:davidahirshberg/fleet-mcp
+ *
+ * What it does:
+ *   1. Adds the fleet MCP server to ~/.claude/settings.json
+ *   2. Symlinks agent-guide.md to ~/.claude/reference/fleet.md
+ *   3. Prints the CLAUDE.md snippet to add
+ */
+
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
+import { fileURLToPath } from 'url';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const FLEET_ROOT = path.resolve(__dirname, '..');
+const INDEX_MJS = path.join(FLEET_ROOT, 'index.mjs');
+const AGENT_GUIDE = path.join(FLEET_ROOT, 'agent-guide.md');
+
+const CLAUDE_DIR = path.join(os.homedir(), '.claude');
+const SETTINGS_FILE = path.join(CLAUDE_DIR, 'settings.json');
+const REFERENCE_DIR = path.join(CLAUDE_DIR, 'reference');
+const REFERENCE_LINK = path.join(REFERENCE_DIR, 'fleet.md');
+
+console.log('Fleet setup\n');
+
+// 1. Add MCP server to settings.json
+let settings = {};
+try { settings = JSON.parse(fs.readFileSync(SETTINGS_FILE, 'utf8')); } catch {}
+if (!settings.mcpServers) settings.mcpServers = {};
+
+if (settings.mcpServers.fleet) {
+  console.log('MCP server already configured in settings.json');
+} else {
+  settings.mcpServers.fleet = {
+    command: 'node',
+    args: [INDEX_MJS],
+  };
+  fs.mkdirSync(CLAUDE_DIR, { recursive: true });
+  fs.writeFileSync(SETTINGS_FILE, JSON.stringify(settings, null, 2) + '\n');
+  console.log(`Added fleet MCP server to ${SETTINGS_FILE}`);
+}
+
+// 2. Symlink agent guide
+fs.mkdirSync(REFERENCE_DIR, { recursive: true });
+try {
+  const existing = fs.readlinkSync(REFERENCE_LINK);
+  if (existing === AGENT_GUIDE) {
+    console.log('Reference symlink already exists');
+  } else {
+    fs.unlinkSync(REFERENCE_LINK);
+    fs.symlinkSync(AGENT_GUIDE, REFERENCE_LINK);
+    console.log(`Updated symlink: ${REFERENCE_LINK} → agent-guide.md`);
+  }
+} catch {
+  try { fs.unlinkSync(REFERENCE_LINK); } catch {}
+  fs.symlinkSync(AGENT_GUIDE, REFERENCE_LINK);
+  console.log(`Created symlink: ${REFERENCE_LINK} → agent-guide.md`);
+}
+
+// 3. Print CLAUDE.md snippet
+console.log(`
+Add this to your CLAUDE.md (global or per-project):
+
+  Call \`register()\` with the \`fleet\` MCP server at session start.
+  If you see **📬** as input, call \`my_task()\` — it means you have a new task or message.
+
+Dashboard (optional):
+  node ${path.join(FLEET_ROOT, 'dashboard', 'server.mjs')}
+  Open http://localhost:5200
+
+Done!`);
