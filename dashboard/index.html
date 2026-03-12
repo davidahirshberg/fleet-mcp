@@ -21,7 +21,7 @@
     --orange: #c8956a;
     --cyan: #6aafb0;
     --border: #1e1e32;
-    --activity-card-height: 300px;
+    --activity-card-height: none;
     --terminal-card-height: 300px;
     --chat-page-size: 100;
   }
@@ -507,18 +507,15 @@
   .tool-sep { color: var(--text-dim); opacity: 0.4; }
   .tool-arg { color: var(--text-dim); opacity: 0.7; }
   .chat-activity-card .activity-badge {
-    position: absolute;
-    top: 2px;
-    right: 8px;
+    float: right;
     font-size: 11px;
     color: var(--text-dim);
     opacity: 0.6;
     white-space: nowrap;
     line-height: 1.5;
-    z-index: 1;
-    background: rgba(22,22,37,0.85);
     padding: 0 4px;
     border-radius: 3px;
+    margin: 0 0 2px 8px;
   }
   .chat-activity-card .activity-badge .activity-agent { font-weight: 500; }
   .chat-activity-card .activity-badge .activity-signal { margin-left: 4px; }
@@ -639,6 +636,7 @@
   .chat-nick { font-weight: 500; margin-right: 4px; }
   .nick-web { color: #9370db; }
   .nick-manager { color: var(--green); }
+  .nick-chief { color: var(--green); text-decoration: underline; text-underline-offset: 2px; }
   .nick-keepalive { color: var(--text-dim); }
   .nick-agent-0 { color: var(--blue); }
   .nick-agent-1 { color: var(--purple); }
@@ -706,13 +704,9 @@
     -webkit-mask-image: linear-gradient(to bottom, #000 70%, transparent 100%);
   }
 
-  /* Long message scroll — caps height, scrolls overflow */
+  /* Long messages — just render at full height, no scroll container */
   .message-body.message-long {
     display: block;
-    max-height: calc(20 * 1.4em);
-    overflow-y: auto;
-    border-left: 2px solid var(--border, #333);
-    padding-left: 6px;
     margin: 2px 0;
   }
 
@@ -2377,6 +2371,37 @@ async function loadFleetConfig() {
 // Fire and forget — config used when available
 loadFleetConfig()
 
+// --- Human identity ---
+let HUMAN_ID = null
+let HUMAN_NAME = null
+;(async () => {
+  try {
+    const r = await fetch('/api/human')
+    if (r.ok) {
+      const h = await r.json()
+      HUMAN_ID = h.id
+      HUMAN_NAME = h.name
+    }
+  } catch {}
+})()
+
+/** Check if an ID refers to a human user (legacy 'web' or actual human fleet ID) */
+function isHumanId(id) {
+  const aliases = new Set(['web', 'skip', 'human', 'user'])
+  if (aliases.has(id)) return true
+  if (HUMAN_ID && id === HUMAN_ID) return true
+  if (currentState?.user && id === currentState.user) return true
+  return false
+}
+
+/** Get the set of all known human aliases (for filtering) */
+function humanIdSet() {
+  const s = new Set(['web', 'skip', 'human', 'user'])
+  if (HUMAN_ID) s.add(HUMAN_ID)
+  if (currentState?.user) s.add(currentState.user)
+  return s
+}
+
 // --- State ---
 let currentState = null
 let selectedAgent = localStorage.getItem('fleet-selected-agent') || null
@@ -2504,8 +2529,7 @@ const playbackCtrl = {
         const from = ev.data.from || 'system'
         const to = ev.data.to || 'system'
         const text = ev.type === 'delegate' ? `**delegate**: ${ev.data.description || ''}\n${ev.data.text || ''}` : (ev.data.text || '')
-        const userAliases = ['web', 'skip', 'human', 'user']
-        const isFromUser = userAliases.includes(from)
+        const isFromUser = isHumanId(from)
 
         // Cinematic typing for user chat messages
         if (this.cinematic && isFromUser && ev.type === 'chat' && text.length > 0) {
@@ -2556,7 +2580,7 @@ const playbackCtrl = {
             if (ev.t <= this.currentT) {
               messages.push({
                 _evType: 'user_text', _interrupt: true,
-                from: currentState?.user || 'web',
+                from: HUMAN_ID || currentState?.user || 'web',
                 to: ev.sourceId || 'assistant',
                 text: fullText,
                 timestamp: mkTs(ev.t),
@@ -2572,7 +2596,7 @@ const playbackCtrl = {
             if (this.currentT >= ev.t + sendDelay) {
               messages.push({
                 _evType: 'user_text',
-                from: currentState?.user || 'web',
+                from: HUMAN_ID || currentState?.user || 'web',
                 to: ev.sourceId || 'assistant',
                 text: fullText,
                 timestamp: mkTs(ev.t),
@@ -2594,7 +2618,7 @@ const playbackCtrl = {
         } else {
           messages.push({
             _evType: 'user_text',
-            from: currentState?.user || 'web',
+            from: HUMAN_ID || currentState?.user || 'web',
             to: ev.sourceId || 'assistant',
             text: fullText,
             timestamp: mkTs(ev.t),
@@ -2617,7 +2641,7 @@ const playbackCtrl = {
         messages.push({
           _evType: 'assistant_text',
           from: ev.sourceId || 'assistant',
-          to: 'web',
+          to: HUMAN_ID || 'web',
           text,
           timestamp: mkTs(ev.t),
         })
@@ -2722,6 +2746,7 @@ let lastFocusedTerminal = null // container of the most recently focused termina
 
 // --- Helpers ---
 function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') }
+function smoothScrollToBottom(el) { el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }) }
 function timeShort(ts) {
   if (!ts) return ''
   const d = new Date(ts)
@@ -2729,9 +2754,7 @@ function timeShort(ts) {
 }
 function agentLabel(state, id) {
   const a = (state?.agents || []).find(a => a.id === id)
-  const uid = state?.user || 'user'
-  const userAliases = ['web', 'skip', 'human', 'user']
-  if (userAliases.includes(id) || id === uid) return a?.friendly_name || uid
+  if (isHumanId(id)) return a?.friendly_name || HUMAN_NAME || 'user'
   return a?.friendly_name || a?.name || (typeof id === 'string' ? id.substring(0, 8) : String(id || '?'))
 }
 function isActive(a) {
@@ -2743,12 +2766,23 @@ const nickColors = ['nick-agent-0','nick-agent-1','nick-agent-2','nick-agent-3',
 const nickMap = new Map()
 let nickIdx = 0
 
+function getChiefId(state) {
+  const agents = state?.agents || []
+  const managers = agents.filter(a => a.is_manager && !a.dead)
+  if (managers.length === 0) return null
+  // Chief = most recently active manager
+  managers.sort((a, b) => (b.last_seen || '').localeCompare(a.last_seen || ''))
+  return managers[0]?.id || null
+}
+
 function getNickClass(id, state) {
-  if (id === 'web') return 'nick-web'
+  if (isHumanId(id)) return 'nick-web'
   if (id === 'keepalive') return 'nick-keepalive'
   const agents = state?.agents || []
   const agent = agents.find(a => a.id === id)
-  if (agent?.is_manager) return 'nick-manager'
+  if (agent?.is_manager) {
+    return id === getChiefId(state) ? 'nick-chief' : 'nick-manager'
+  }
   if (!nickMap.has(id)) {
     nickMap.set(id, nickColors[nickIdx % nickColors.length])
     nickIdx++
@@ -2757,12 +2791,11 @@ function getNickClass(id, state) {
 }
 
 
-// Extended match: also matches agent name/friendly_name/id prefix as implicit labels
+// Extended match: also matches agent friendly_name/id prefix as implicit labels
 function agentMatchesDnf(dnf, agent) {
   if (!dnf || dnf.length === 0) return true
   const labels = [...(agent.labels || [])]
   if (agent.friendly_name) labels.push(agent.friendly_name)
-  if (agent.name) labels.push(agent.name)
   labels.push(agent.id?.substring(0, 8))
   return dnf.some(andGroup => andGroup.every(label => labels.includes(label)))
 }
@@ -3471,6 +3504,36 @@ document.addEventListener('click', (e) => {
   navigator.clipboard.writeText(`${file}:${line}`).catch(() => {})
 })
 
+// Copy handler: put structured JSON into clipboard for activity cards
+document.addEventListener('copy', (e) => {
+  const sel = window.getSelection()
+  const actCard = sel?.anchorNode?.parentElement?.closest?.('.chat-activity-card')
+  if (!actCard) return
+  const allLines = actCard.querySelectorAll('.tool-line')
+  const text = Array.from(allLines).map(l => {
+    const num = l.querySelector('.tool-linenum')?.textContent || ''
+    const count = l.querySelector('.tool-count')?.textContent || ''
+    const name = l.querySelector('.tool-name')?.textContent || ''
+    const arg = l.querySelector('.tool-arg')?.textContent || ''
+    return `${num.trim()}${count ? ' ' + count : ''} ${name}${arg ? ': ' + arg : ''}`
+  }).join('\n')
+  const textBlocks = Array.from(actCard.querySelectorAll('.activity-text-block')).map(b => b.textContent.trim()).filter(Boolean)
+  const fullText = [text, ...textBlocks].filter(Boolean).join('\n\n')
+  const agentId = actCard.dataset.agent || ''
+  const ts = actCard.dataset.ts || ''
+  const payload = {
+    type: 'activity',
+    snippet: fullText.substring(0, 200),
+    source: `activity:${agentId}:${ts}`,
+    timestamp: ts,
+    text: fullText,
+    _fleet_attachment: true
+  }
+  e.clipboardData.setData('application/x-chat-attachment', JSON.stringify(payload))
+  e.clipboardData.setData('text/plain', JSON.stringify(payload))
+  e.preventDefault()
+})
+
 // Handle shared doc drag to tlda
 document.addEventListener('dragstart', (e) => {
   // Agent badge drag → drop on tab bar to open chat for that agent
@@ -3866,7 +3929,7 @@ function createChatWidget(container, params) {
   // (content update, tab switch, panel resize), pin to bottom if autoScroll is on.
   const resizeObs = new ResizeObserver(() => {
     if (container._autoScroll !== false && log.scrollHeight > log.clientHeight) {
-      log.scrollTop = log.scrollHeight
+      smoothScrollToBottom(log)
     }
   })
   resizeObs.observe(log)
@@ -3885,7 +3948,7 @@ function createChatWidget(container, params) {
     container._autoScroll = !container._autoScroll
     scrollToggle.textContent = container._autoScroll ? '⏸' : '▶'
     scrollToggle.classList.toggle('paused', !container._autoScroll)
-    if (container._autoScroll) log.scrollTop = log.scrollHeight
+    if (container._autoScroll) smoothScrollToBottom(log)
   })
 
   // Diff gutter — hover to show diffs, click to pin (skip for playback panels)
@@ -4095,12 +4158,12 @@ function createChatWidget(container, params) {
     container._terminalMode = true
     inputStatus.textContent = 'terminal'
     input.placeholder = `$ ${agentName}`
-    if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+    if (container._autoScroll !== false) smoothScrollToBottom(log)
     // Close button
     card.querySelector('.term-card-close').addEventListener('click', closeTerminalCard)
     // Start polling
     fetchTerminalCard(target, card).then(() => {
-      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      if (container._autoScroll !== false) smoothScrollToBottom(log)
     })
     container._terminalInterval = setInterval(() => fetchTerminalCard(target, card), 1000)
   }
@@ -4183,9 +4246,8 @@ function createChatWidget(container, params) {
       if (rest && currentState) {
         for (const name of rest.split(/\s+/)) {
           const match = (currentState.agents || []).find(a =>
-            a.friendly_name === name || a.name === name || a.id === name ||
-            (a.friendly_name?.toLowerCase() === name.toLowerCase()) ||
-            (a.name?.toLowerCase() === name.toLowerCase())
+            a.friendly_name === name || a.id === name ||
+            (a.friendly_name?.toLowerCase() === name.toLowerCase())
           )
           if (match) targets.push(match.id)
         }
@@ -4196,7 +4258,7 @@ function createChatWidget(container, params) {
       }
       if (targets.length === 0) {
         log.innerHTML += `<div class="chat-line" style="color:var(--orange)">No targets for queue mode</div>`
-        if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+        if (container._autoScroll !== false) smoothScrollToBottom(log)
         return
       }
       container._queueMode = true
@@ -4227,9 +4289,8 @@ function createChatWidget(container, params) {
       if (rest && currentState) {
         for (const name of rest.split(/\s+/)) {
           const match = (currentState.agents || []).find(a =>
-            a.friendly_name === name || a.name === name || a.id === name ||
-            (a.friendly_name?.toLowerCase() === name.toLowerCase()) ||
-            (a.name?.toLowerCase() === name.toLowerCase())
+            a.friendly_name === name || a.id === name ||
+            (a.friendly_name?.toLowerCase() === name.toLowerCase())
           )
           if (match) targets.push(match.id)
         }
@@ -4240,7 +4301,7 @@ function createChatWidget(container, params) {
       }
       if (targets.length === 0) {
         log.innerHTML += `<div class="chat-line" style="color:var(--orange)">No targets for interrupt mode</div>`
-        if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+        if (container._autoScroll !== false) smoothScrollToBottom(log)
         return
       }
       container._interruptMode = true
@@ -4287,7 +4348,7 @@ function createChatWidget(container, params) {
       } catch (e) { console.error('Broadcast send failed:', e) }
       container._chatAttachments = []
       renderChatAttachments()
-      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      if (container._autoScroll !== false) smoothScrollToBottom(log)
       return
     }
     if (!target) {
@@ -4317,7 +4378,7 @@ function createChatWidget(container, params) {
       container._modeTargets = null
       container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
       updatePillMode()
-      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      if (container._autoScroll !== false) smoothScrollToBottom(log)
       return
     }
     // Queue mode: buffer messages locally instead of sending
@@ -4328,7 +4389,7 @@ function createChatWidget(container, params) {
       log.innerHTML += `<div class="chat-line from-user chat-queued" style="opacity:0.3">${renderMarkdown(esc(msg))}</div>`
       container._chatAttachments = []
       renderChatAttachments()
-      if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+      if (container._autoScroll !== false) smoothScrollToBottom(log)
       return
     }
     // Flush any queued messages first to maintain temporal order
@@ -4344,7 +4405,7 @@ function createChatWidget(container, params) {
       }
       // Optimistic local render — add to state.messages, SSE deduplicates on arrival
       const localMsg = {
-        from: 'web',
+        from: HUMAN_ID || 'web',
         to: target,
         text: msg,
         timestamp: new Date().toISOString(),
@@ -4398,7 +4459,7 @@ function createChatWidget(container, params) {
     }
     container._chatAttachments = []
     renderChatAttachments()
-    if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+    if (container._autoScroll !== false) smoothScrollToBottom(log)
   }
   input.addEventListener('keydown', e => {
     e.stopPropagation() // prevent dockview tab bar from intercepting keystrokes
@@ -4524,7 +4585,15 @@ function createChatWidget(container, params) {
   input.setAttribute('autocorrect', 'off')
   input.setAttribute('autocapitalize', 'off')
   input.setAttribute('spellcheck', 'false')
-  function autoResize() { input.style.height = 'auto'; input.style.height = Math.min(input.scrollHeight, 120) + 'px' }
+  function autoResize() {
+    const prevH = input.offsetHeight
+    input.style.height = 'auto'
+    input.style.height = Math.min(input.scrollHeight, 120) + 'px'
+    const delta = input.offsetHeight - prevH
+    if (delta && container._autoScroll !== false) {
+      log.scrollTop += delta
+    }
+  }
   input.addEventListener('input', () => {
     autoResize()
     // Hide target ghost when text is long enough to overlap
@@ -4568,16 +4637,46 @@ function createChatWidget(container, params) {
     document.addEventListener('click', () => { pillMenu.style.display = 'none' })
   }
 
-  // Image paste support
+  // Paste support: images and activity card text
   input.addEventListener('paste', async e => {
     const items = [...(e.clipboardData?.items || [])]
+    // Check for structured attachment JSON (from copy handler) or activity card text
+    const jsonPayload = e.clipboardData?.getData('application/x-chat-attachment')
+    const plainText = e.clipboardData?.getData('text/plain') || ''
+    if (jsonPayload) {
+      e.preventDefault()
+      try { addChatAttachment(JSON.parse(jsonPayload)) } catch {}
+      input.focus()
+      return
+    }
+    // Fallback: detect JSON with _fleet_attachment marker in text/plain
+    if (plainText.startsWith('{') && plainText.includes('_fleet_attachment')) {
+      e.preventDefault()
+      try { addChatAttachment(JSON.parse(plainText)) } catch {}
+      input.focus()
+      return
+    }
+    // Fallback: detect raw tool-line text (from external paste)
+    const toolLinePattern = /^\d+\s+(?:×\d+\s+)?\S+/m
+    if (plainText && toolLinePattern.test(plainText) && plainText.split('\n').filter(l => toolLinePattern.test(l)).length >= 2) {
+      e.preventDefault()
+      addChatAttachment({
+        type: 'activity',
+        snippet: plainText.substring(0, 200),
+        source: '',
+        timestamp: '',
+        text: plainText
+      })
+      input.focus()
+      return
+    }
     const imgItem = items.find(i => i.type.startsWith('image/'))
     if (!imgItem) return
     e.preventDefault()
     const blob = imgItem.getAsFile()
     if (!blob) return
     log.innerHTML += `<div class="chat-line" style="color:var(--text-dim)">Uploading image...</div>`
-    if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+    if (container._autoScroll !== false) smoothScrollToBottom(log)
     try {
       const buf = await blob.arrayBuffer()
       const res = await fetch('/api/upload', { method: 'POST', body: buf })
@@ -4641,7 +4740,7 @@ function createChatWidget(container, params) {
     if (!file) return
     e.preventDefault()
     log.innerHTML += `<div class="chat-line" style="color:var(--text-dim)">Uploading image...</div>`
-    if (container._autoScroll !== false) log.scrollTop = log.scrollHeight
+    if (container._autoScroll !== false) smoothScrollToBottom(log)
     try {
       const buf = await file.arrayBuffer()
       const res = await fetch('/api/upload', { method: 'POST', body: buf })
@@ -4932,7 +5031,7 @@ function getActivityEvents(agentId) {
           _toolArg: arg,
           _toolDetail: detail,
           _toolInput: b.input,
-          _ctxPct: ev.usage ? Math.round((ev.usage.input / 200000) * 100) : null,
+          _ctxPct: ev.usage ? Math.min(100, Math.round((ev.usage.input / 166000) * 100)) : null,
         })
       } else if (b.type === 'text' && b.text && b.text.length > 20) {
         // Include substantive text blocks (skip short fragments)
@@ -4942,7 +5041,7 @@ function getActivityEvents(agentId) {
           from: agentId,
           timestamp: ev.timestamp,
           _text: b.text,
-          _ctxPct: ev.usage ? Math.round((ev.usage.input / 200000) * 100) : null,
+          _ctxPct: ev.usage ? Math.min(100, Math.round((ev.usage.input / 166000) * 100)) : null,
         })
       }
     }
@@ -5071,22 +5170,28 @@ function renderActivityGroup(group, state) {
       <span class="activity-signal"></span>
       ${ctxHtml}
     </div>
-    ${badge}
-    <div class="activity-detail"><div class="activity-detail-inner">${detailHtml}</div></div>
+    <div class="activity-detail">${badge}<div class="activity-detail-inner">${detailHtml}</div></div>
   </div>`
 }
 
 function renderChatLine(m, state) {
+  // Timer-fired messages: render as quiet inline note matching countdown style
+  if (m._timer) {
+    const nick = agentLabel(state, m.from)
+    const cls = getNickClass(m.from, state)
+    const ts = timeShort(m.timestamp)
+    const msg = esc((m.text || '').replace(/^⏰\s*/, ''))
+    return `<div class="chat-line" style="font-size:11px;opacity:0.5"><span class="chat-ts">${ts}</span> <span class="${cls}">${esc(nick)}</span> <span style="color:var(--text-dim)">⏱ ${msg}</span></div>`
+  }
   const nick = agentLabel(state, m.from)
   const fromCls = getNickClass(m.from, state)
   const ts = timeShort(m.timestamp)
   const text = m._raw ? esc(m.text) : renderMarkdown(esc(m.text))
   const sender = (state.agents || []).find(a => a.id === m.from)
-  const senderAgo = sender?.last_seen ? (Date.now() - new Date(sender.last_seen).getTime()) / 1000 : null
-  const dimStyle = senderAgo === null ? '' : senderAgo > 600 ? 'opacity:0.4' : senderAgo > 120 ? 'opacity:0.65' : ''
-  const isFromUser = !sender
-  const userAliases = new Set(['web', 'skip', 'human'])
-  const isAmbient = !isFromUser && !userAliases.has(m.to) && !userAliases.has(m.from)
+  const msgAgo = m.timestamp ? (Date.now() - new Date(m.timestamp).getTime()) / 1000 : null
+  const dimStyle = msgAgo === null ? '' : msgAgo > 1800 ? 'opacity:0.4' : msgAgo > 600 ? 'opacity:0.65' : ''
+  const isFromUser = isHumanId(m.from)
+  const isAmbient = !isFromUser && !isHumanId(m.to) && !isHumanId(m.from)
   const receipt = isFromUser && m._isLastUserMsg && m.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px;opacity:0.4">✓</span>' : ''
   // Multi-target: show all cc recipients
   let toHtml
@@ -5160,7 +5265,7 @@ function renderChatLine(m, state) {
   const nickHtml = isAmbient
     ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
-  // Long message: scrollable container instead of collapse
+  // Long message: block display for readability
   const rawLineCount = (m.text || '').split('\n').length
   const isLongMsg = rawLineCount > 20
   let bodyText = isLongMsg ? `<span class="message-body message-long">${displayText}</span>` : displayText
@@ -5313,11 +5418,15 @@ function updateChatWidget(container, params, state) {
     for (const a of (state.agents || [])) {
       if (agentMatchesDnf(dnf, a)) matchingAgentIds.add(a.id)
     }
-    if (matchingAgentIds.size === 0) {
+    // Always include human user as implicit participant
+    for (const hid of humanIdSet()) matchingAgentIds.add(hid)
+    const humanCount = [...humanIdSet()].filter(h => matchingAgentIds.has(h)).length
+    if (matchingAgentIds.size <= humanCount) {  // only human aliases, no actual agents matched
       filtered = []
       _filterEmpty = true
     } else {
-      filtered = msgs.filter(m => matchingAgentIds.has(m.from) || matchingAgentIds.has(m.to))
+      // AND: both endpoints must be in the filter set (show conversation between participants, not all traffic)
+      filtered = msgs.filter(m => matchingAgentIds.has(m.from) && matchingAgentIds.has(m.to))
     }
   } else if (container._chatTarget && !container._streamSource) {
     // When targeting a specific agent (no label filter), only show messages to/from that agent
@@ -5436,6 +5545,26 @@ function updateChatWidget(container, params, state) {
         activityEvents.push({ _unreachable: true, _chatBreak: true, from: a.id, timestamp: a.unreachable_since || a.last_seen })
       }
     }
+    // Active timer countdowns — inject as inline timeline indicators
+    let timerAgents = allAgents.filter(a => a._timers?.length)
+    if (target) {
+      timerAgents = timerAgents.filter(a => a.id === target)
+    } else if (chatTargets.size > 0) {
+      timerAgents = timerAgents.filter(a => chatTargets.has(a.id))
+    }
+    for (const a of timerAgents) {
+      for (const t of a._timers) {
+        const remaining = Math.max(0, Math.ceil((new Date(t.until) - Date.now()) / 1000))
+        activityEvents.push({
+          _timerCountdown: true,
+          _timerRemaining: remaining,
+          _timerMessage: t.message,
+          _timerUntil: t.until,
+          from: a.id,
+          timestamp: new Date().toISOString(), // always at bottom of timeline
+        })
+      }
+    }
   }
 
   // Combine and sort by timestamp (skip sort in playback — events already ordered)
@@ -5482,7 +5611,8 @@ function updateChatWidget(container, params, state) {
   const targetKey = container._chatTarget || 'all'
   const dbLen = container._dbHistory?.length || 0
   const dbExh = container._dbExhausted ? 1 : 0
-  const structHash = targetKey + ':' + msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity + ':' + dbLen + ':' + dbExh
+  const chatTimerTick = (state.agents || []).some(a => a._timers?.length) ? Math.floor(Date.now() / 1000) : 0
+  const structHash = targetKey + ':' + msgCount + ':' + (hasMore ? 1 : 0) + ':' + (lastMsg?.timestamp || '') + ':' + (lastMsg?.from || '') + ':' + lastActivity + ':' + dbLen + ':' + dbExh + ':t' + chatTimerTick
   const lastReceipt = lastMsg?.read ? 'R' : ''
   const fullHash = structHash + ':' + lastText.length + ':' + (typingForThis || '') + ':' + lastReceipt
 
@@ -5508,13 +5638,13 @@ function updateChatWidget(container, params, state) {
         while (sibling) { const next = sibling.nextSibling; sibling.remove(); sibling = next }
         const rendered = renderMarkdown(esc(lastText))
         const sender = (state.agents || []).find(a => a.id === lastMsg?.from)
-        const isFromUser = !sender
+        const isFromUser = isHumanId(lastMsg?.from)
         const receipt = isFromUser && lastMsg?.read ? '<span style="color:var(--text-dim);font-size:10px;margin-left:4px;opacity:0.4">✓</span>' : ''
         nickEnd.insertAdjacentHTML('afterend', ` ${rendered}${receipt}`)
       }
       log._chatHash = fullHash
       if (container._autoScroll !== false) {
-        requestAnimationFrame(() => { log.scrollTop = log.scrollHeight })
+        requestAnimationFrame(() => { smoothScrollToBottom(log) })
       }
       const input = container.querySelector('.chat-input')
       if (input && container._streamSource) {
@@ -5541,10 +5671,9 @@ function updateChatWidget(container, params, state) {
   }
   let renderedLines = topSentinel
   // Tag the last user message for receipt display (transient — only shown on most recent)
-  const userAliasSet = new Set(['web', 'skip', 'human'])
   for (let k = 0; k < visible.length; k++) delete visible[k]._isLastUserMsg
   for (let k = visible.length - 1; k >= 0; k--) {
-    if (userAliasSet.has(visible[k].from) && !visible[k]._activity && !visible[k]._compacting) {
+    if (isHumanId(visible[k].from) && !visible[k]._activity && !visible[k]._compacting) {
       visible[k]._isLastUserMsg = true
       break
     }
@@ -5552,6 +5681,17 @@ function updateChatWidget(container, params, state) {
   let i = 0
   while (i < visible.length) {
     const m = visible[i]
+    if (m._timerCountdown) {
+      const nick = agentLabel(state, m.from)
+      const cls = getNickClass(m.from, state)
+      const r = m._timerRemaining
+      const mins = Math.floor(r / 60)
+      const secs = r % 60
+      const timeStr = mins > 0 ? `${mins}:${String(secs).padStart(2, '0')}` : `${secs}s`
+      const msg = esc(m._timerMessage)
+      renderedLines += `<div class="chat-line chat-timer-countdown" style="font-size:11px;opacity:0.5"><span class="chat-ts">${timeShort(m.timestamp)}</span> <span class="${cls}">${esc(nick)}</span> <span style="color:var(--text-dim)">⏱ ${timeStr} → ${msg}</span></div>`
+      i++; continue
+    }
     if (m._compacting) {
       const nick = agentLabel(state, m.from)
       const cls = getNickClass(m.from, state)
@@ -5602,6 +5742,29 @@ function updateChatWidget(container, params, state) {
 
   const prevScroll = log.scrollTop
   const wasBottom = container._autoScroll !== false
+  // Anchor scroll to the element at the top of the viewport (survives innerHTML rebuild)
+  let scrollAnchorIdx = -1, scrollAnchorOffset = 0
+  if (!wasBottom) {
+    for (let c = 0; c < log.children.length; c++) {
+      const rect = log.children[c].getBoundingClientRect()
+      const logRect = log.getBoundingClientRect()
+      if (rect.bottom > logRect.top) {
+        scrollAnchorIdx = c
+        scrollAnchorOffset = rect.top - logRect.top
+        break
+      }
+    }
+  }
+  // Save activity detail scroll positions before innerHTML destroys them
+  const savedDetailScrolls = new Map()
+  if (container._activityDetailScrollPaused?.size) {
+    log.querySelectorAll('.chat-activity-card .activity-detail').forEach(detail => {
+      const agentId = detail.closest('.chat-activity-card')?.dataset?.agent
+      if (agentId && container._activityDetailScrollPaused.has(agentId)) {
+        savedDetailScrolls.set(agentId, detail.scrollTop)
+      }
+    })
+  }
   const savedTermCard = container._terminalCard && log.contains(container._terminalCard) ? container._terminalCard : null
   // Preserve tlda iframes: iframes reload on ANY DOM reparenting.
   // Solution: iframes live in an overlay that's never destroyed by innerHTML.
@@ -5628,7 +5791,19 @@ function updateChatWidget(container, params, state) {
   requestAnimationFrame(() => {
     repositionTldaIframes(container, log)
     if (wasBottom) {
-      log.scrollTop = log.scrollHeight
+      // Use instant scroll on first render (no prior content to animate from);
+      // smooth scroll on subsequent updates for visual continuity.
+      if (prevScroll === 0 && scrollAnchorIdx < 0) {
+        log.scrollTo({ top: log.scrollHeight, behavior: 'instant' })
+      } else {
+        smoothScrollToBottom(log)
+      }
+    } else if (scrollAnchorIdx >= 0 && scrollAnchorIdx < log.children.length) {
+      // Restore scroll by anchoring to the same child element
+      const anchorEl = log.children[scrollAnchorIdx]
+      const logRect = log.getBoundingClientRect()
+      const anchorRect = anchorEl.getBoundingClientRect()
+      log.scrollTop += (anchorRect.top - logRect.top) - scrollAnchorOffset
     } else {
       log.scrollTop = prevScroll
     }
@@ -5650,12 +5825,18 @@ function updateChatWidget(container, params, state) {
         container._loadingMore = false
       })
     }
-    // Infinite scroll: IntersectionObserver triggers load when sentinel is near viewport
+    // Infinite scroll: IntersectionObserver triggers load when sentinel is near viewport.
+    // Defer observer setup: the scroll-to-bottom runs in rAF (line ~5791), so the sentinel
+    // is briefly visible before the viewport moves. Setting up the observer synchronously
+    // would fire immediately, trigger load-more, and disable autoScroll on reload.
     if (container._loadMoreObserver) container._loadMoreObserver.disconnect()
-    container._loadMoreObserver = new IntersectionObserver(entries => {
-      if (entries[0]?.isIntersecting && !container._loadingMore) loadMoreEl.click()
-    }, { root: log, rootMargin: '200px 0px 0px 0px' })
-    container._loadMoreObserver.observe(loadMoreEl)
+    requestAnimationFrame(() => {
+      if (container._loadMoreObserver) container._loadMoreObserver.disconnect()
+      container._loadMoreObserver = new IntersectionObserver(entries => {
+        if (entries[0]?.isIntersecting && !container._loadingMore) loadMoreEl.click()
+      }, { root: log, rootMargin: '200px 0px 0px 0px' })
+      container._loadMoreObserver.observe(loadMoreEl)
+    })
   } else {
     if (container._loadMoreObserver) { container._loadMoreObserver.disconnect(); container._loadMoreObserver = null }
   }
@@ -5688,7 +5869,9 @@ function updateChatWidget(container, params, state) {
     container._dbScrollHandler = () => {
       if (log.scrollTop > 100 || container._dbLoading || container._dbExhausted) return
       if (Date.now() - (container._dbFetchedAt || 0) < 1000) return
-      container._autoScroll = false
+      // Don't disable autoScroll here — the wheel/touch handler (line ~4040) already
+      // manages user scroll intent. This handler fires on programmatic scrolls too
+      // (e.g. smoothScrollToBottom on reload), which would falsely disable auto-scroll.
       const sh = log.scrollHeight
       const st = log.scrollTop
       fetchChatHistory(container, cursor, container._chatTarget).then(() => {
@@ -5768,8 +5951,35 @@ function updateChatWidget(container, params, state) {
   })
 
   // Scroll expanded activity card details to the bottom (show latest activity)
+  // Respect user scroll intent: track per-agent scroll state across re-renders
+  if (!container._activityDetailScrollPaused) container._activityDetailScrollPaused = new Set()
   log.querySelectorAll('.chat-activity-card:not(.collapsed) .activity-detail').forEach(detail => {
-    detail.scrollTop = detail.scrollHeight
+    const agentId = detail.closest('.chat-activity-card')?.dataset?.agent
+    if (!agentId) return
+    // Attach scroll tracking (elements are recreated on each render)
+    let _userScrolled = false
+    detail.addEventListener('wheel', () => { _userScrolled = true }, { passive: true })
+    detail.addEventListener('touchmove', () => { _userScrolled = true }, { passive: true })
+    detail.addEventListener('scroll', () => {
+      if (!_userScrolled) return
+      _userScrolled = false
+      const atBottom = detail.scrollHeight - detail.scrollTop - detail.clientHeight < 20
+      if (atBottom) container._activityDetailScrollPaused.delete(agentId)
+      else container._activityDetailScrollPaused.add(agentId)
+    })
+  })
+  // Defer scroll positioning to after layout settles (scrollTop before layout is unreliable)
+  requestAnimationFrame(() => {
+    log.querySelectorAll('.chat-activity-card:not(.collapsed) .activity-detail').forEach(detail => {
+      const agentId = detail.closest('.chat-activity-card')?.dataset?.agent
+      if (!agentId) { detail.scrollTop = detail.scrollHeight; return }
+      if (container._activityDetailScrollPaused.has(agentId)) {
+        const saved = savedDetailScrolls.get(agentId)
+        if (saved != null) detail.scrollTop = saved
+      } else {
+        detail.scrollTop = detail.scrollHeight
+      }
+    })
   })
 
   // Tool-ref click: scroll to the original tool-run card
@@ -5851,7 +6061,7 @@ function updateChatWidget(container, params, state) {
         const res = await fetch('/api/retract', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ timestamp: ts, from: 'web' }),
+          body: JSON.stringify({ timestamp: ts, from: HUMAN_ID || 'web' }),
         })
         if (res.ok) {
           const line = btn.closest('.chat-line')
@@ -5917,9 +6127,7 @@ function updateChatWidget(container, params, state) {
 
   if (container._autoScroll !== false && log.scrollHeight > 0) {
     // Mark messages as seen per-agent when auto-scrolled to bottom (user is watching)
-    const userId = state?.user || 'user'
-    const userAliases = ['web', 'skip', 'human', 'user', userId]
-    const toUser = filtered.filter(m => userAliases.includes(m.to))
+    const toUser = filtered.filter(m => isHumanId(m.to))
     for (const m of toUser) {
       if (m.from) setAgentSeenTs(m.from, m.timestamp)
     }
@@ -6010,8 +6218,6 @@ function updateAgentsWidget(container, params, state) {
   if (list._agentsHash === fullHash) return
   list._agentsHash = fullHash
   const sort = container._agentSort || { col: 'seen', asc: true }
-  const userId = state?.user || 'user'
-  const userAliases = new Set(['web', 'skip', 'human', 'user', userId])
   const agents = (state.agents || []).slice().map(a => {
     const name = a.friendly_name || a.name || a.id?.substring(0, 8)
     const ago = a.last_seen ? Math.floor((Date.now() - new Date(a.last_seen).getTime()) / 1000) : Infinity
@@ -6020,7 +6226,7 @@ function updateAgentsWidget(container, params, state) {
     const syntheticTask = allTasks.find(t => t.synthetic)
     const task = realTask || syntheticTask || null
     // Unseen messages FROM this agent TO the user (newer than per-agent seen ts)
-    const unseenMsgs = (state.messages || []).filter(m => m.from === a.id && userAliases.has(m.to) && m.timestamp > getAgentSeenTs(a.id))
+    const unseenMsgs = (state.messages || []).filter(m => m.from === a.id && isHumanId(m.to) && m.timestamp > getAgentSeenTs(a.id))
     return { ...a, _name: name, _ago: ago, _task: task, _allTasks: allTasks, _syntheticTask: syntheticTask, _unseen: unseenMsgs.length, _unseenMsgs: unseenMsgs }
   })
 
@@ -7143,7 +7349,7 @@ function renderSessionEvents(events) {
 
   // Context meter at the bottom
   if (lastUsage) {
-    const pct = Math.round((lastUsage.input / 200000) * 100)
+    const pct = Math.min(100, Math.round((lastUsage.input / 166000) * 100))
     const color = pct > 80 ? 'var(--orange)' : pct > 60 ? '#eab308' : 'var(--text-dim)'
     parts.push('<div class="term-context-meter" style="text-align:right;font-size:10px;color:' + color + ';padding:4px 0;opacity:0.6">' + pct + '% context</div>')
   }
@@ -7332,7 +7538,7 @@ async function fetchSessionLite(agentId) {
       if (lastWithUsage?.usage) {
         const agentEntry = (currentState.agents || []).find(a => a.id === agentId)
         if (agentEntry) {
-          agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+          agentEntry.context_pct = Math.min(100, Math.round((lastWithUsage.usage.input / 166000) * 100))
         }
       }
     }
@@ -7382,7 +7588,7 @@ async function fetchSession(agentId, container) {
         if (lastWithUsage?.usage) {
           const agentEntry = (currentState.agents || []).find(a => a.id === agentId)
           if (agentEntry) {
-            agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+            agentEntry.context_pct = Math.min(100, Math.round((lastWithUsage.usage.input / 166000) * 100))
           }
         }
       }
@@ -7415,7 +7621,6 @@ function getSearchSuggestionTerms() {
   if (currentState?.agents) {
     for (const a of currentState.agents) {
       if (a.friendly_name) terms.push(a.friendly_name)
-      if (a.name) terms.push(a.name)
     }
   }
   // Labels
@@ -8398,6 +8603,8 @@ function createDocsWidget(container, params) {
   container._annotations = []
   container.innerHTML = `
     <div class="docs-widget">
+      <div style="padding:8px 12px;font-size:12px;font-weight:600;color:var(--text-dim);border-bottom:1px solid var(--border)">SHARED DOCS</div>
+      <div class="shared-docs-list" style="max-height:200px;overflow-y:auto"></div>
       <div class="docs-header">
         <select class="docs-project-select"><option value="">Select document...</option></select>
         <button class="docs-refresh">refresh</button>
@@ -8552,7 +8759,69 @@ async function scrollToDocsAnnotation(container, idx) {
   } catch {}
 }
 
-function updateDocsWidget() { /* docs is user-driven via project select */ }
+function updateDocsWidget(container, params, state) {
+  // Update shared docs section when state changes
+  const sharedList = container.querySelector('.shared-docs-list')
+  if (!sharedList) return
+  const docs = state?.shared_docs || []
+  if (docs.length === 0) {
+    sharedList.innerHTML = '<div style="color:var(--text-dim);padding:8px;font-size:12px">No shared docs yet. Agents can share with share(path).</div>'
+    return
+  }
+  const agents = state?.agents || []
+  sharedList.innerHTML = docs.map(d => {
+    const agent = agents.find(a => a.id === d.agent)
+    const agentName = agent?.friendly_name || agent?.name || (d.agent || '').slice(0, 8)
+    const age = d.updated_at ? timeShort(d.updated_at) : ''
+    return `<div class="shared-doc-card" data-doc="${esc(d.doc)}" style="padding:8px 12px;border-bottom:1px solid var(--border);cursor:pointer">
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font-weight:600;color:var(--text)">${esc(d.title || d.doc)}</span>
+        <span style="font-size:11px;color:var(--text-dim);margin-left:auto">${age}</span>
+      </div>
+      <div style="font-size:11px;color:var(--text-dim);margin-top:2px">
+        by ${esc(agentName)} · <span class="shared-doc-feedback-count" data-doc="${esc(d.doc)}">checking...</span>
+      </div>
+    </div>`
+  }).join('')
+
+  // Click to load feedback
+  sharedList.querySelectorAll('.shared-doc-card').forEach(card => {
+    card.addEventListener('click', async () => {
+      const doc = card.dataset.doc
+      // Switch the project selector to this doc
+      const sel = container.querySelector('.docs-project-select')
+      if (sel) {
+        // Add option if not already there
+        if (![...sel.options].some(o => o.value === doc)) {
+          const opt = document.createElement('option')
+          opt.value = doc
+          opt.textContent = doc + ' (shared)'
+          sel.appendChild(opt)
+        }
+        sel.value = doc
+        loadDocsAnnotations(container)
+      }
+    })
+  })
+
+  // Fetch feedback counts for each shared doc
+  for (const d of docs) {
+    fetch('/api/shared-docs/' + encodeURIComponent(d.doc) + '/feedback')
+      .then(r => r.json())
+      .then(data => {
+        const countEl = sharedList.querySelector(`.shared-doc-feedback-count[data-doc="${d.doc}"]`)
+        if (countEl) {
+          const count = (data.feedback || []).length
+          countEl.textContent = count > 0 ? `${count} feedback` : 'no feedback'
+          if (count > 0) countEl.style.color = 'var(--accent, #60a5fa)'
+        }
+      })
+      .catch(() => {
+        const countEl = sharedList.querySelector(`.shared-doc-feedback-count[data-doc="${d.doc}"]`)
+        if (countEl) countEl.textContent = 'offline'
+      })
+  }
+}
 
 // --- Per-panel state persistence ---
 function savePanelState(panelId, key, value) {
@@ -9077,17 +9346,37 @@ dv.onDidActivePanelChange(({ panel }) => {
       panel.api.setTitle('Agents')
     } else if (inst.widget === WIDGETS.chat) {
       panel.api.setTitle('Chat')
-      // Re-render pending updates — ResizeObserver handles scroll-to-bottom timing
       const container = inst.container
       if (container?._pendingUpdate && currentState) {
+        // Re-render pending updates
         container._pendingUpdate = false
         container._autoScroll = true
         updateChatWidget(container, container._widgetParams || inst.params, currentState)
+      } else if (container?._autoScroll !== false) {
+        // Tab became active with no pending update — still scroll to bottom if not paused
+        const log = container.querySelector('.chat-log')
+        if (log) requestAnimationFrame(() => { smoothScrollToBottom(log) })
       }
     } else if (inst.widget === WIDGETS.tasks) {
       panel.api.setTitle('Tasks')
     }
   } catch {}
+})
+
+// Browser tab visibility: scroll chat panels to bottom when tab becomes visible
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) return
+  for (const [, inst] of panelInstances) {
+    if (inst.widget !== WIDGETS.chat) continue
+    const container = inst.container
+    if (!container || container._autoScroll === false) continue
+    if (container._pendingUpdate && currentState) {
+      container._pendingUpdate = false
+      updateChatWidget(container, container._widgetParams || inst.params, currentState)
+    }
+    const log = container.querySelector('.chat-log')
+    if (log) requestAnimationFrame(() => { smoothScrollToBottom(log) })
+  }
 })
 
 // --- SSE ---
@@ -9170,15 +9459,13 @@ function broadcastPlaybackState(ctrl) {
 }
 
 function updateTabBadges(state) {
-  const userId = state?.user || 'user'
-  const userAliases = new Set(['web', 'skip', 'human', 'user', userId])
   const msgs = state.messages || []
   const tasks = state.tasks || []
 
   // Count agents with unseen messages (same logic as per-agent badges)
   const agentsWithUnseen = new Set()
   for (const m of msgs) {
-    if (m.from && userAliases.has(m.to) && m.timestamp > getAgentSeenTs(m.from)) agentsWithUnseen.add(m.from)
+    if (m.from && isHumanId(m.to) && m.timestamp > getAgentSeenTs(m.from)) agentsWithUnseen.add(m.from)
   }
   // Only count registered agents
   const agentIds = new Set((state.agents || []).map(a => a.id))
@@ -9241,10 +9528,13 @@ function connectSSE() {
       broadcastUpdate(state)
     } catch {}
   }
-  // Tick countdown for agent timers (1s interval, only active when someone has timers)
-  setInterval(() => {
+  // Tick countdown for agent timers — self-correcting to align with second boundaries
+  ;(function timerTick() {
     if (currentState?.agents?.some(a => a._timers?.length)) broadcastUpdate(currentState)
-  }, 1000)
+    const now = Date.now()
+    const drift = now % 1000
+    setTimeout(timerTick, 1000 - drift + 50) // align ~50ms after each second boundary
+  })()
   // Queue auto-flush: check every 3s if queued messages can be sent to idle agents
   setInterval(() => {
     for (const [, inst] of panelInstances) {
@@ -9331,7 +9621,7 @@ function connectSSE() {
       if (lastWithUsage?.usage && currentState) {
         const agentEntry = (currentState.agents || []).find(a => a.id === agent)
         if (agentEntry) {
-          agentEntry.context_pct = Math.round((lastWithUsage.usage.input / 200000) * 100)
+          agentEntry.context_pct = Math.min(100, Math.round((lastWithUsage.usage.input / 166000) * 100))
         }
       }
       // Directly update chat and terminal widgets showing this agent

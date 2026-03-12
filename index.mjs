@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Agent Manager MCP Server v4.0
+ * Agent Manager MCP Server v5.0
  *
  * Coordinates agents via shared state file + kitty kicks for notifications.
- * Agent identity = session UUID (auto-detected from most recent JSONL).
+ * Agent identity = fleet ID (durable), backed by sqlite identity ledger.
+ * See fleet-identity.md for the full identity system design.
  * Kitty window IDs are metadata for notifications only.
  *
  * Tools:
@@ -24,18 +25,69 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { execSync, exec } from 'child_process';
 import fs from 'fs';
+import http from 'http';
 import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { SearchIndex } from './dashboard/search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from './playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, playbackTranscript } from './playback/storage.mjs';
+import { ledger } from './identity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, 'bin');
 
 const STATE_FILE = `${os.homedir()}/.claude/agent-tasks.json`;
 const LOG_FILE = `${os.homedir()}/.claude/agent-messages.jsonl`;
+
+// --- tlda integration ---
+const TLDA_PORT = 5176;
+const TLDA_CONFIG = path.join(os.homedir(), '.config', 'tlda', 'config.json');
+let _tldaToken = null;
+try {
+  const cfg = JSON.parse(fs.readFileSync(TLDA_CONFIG, 'utf8'));
+  _tldaToken = cfg.tokenRw || cfg.tokenRead || null;
+} catch {}
+
+function tldaFetch(apiPath, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const reqOpts = {
+      hostname: 'localhost',
+      port: TLDA_PORT,
+      path: '/api/projects/' + apiPath,
+      method: opts.method || 'GET',
+      headers: { ...opts.headers },
+    };
+    if (_tldaToken) reqOpts.headers['Authorization'] = 'Bearer ' + _tldaToken;
+    if (opts.body) reqOpts.headers['Content-Type'] = 'application/json';
+    const req = http.request(reqOpts, res => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => {
+        try { resolve({ status: res.statusCode, data: JSON.parse(data) }); }
+        catch { resolve({ status: res.statusCode, data }); }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(10000, () => { req.destroy(); reject(new Error('timeout')); });
+    if (opts.body) req.write(typeof opts.body === 'string' ? opts.body : JSON.stringify(opts.body));
+    req.end();
+  });
+}
+
+// Highlight color → semantic meaning mapping
+const HIGHLIGHT_THEMES = {
+  'light-green': { type: 'approve', label: 'Good, keep this' },
+  'green': { type: 'approve', label: 'Good, keep this' },
+  'light-red': { type: 'reject', label: 'Fix this' },
+  'red': { type: 'reject', label: 'Fix this' },
+  'yellow': { type: 'question', label: 'Question / unsure' },
+  'light-violet': { type: 'expand', label: 'Develop further' },
+  'violet': { type: 'expand', label: 'Develop further' },
+  'orange': { type: 'comment', label: 'General comment' },
+  'light-blue': { type: 'info', label: 'Note / reference' },
+  'blue': { type: 'info', label: 'Note / reference' },
+};
 
 // Lazy search index — opened read-only on first search call
 let _searchIndex = null;
@@ -55,16 +107,15 @@ function logEvent(event) {
     fs.appendFileSync(LOG_FILE, JSON.stringify(entry) + '\n');
   } catch { /* best effort */ }
 }
-// Kitty window ID — used only for notifications (kicking agents)
+// Kitty window ID — used only for notifications (kicking agents), never for identity
 const KITTY_WIN = process.env.AGENT_WIN ? parseInt(process.env.AGENT_WIN)
   : process.env.KITTY_WINDOW_ID ? parseInt(process.env.KITTY_WINDOW_ID)
   : null;
 
-// Agent identity = session UUID (auto-detected from most recent JSONL)
-// When multiple sessions share a project dir, prefer the one actively being
-// written (mtime within last 30s) over the most-recently-modified overall.
-// This avoids picking a stale session that another agent happened to touch.
-function detectSessionId() {
+// Scan JSONL files to detect the active Claude session UUID.
+// Only used for manual starts (no $FLEET_ID) or as a fallback.
+// See fleet-identity.md for when this is safe vs. racy.
+function detectClaudeSession() {
   const cwd = process.env.PWD || '';
 
   // Build candidate project dirs: the cwd itself, plus the main worktree
@@ -96,52 +147,37 @@ function detectSessionId() {
   return null;
 }
 
-// Try roster breadcrumb first (keyed by kitty window) — survives MCP restarts and compaction.
-// Falls back to detectSessionId() for brand new agents with no breadcrumb.
-function sessionFromRoster() {
-  if (!KITTY_WIN) return null;
-  try {
-    const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
-    if (!fs.existsSync(rosterDir)) return null;
-    const files = fs.readdirSync(rosterDir).filter(f => f.endsWith('.json'));
-    for (const f of files) {
-      try {
-        const b = JSON.parse(fs.readFileSync(path.join(rosterDir, f), 'utf8'));
-        if (b.kitty_win === KITTY_WIN) return b.session_id;
-      } catch { continue; }
+// --- Identity resolution (see fleet-identity.md) ---
+// Two-tier: $FLEET_ID env var (authoritative) → detectClaudeSession() + ledger lookup
+let AGENT_ID = null;       // This MCP process's fleet ID — the canonical identity
+let CLAUDE_SESSION = null;  // The detected Claude session UUID (may go stale after compaction)
+
+function resolveIdentity() {
+  // Tier 1: $FLEET_ID env var (set by spawn/respawn or inherited from shell)
+  if (process.env.FLEET_ID) {
+    AGENT_ID = process.env.FLEET_ID;
+    // Still detect session for ledger update
+    CLAUDE_SESSION = detectClaudeSession();
+    return;
+  }
+
+  // Tier 2: Detect Claude session, look up in ledger
+  CLAUDE_SESSION = detectClaudeSession();
+  if (CLAUDE_SESSION) {
+    const agent = ledger.findBySession(CLAUDE_SESSION);
+    if (agent) {
+      AGENT_ID = agent.fleet_id;
+      return;
     }
-  } catch {}
-  return null;
+  }
+
+  // No identity yet — will be assigned on first register()
 }
 
-// Roster gives us the last-known session for this kitty window.
-// Prefer roster when available — it was set by the agent that last owned this window.
-// Fall back to detectSessionId() for brand new agents with no breadcrumb.
-// After a continuation (compaction creates new JSONL), register() updates the roster.
-const _rosterSession = sessionFromRoster();
-const _detectedSession = detectSessionId();
-let MY_SESSION = _rosterSession || _detectedSession;
-let MY_FLEET_ID = null;
-let ME = MY_SESSION;
+resolveIdentity();
 
 // Agent pruning throttle — kitty checks are expensive, so only run every 5min
 let _lastAgentPrune = 0;
-
-const ROSTER_DIR = path.join(os.homedir(), '.claude', 'fleet-roster');
-
-// Read all roster breadcrumbs from disk
-function readRoster() {
-  try {
-    if (!fs.existsSync(ROSTER_DIR)) return [];
-    return fs.readdirSync(ROSTER_DIR)
-      .filter(f => f.endsWith('.json'))
-      .map(f => {
-        try { return JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, f), 'utf8')); }
-        catch { return null; }
-      })
-      .filter(Boolean);
-  } catch { return []; }
-}
 
 // Scan kitty windows — returns array of { id, title, pid, cwd, has_claude, claude_pid }
 function scanKittyWindows() {
@@ -187,15 +223,15 @@ function saveState(state) {
   if (!state.agents) state.agents = [];
 
   // Heartbeat: update last_seen and session tracking for this agent on every save
-  if (ME) {
-    const me = state.agents.find(a => a.id === ME);
+  if (AGENT_ID) {
+    const me = state.agents.find(a => a.id === AGENT_ID);
     if (me) {
       me.last_seen = new Date().toISOString();
       // Clear compacting flag — agent is alive and making MCP calls
       delete me.compacting;
       delete me.compacting_since;
       // Session ID is set by register() only — don't overwrite on every save
-      // (avoids stale MY_SESSION clobbering a correct value after compaction)
+      // (avoids stale CLAUDE_SESSION clobbering a correct value after compaction)
     }
   }
 
@@ -209,7 +245,7 @@ function saveState(state) {
   if (now_ - _lastAgentPrune > 5 * 60 * 1000) {
     _lastAgentPrune = now_;
     for (const a of state.agents) {
-      if (a.id === ME || a.dead) continue;
+      if (a.id === AGENT_ID || a.dead) continue;
       const lastSeenMs = a.last_seen ? now_ - new Date(a.last_seen).getTime() : Infinity;
       if (lastSeenMs < ALIVE_THRESHOLD_MS) continue;
       if (a.kitty_win && kittyWindowExists(a.kitty_win)) continue;
@@ -222,7 +258,8 @@ function saveState(state) {
   // Compute live/dead sets once, after liveness check
   const deadIds = new Set((state.agents || []).filter(a => a.dead).map(a => a.id));
   const liveIds = new Set((state.agents || []).filter(a => !a.dead).map(a => a.id));
-  const humanAliases = new Set(['web', 'human', 'skip']);
+  const humanId = resolveHumanId(state);
+  const isHumanRecipient = (id) => HUMAN_ALIASES.has(id) || (humanId && id === humanId);
 
   // Prune done tasks (24h) and done synthetics (immediately)
   state.tasks = state.tasks.filter(t => {
@@ -241,8 +278,8 @@ function saveState(state) {
   // Prune messages: dead/missing agent recipients immediately, others after 1h when read
   state.messages = state.messages.filter(m => {
     const age = now_ - new Date(m.timestamp).getTime();
-    if (humanAliases.has(m.to)) return age < 3600000;
-    if (deadIds.has(m.to) || (!liveIds.has(m.to) && !humanAliases.has(m.to))) return false;
+    if (isHumanRecipient(m.to)) return age < 3600000;
+    if (deadIds.has(m.to) || (!liveIds.has(m.to) && !isHumanRecipient(m.to))) return false;
     if (!m.read) return true;
     return age < 3600000;
   });
@@ -281,8 +318,7 @@ function syncSyntheticTasks(state) {
     }
 
     // Count by source type
-    const humanAliases = new Set(['web', 'skip', 'human']);
-    const fromSkip = unread.filter(m => humanAliases.has(m.from)).length;
+    const fromSkip = unread.filter(m => isHuman(state, m.from)).length;
     const fromAgents = unread.length - fromSkip;
 
     let desc = `Respond to ${unread.length} message${unread.length > 1 ? 's' : ''}`;
@@ -356,17 +392,17 @@ function progressBar(completed, total, width = 20) {
 }
 
 function requireManager() {
-  if (!ME) return 'Cannot identify caller — no session ID detected.';
+  if (!AGENT_ID) return 'Cannot identify caller — no session ID detected.';
   const state = loadState();
-  const agent = getAgent(state, ME);
+  const agent = getAgent(state, AGENT_ID);
   if (agent?.is_manager) return null;
-  return `Only a manager can do this. You are ${ME} (not a manager).`;
+  return `Only a manager can do this. You are ${AGENT_ID} (not a manager).`;
 }
 
 // Check if the calling manager can manage a specific agent.
 // All managers are peers — any manager can manage any agent.
 function requireAuthOver(state, targetId) {
-  if (!ME) return 'Cannot identify caller.';
+  if (!AGENT_ID) return 'Cannot identify caller.';
   return null;
 }
 
@@ -374,47 +410,43 @@ function requireAuthOver(state, targetId) {
 
 function getAgent(state, id) {
   if (!state.agents) return null;
-  // Exact match on id, name, friendly_name, or session_id
+  // Exact match on id, friendly_name, or session_id (name is display-only, not for resolution)
   const exact = state.agents.find(a =>
-    a.id === id || a.name === id || a.friendly_name === id ||
+    a.id === id || a.friendly_name === id ||
     a.session_id === id || (a.session_ids && a.session_ids.includes(id))
   );
-  if (exact) return exact;
-  // Prefix match on id (must be unambiguous)
-  const prefixMatches = state.agents.filter(a => a.id.startsWith(id));
-  return prefixMatches.length === 1 ? prefixMatches[0] : null;
+  return exact || null;
+}
+
+const HUMAN_ALIASES = new Set(['web', 'human', 'skip', 'user']);
+
+/** Resolve a human alias to the actual human fleet ID from state, or return null */
+function resolveHumanId(state) {
+  const human = (state.agents || []).find(a => a.human);
+  return human?.id || null;
+}
+
+/** Check if a string is a human alias or a human fleet ID */
+function isHuman(state, id) {
+  if (HUMAN_ALIASES.has(id)) return true;
+  const human = (state.agents || []).find(a => a.human);
+  return human && human.id === id;
 }
 
 // Set friendly_name on an agent. Returns error string if name is taken, null on success.
 function nameAgent(state, agent, friendlyName) {
-  const conflict = state.agents.find(a => a.id !== agent.id && (a.friendly_name === friendlyName || a.name === friendlyName));
+  const conflict = state.agents.find(a => a.id !== agent.id && a.friendly_name === friendlyName);
   if (conflict) return `Name "${friendlyName}" is already taken by ${conflict.friendly_name || conflict.name || conflict.id}.`;
   agent.friendly_name = friendlyName;
   setTabTitle(agent.kitty_win, friendlyName);
+  // Sync to identity ledger
+  ledger.updateName(agent.id, friendlyName);
   return null;
 }
 
 function removeAgent(state, id) {
   if (!state.agents) return;
-  state.agents = state.agents.filter(a => a.id !== id && a.name !== id && a.friendly_name !== id);
-}
-
-// Clear kitty_win from all roster breadcrumbs that claim this window,
-// except the one belonging to `exceptFleetId`. Prevents stale breadcrumbs
-// from poisoning sessionFromRoster() when a window gets reused.
-function clearRosterWindow(win, exceptFleetId) {
-  try {
-    const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
-    const files = fs.readdirSync(rosterDir).filter(f => f.endsWith('.json'));
-    for (const f of files) {
-      const fp = path.join(rosterDir, f);
-      const b = JSON.parse(fs.readFileSync(fp, 'utf8'));
-      if (b.kitty_win === win && b.fleet_id !== exceptFleetId) {
-        b.kitty_win = null;
-        fs.writeFileSync(fp, JSON.stringify(b, null, 2));
-      }
-    }
-  } catch { /* best effort */ }
+  state.agents = state.agents.filter(a => a.id !== id && a.friendly_name !== id);
 }
 
 function setTabTitle(win, title) {
@@ -550,6 +582,17 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           session_id: { type: 'string', description: 'Claude session ID (for JSONL lookup)' },
           name: { type: 'string', description: 'Agent name (for headless agents without kitty window)' },
         },
+      },
+    },
+    {
+      name: 'inhabit',
+      description: 'Claim a fleet identity. Use when identity detection got it wrong (e.g. after MCP restart in shared cwd). Sets this agent\'s fleet ID to the specified one.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fleet_id: { type: 'string', description: 'The fleet ID to claim (e.g. "fleet:868edc45")' },
+        },
+        required: ['fleet_id'],
       },
     },
     {
@@ -770,7 +813,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'roll_call',
-      description: 'Show fleet status: who is alive, who is missing, what kitty windows exist. Reads roster breadcrumbs + scans live windows. Use before rehydrate to see what needs recovery.',
+      description: 'Show fleet status: who is alive, who is missing, what kitty windows exist. Reads identity ledger + scans live windows. Use before rehydrate to see what needs recovery.',
       inputSchema: {
         type: 'object',
         properties: {},
@@ -778,11 +821,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
     },
     {
       name: 'rehydrate',
-      description: 'Recover fleet after a mass kill. Matches running agents to their old identities via roster breadcrumbs, or spawns missing agents. Manager only.',
+      description: 'Recover fleet after a mass kill. Matches running agents to their old identities via identity ledger, or spawns missing agents. Manager only.',
       inputSchema: {
         type: 'object',
         properties: {
-          spawn_missing: { type: 'boolean', description: 'If true, spawn fresh agents for any roster entries that have no live match. Default false (plan only).' },
+          spawn_missing: { type: 'boolean', description: 'If true, spawn fresh agents for any ledger entries that have no live match. Default false (plan only).' },
         },
       },
     },
@@ -838,6 +881,19 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
           message: { type: 'string', description: 'Reminder message delivered when timer fires (e.g. "check build status")' },
         },
         required: ['seconds', 'message'],
+      },
+    },
+    {
+      name: 'watch_highlights',
+      description: 'Start or stop watching a tlda document for new highlights. New highlights are delivered as fleet messages to the assigned agent. Manager only.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          action: { type: 'string', enum: ['start', 'stop', 'list'], description: 'Start watching, stop watching, or list active watchers' },
+          doc: { type: 'string', description: 'Document name (e.g. "retargeted-mean")' },
+          agent: { type: 'string', description: 'Agent to receive highlight messages (fleet ID or friendly name). Required for start.' },
+        },
+        required: ['action'],
       },
     },
     // ---- Playback tools ----
@@ -937,6 +993,58 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         required: ['id'],
       },
     },
+    // ---- Scratch doc sharing tools ----
+    {
+      name: 'share',
+      description: 'Share a scratch file to tlda as a visual document. Creates or updates a tlda project with the file content. The doc appears on the canvas for iPad review with themed highlights. Returns the doc name.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          path: { type: 'string', description: 'Path to the scratch/markdown file to share' },
+          doc: { type: 'string', description: 'Doc name for tlda (auto-generated from filename if omitted). Lowercase alphanumeric + hyphens.' },
+          title: { type: 'string', description: 'Human-readable title (defaults to first heading or filename)' },
+        },
+        required: ['path'],
+      },
+    },
+    {
+      name: 'check_doc_feedback',
+      description: 'Check for highlight feedback on a shared doc. Reads pen/highlighter annotations from the tlda canvas and translates themed colors into structured feedback: green=approve, red=reject, yellow=question, violet=expand. Returns feedback objects with line ranges and the highlighted text.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name (as returned by share())' },
+        },
+        required: ['doc'],
+      },
+    },
+    {
+      name: 'suggest',
+      description: 'Post a suggestion card on a shared doc in response to feedback. The card appears as a sticky note anchored at specific lines, with optional Accept/Reject/Modify buttons for one-tap review. Use after check_doc_feedback to respond to highlights.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name (as returned by share())' },
+          line: { type: 'number', description: 'Source line to anchor the suggestion at' },
+          text: { type: 'string', description: 'Suggestion text (supports $math$ and $$display math$$)' },
+          reply_to: { type: 'string', description: 'Shape ID of the feedback to reply to (from check_doc_feedback). Creates a threaded reply instead of a new note.' },
+          choices: { type: 'array', items: { type: 'string' }, description: 'Action buttons (default: ["Accept", "Reject", "Modify"])' },
+          color: { type: 'string', description: 'Note color (default: orange for agent notes)' },
+        },
+        required: ['doc', 'text'],
+      },
+    },
+    {
+      name: 'update_shared_doc',
+      description: 'Re-push a shared doc to tlda after editing it. Reads the file from its tracked path and pushes the updated content. Use after making changes in response to feedback.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          doc: { type: 'string', description: 'Doc name (as returned by share())' },
+        },
+        required: ['doc'],
+      },
+    },
   ],
 }));
 
@@ -948,80 +1056,96 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const isManager = name === 'register_manager' || args.manager === true;
     const agentName = args.name || null;
 
+    // On re-registration (compaction), detect fresh session
+    if (AGENT_ID) {
+      const freshSession = detectClaudeSession();
+      if (freshSession) CLAUDE_SESSION = freshSession;
+    }
+
     // Need either a session UUID or a name
-    if (!MY_SESSION && !agentName) {
+    if (!AGENT_ID && !CLAUDE_SESSION && !agentName) {
       return { content: [{ type: 'text', text: 'No session ID detected and no name provided. Pass session_id or name for headless agents.' }], isError: true };
     }
 
     const state = loadState();
     if (!state.agents) state.agents = [];
 
-    const sessionId = args.session_id || MY_SESSION;
-    // Update MY_SESSION if caller provided a newer session_id (e.g. after compaction)
-    if (args.session_id && args.session_id !== MY_SESSION) {
-      MY_SESSION = args.session_id;
+    const claudeSession = args.session_id || CLAUDE_SESSION;
+    if (args.session_id && args.session_id !== CLAUDE_SESSION) {
+      CLAUDE_SESSION = args.session_id;
     }
 
-    // 3-way identity matching:
-    // 1. Match by session_id → same agent, known session
-    let existingAgent = null;
-    if (sessionId) {
-      existingAgent = state.agents.find(a =>
-        a.session_id === sessionId ||
-        (a.session_ids && a.session_ids.includes(sessionId))
+    // --- Identity resolution (see fleet-identity.md) ---
+    // Two-tier: AGENT_ID (already known or from $FLEET_ID) → session/name lookup
+    let resolvedFleetId = AGENT_ID || null;
+
+    if (!resolvedFleetId && claudeSession) {
+      // Look up session in ledger
+      const ledgerAgent = ledger.findBySession(claudeSession);
+      if (ledgerAgent) {
+        resolvedFleetId = ledgerAgent.fleet_id;
+        logEvent({ type: 'identity_match', agent: resolvedFleetId, reason: `ledger session match for ${claudeSession}` });
+      }
+    }
+
+    // Also check state file for session match (transition period)
+    if (!resolvedFleetId && claudeSession) {
+      const stateMatch = state.agents.find(a =>
+        a.session_id === claudeSession ||
+        (a.session_ids && a.session_ids.includes(claudeSession))
       );
-    }
-    // 2. Match by kitty_win (active <30min) → post-compaction same window
-    if (!existingAgent && KITTY_WIN) {
-      const candidate = state.agents.find(a => a.kitty_win === KITTY_WIN);
-      if (candidate?.last_seen) {
-        const seenAgo = Date.now() - new Date(candidate.last_seen).getTime();
-        if (seenAgo < 30 * 60 * 1000) {
-          existingAgent = candidate;
-          logEvent({ type: 'identity_match', agent: candidate.id, reason: `kitty_win ${KITTY_WIN} match (${Math.round(seenAgo/1000)}s ago), new session ${sessionId}` });
-        }
+      if (stateMatch) {
+        resolvedFleetId = stateMatch.id;
+        logEvent({ type: 'identity_match', agent: resolvedFleetId, reason: `state session match for ${claudeSession}` });
       }
-    }
-    // 3. Match by name (headless agents)
-    if (!existingAgent && agentName) {
-      existingAgent = state.agents.find(a => a.name === agentName);
     }
 
-    let entry;
-    if (existingAgent) {
-      // Update existing agent — preserve identity, update session
-      entry = existingAgent;
-      entry.registered_at = now();
-      if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
-      if (agentName) entry.name = agentName;
-      // Track session history — append, don't replace, so search index finds all sessions
-      if (sessionId) {
-        entry.session_id = sessionId;
-        if (!entry.session_ids) entry.session_ids = [];
-        if (!entry.session_ids.includes(sessionId)) entry.session_ids.push(sessionId);
+    // Match by name in ledger (headless agents using register(name=...))
+    if (!resolvedFleetId && agentName) {
+      const ledgerAgent = ledger.findByName(agentName);
+      if (ledgerAgent) resolvedFleetId = ledgerAgent.fleet_id;
+      if (!resolvedFleetId) {
+        // Check friendly_name in state (name is display-only, not for resolution)
+        const stateMatch = state.agents.find(a => a.friendly_name === agentName);
+        if (stateMatch) resolvedFleetId = stateMatch.id;
       }
-    } else {
-      // New agent — fleet ID is prefixed to distinguish from session UUIDs
-      const fleetId = sessionId ? `fleet:${sessionId.slice(0, 8)}` : agentName;
-      entry = {
-        id: fleetId,
-        registered_at: now(),
-      };
-      if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
-      if (agentName) entry.name = agentName;
-      if (sessionId) {
-        entry.session_id = sessionId;
-        entry.session_ids = [sessionId];
+    }
+
+    // Uniqueness check: if resolvedFleetId is held by a different LIVE agent, reject
+    if (resolvedFleetId && AGENT_ID && resolvedFleetId !== AGENT_ID) {
+      const holder = getAgent(state, resolvedFleetId);
+      if (holder && agentAlive(holder)) {
+        return { content: [{ type: 'text', text: `Identity collision: fleet ID ${resolvedFleetId} is held by a live agent. Use adopt() to merge or cleanup() to remove the stale entry.` }], isError: true };
       }
+    }
+
+    // New agent — create fleet ID
+    if (!resolvedFleetId) {
+      resolvedFleetId = claudeSession ? `fleet:${claudeSession.slice(0, 8)}` : agentName;
+    }
+
+    // Find or create state entry
+    let entry = state.agents.find(a => a.id === resolvedFleetId);
+    if (!entry) {
+      entry = { id: resolvedFleetId, registered_at: now() };
       state.agents.push(entry);
+    } else {
+      entry.registered_at = now();
+    }
+
+    // Update fields
+    if (KITTY_WIN) entry.kitty_win = KITTY_WIN;
+    if (agentName) entry.name = agentName;
+    if (claudeSession) {
+      entry.session_id = claudeSession;
+      if (!entry.session_ids) entry.session_ids = [];
+      if (!entry.session_ids.includes(claudeSession)) entry.session_ids.push(claudeSession);
     }
 
     entry.last_seen = now();
-    // Clear status flags — agent is back
     delete entry.compacting;
     delete entry.compacting_since;
     delete entry.dead;
-    // Capture working directory for respawn
     if (process.env.PWD) entry.cwd = process.env.PWD;
     if (isManager) entry.is_manager = true;
 
@@ -1034,6 +1158,16 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
     if (labels.size > 0) entry.labels = [...labels];
 
+    // Uniqueness: name must be unique among live agents
+    if (entry.friendly_name) {
+      const nameConflict = state.agents.find(a =>
+        a.id !== entry.id && (a.friendly_name === entry.friendly_name) && agentAlive(a)
+      );
+      if (nameConflict) {
+        logEvent({ type: 'name_conflict', agent: entry.id, name: entry.friendly_name, conflictsWith: nameConflict.id });
+      }
+    }
+
     // Deregister any OTHER agent on the same kitty window — prevents stale
     // registrations from lingering after session restart
     if (KITTY_WIN) {
@@ -1044,43 +1178,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }
     }
 
-    // Remove legacy top-of-chain singleton — all managers are peers
+    // Remove legacy top-of-chain singleton
     delete state.manager;
 
-    // Start keepalive if this is the first manager (or restart if stale)
+    // Start keepalive if this is the first manager
     if (isManager) {
       const aliveManagers = state.agents.filter(a => a.is_manager && agentAlive(a));
       if (aliveManagers.length <= 1) {
-        // First live manager — ensure keepalive is running
         try { execSync(`pkill -f agent-keepalive`, { timeout: 5000 }); } catch {}
         exec(`${BIN}/agent-keepalive`, { detached: true, stdio: 'ignore' }).unref();
       }
     }
 
     // Set this process's fleet identity
-    MY_FLEET_ID = entry.id;
-    ME = MY_FLEET_ID;
+    AGENT_ID = entry.id;
 
-    // Write roster breadcrumb — survives kitty kills for identity recovery
-    try {
-      const rosterDir = path.join(os.homedir(), '.claude', 'fleet-roster');
-      fs.mkdirSync(rosterDir, { recursive: true });
-      const breadcrumb = {
-        fleet_id: entry.id,
-        session_id: entry.session_id,
-        session_ids: entry.session_ids || [],
-        kitty_win: entry.kitty_win || null,
-        cwd: entry.cwd || null,
-        friendly_name: entry.friendly_name || null,
-        name: entry.name || null,
-        labels: entry.labels || [],
-        is_manager: !!entry.is_manager,
-        registered_at: entry.registered_at,
-      };
-      // Key by fleet ID (stable identity) — one breadcrumb per agent
-      const safeId = entry.id.replace(/[^a-zA-Z0-9_:-]/g, '_');
-      fs.writeFileSync(path.join(rosterDir, `${safeId}.json`), JSON.stringify(breadcrumb, null, 2));
-    } catch { /* best effort */ }
+    // Update the identity ledger
+    const cwd = entry.cwd || process.env.PWD || null;
+    ledger.upsertAgent(AGENT_ID, claudeSession, cwd, entry.friendly_name || entry.name);
 
     saveState(state);
 
@@ -1125,12 +1240,58 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const guard = requireManager();
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
     const state = loadState();
-    const oldAgent = getAgent(state, ME);
+    const oldAgent = getAgent(state, AGENT_ID);
     if (oldAgent) delete oldAgent.is_manager;
     // Clean up legacy top-of-chain field if present
     delete state.manager;
     saveState(state);
     return { content: [{ type: 'text', text: 'Stepped down as manager.' }] };
+  }
+
+  // ---- inhabit ----
+  if (name === 'inhabit') {
+    const targetFleetId = args.fleet_id;
+    const state = loadState();
+
+    // Check if a different LIVE agent holds this identity
+    const holder = getAgent(state, targetFleetId);
+    if (holder && agentAlive(holder) && holder.id !== AGENT_ID) {
+      return { content: [{ type: 'text', text: `Cannot inhabit ${targetFleetId} — it's held by a live agent. Kill or cleanup that agent first.` }], isError: true };
+    }
+
+    const oldId = AGENT_ID;
+
+    // Move our state entry to the new identity
+    const myEntry = getAgent(state, oldId);
+    if (myEntry) {
+      // Remove old entry for target if it exists (dead agent)
+      if (holder) removeAgent(state, targetFleetId);
+      myEntry.id = targetFleetId;
+      // Preserve the target's friendly_name if we don't have one
+      if (!myEntry.friendly_name && holder?.friendly_name) {
+        myEntry.friendly_name = holder.friendly_name;
+      }
+    }
+
+    // Update tasks and messages
+    for (const task of (state.tasks || [])) {
+      if (task.agent === oldId) task.agent = targetFleetId;
+    }
+    for (const msg of (state.messages || [])) {
+      if (msg.to === oldId) msg.to = targetFleetId;
+      if (msg.from === oldId) msg.from = targetFleetId;
+    }
+
+    AGENT_ID = targetFleetId;
+
+    // Update ledger
+    ledger.upsertAgent(targetFleetId, CLAUDE_SESSION, myEntry?.cwd || process.env.PWD, myEntry?.friendly_name || myEntry?.name);
+
+    saveState(state);
+    logEvent({ type: 'inhabit', from: oldId, to: targetFleetId });
+
+    const name_ = myEntry?.friendly_name || targetFleetId;
+    return { content: [{ type: 'text', text: `Identity changed: ${oldId} → ${targetFleetId} ("${name_}"). Tasks and messages transferred.` }] };
   }
 
   // ---- delegate ----
@@ -1174,7 +1335,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       agent,
       description,
       message,
-      delegated_by: ME,
+      delegated_by: AGENT_ID,
       delegated_at: now(),
       status: blocked ? 'blocked' : 'pending',
       last_checked: now(),
@@ -1182,7 +1343,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (blockedBy.length > 0) task.blockedBy = blockedBy;
     state.tasks.push(task);
     saveState(state);
-    logEvent({ type: 'delegate', from: ME, to: agent, task_id: taskId, description, message });
+    logEvent({ type: 'delegate', from: AGENT_ID, to: agent, task_id: taskId, description, message });
 
     const pendingCount = state.tasks.filter(t => t.status === 'pending').length;
     const blockedCount = state.tasks.filter(t => t.status === 'blocked').length;
@@ -1208,40 +1369,74 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const state = loadState();
     if (to == null) {
       // Route to whoever delegated our current task, or fall back to any manager
-      const myTask = ME ? state.tasks?.find(t => t.agent === ME && t.status !== 'done') : null;
+      const myTask = AGENT_ID ? state.tasks?.find(t => t.agent === AGENT_ID && t.status !== 'done') : null;
       if (myTask?.delegated_by) {
         to = myTask.delegated_by;
       } else {
         // Fall back to any live manager
-        const mgr = (state.agents || []).find(a => a.is_manager && a.id !== ME && agentAlive(a));
+        const mgr = (state.agents || []).find(a => a.is_manager && a.id !== AGENT_ID && agentAlive(a));
         to = mgr?.id; // no legacy state.manager fallback
       }
       if (!to) return { content: [{ type: 'text', text: 'No recipient specified and no manager registered.' }], isError: true };
-    } else if (to === 'web' || to === 'skip' || to === 'human') {
-      // Route to the dashboard — message is saved to state, dashboard picks it up via SSE
-      to = 'web';
+    } else if (HUMAN_ALIASES.has(to)) {
+      // Route to the human agent — resolve alias to their fleet ID
+      const humanId = resolveHumanId(state);
+      to = humanId || 'web'; // fallback to 'web' if no human registered yet
     } else {
       // Resolve friendly name to canonical ID
       const toEntry = getAgent(state, to);
       if (!toEntry) return { content: [{ type: 'text', text: `Recipient "${to}" not registered.` }], isError: true };
       to = toEntry.id;
     }
-    const from = ME || 'unknown';
+    const from = AGENT_ID || 'unknown';
     // Mark own messages read — if you're chatting, you've read your inbox
-    if (ME) markRead(state, ME);
+    if (AGENT_ID) markRead(state, AGENT_ID);
     postMessage(state, to, from, message);
     saveState(state);
     logEvent({ type: 'chat', from, to, message });
 
     let warning = '';
-    const callerAgent = ME ? getAgent(state, ME) : null;
+    const callerAgent = AGENT_ID ? getAgent(state, AGENT_ID) : null;
     if (callerAgent?.is_manager && message.length > 200) {
       warning = '\n\n⚠ Long message (>200 chars). If assigning work, use delegate() instead.';
     }
 
+    // Auto-share: detect file paths in chat messages and auto-share scratch/markdown files
+    let autoShareMsg = '';
+    const filePathMatch = message.match(/(?:^|\s)((?:\/[\w.-]+)+\.md|(?:scratch\/[\w.-]+\.md))\b/);
+    if (filePathMatch) {
+      const detectedPath = filePathMatch[1];
+      const resolved = path.resolve(detectedPath);
+      if (fs.existsSync(resolved)) {
+        const alreadyShared = (state.shared_docs || []).find(d => d.path === resolved);
+        if (!alreadyShared) {
+          const basename = path.basename(resolved, '.md');
+          const docName = basename.toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+          try {
+            let fileContent = fs.readFileSync(resolved, 'utf8');
+            const headingMatch = fileContent.match(/^#\s+(.+)$/m);
+            const title = headingMatch ? headingMatch[1].trim() : basename;
+
+            // Check/create tlda project
+            const check = await tldaFetch(docName);
+            if (check.status === 404) {
+              await tldaFetch('', { method: 'POST', body: { name: docName, title, format: 'markdown', mainFile: path.basename(resolved) } });
+            }
+            await tldaFetch(docName + '/push', { method: 'POST', body: { files: [{ path: path.basename(resolved), content: fileContent }], sourceDir: path.dirname(resolved), session: CLAUDE_SESSION } });
+
+            if (!state.shared_docs) state.shared_docs = [];
+            state.shared_docs.push({ doc: docName, path: resolved, title, agent: AGENT_ID, shared_at: new Date().toISOString(), updated_at: new Date().toISOString() });
+            saveState(state);
+            logEvent({ type: 'auto_share', agent: AGENT_ID, doc: docName, path: resolved });
+            autoShareMsg = `\n📄 Auto-shared "${title}" → tlda doc: **${docName}**`;
+          } catch { /* tlda not running — skip auto-share silently */ }
+        }
+      }
+    }
+
     const toRegistered = !!getAgent(state, to);
-    const notifyMsg = (!toRegistered && to !== 'web') ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
-    return { content: [{ type: 'text', text: `Message queued for ${to}${notifyMsg}.${warning}` }] };
+    const notifyMsg = (!toRegistered && !isHuman(state, to)) ? ' ⚠ recipient not registered — message saved but no way to notify' : '';
+    return { content: [{ type: 'text', text: `Message queued for ${to}${notifyMsg}.${warning}${autoShareMsg}` }] };
   }
 
 
@@ -1260,6 +1455,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (a.friendly_name && a.name) label += ` (${a.name})`;
         if (a.friendly_name) label += ` [${a.id}]`;
         if (a.dead) label += ' [dead]';
+        if (a.human) label += ' [human]';
         if (a.is_manager) label += ' [manager]';
         if (a.kitty_win) label += ` kitty:${a.kitty_win}`;
         return label;
@@ -1302,7 +1498,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const idle = active.filter(t => t.status === 'idle');
     const blocked = active.filter(t => t.status === 'blocked');
 
-    const unread = ME ? getUnread(state, ME) : [];
+    const unread = AGENT_ID ? getUnread(state, AGENT_ID) : [];
 
     let nudge = '';
     if (unread.length > 0) nudge += `\n\n📬 ${unread.length} unread message(s). Check them.`;
@@ -1315,17 +1511,17 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- task_done ----
   if (name === 'task_done') {
-    const agent = args.agent ? args.agent : ME;
+    const agent = args.agent ? args.agent : AGENT_ID;
     if (!agent) return { content: [{ type: 'text', text: 'No agent specified and no session ID detected.' }], isError: true };
 
-    if (agent !== ME) {
+    if (agent !== AGENT_ID) {
       const guard = requireManager();
       if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
     }
 
     const state = loadState();
 
-    if (agent !== ME) {
+    if (agent !== AGENT_ID) {
       const authGuard = requireAuthOver(state, agent);
       if (authGuard) return { content: [{ type: 'text', text: authGuard }], isError: true };
     }
@@ -1353,7 +1549,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       msg += ' All tasks complete.';
     }
     // Guide agents to wait for next task instead of going idle
-    if (agent === ME) {
+    if (agent === AGENT_ID) {
       msg += '\n\nKeep working or use sleep() — you\'ll see 📬 when the next task arrives.';
     }
     return { content: [{ type: 'text', text: msg }] };
@@ -1403,14 +1599,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
   // ---- my_task ----
   if (name === 'my_task') {
-    if (!ME) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
+    if (!AGENT_ID) return { content: [{ type: 'text', text: 'No session ID detected.' }], isError: true };
     const state = loadState();
-    const task = getTask(state, ME);
-    const unread = getUnread(state, ME);
+    const task = getTask(state, AGENT_ID);
+    const unread = getUnread(state, AGENT_ID);
 
     let text = '';
     let dirty = false;
-    const meAgent = getAgent(state, ME);
+    const meAgent = getAgent(state, AGENT_ID);
     if (task) {
       const age = Math.round((Date.now() - new Date(task.delegated_at)) / 60000);
       let depInfo = '';
@@ -1433,15 +1629,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     if (unread.length > 0) {
-      const userAliases = new Set(['web', 'skip', 'human']);
       const formatted = unread.map(m => {
         const fromAgent = getAgent(state, m.from);
         const fromLabel = fromAgent?.friendly_name || fromAgent?.name || m.from;
-        const replyHint = userAliases.has(m.from) ? ' (reply with chat(to: "web"))' : '';
+        const replyHint = isHuman(state, m.from) ? ` (reply with chat(to: "${m.from}"))` : '';
         return `[from ${fromLabel}]${replyHint} ${m.text}`;
       }).join('\n\n');
       text += `\n\n📬 Messages:\n\n${formatted}`;
-      markRead(state, ME);
+      markRead(state, AGENT_ID);
       dirty = true;
     }
 
@@ -1509,7 +1704,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     state.agents.push(newAgent);
 
     // Update this process's identity if we adopted ourselves
-    if (ME === newId) { MY_FLEET_ID = oldId; ME = oldId; }
+    if (AGENT_ID === newId) { AGENT_ID = oldId; }
+
+    // Update ledger: transfer sessions from newId to oldId
+    ledger.transferSessions(newId, oldId);
+    ledger.upsertAgent(oldId, newAgent.session_id, newAgent.cwd, newAgent.friendly_name || newAgent.name);
 
     saveState(state);
     logEvent({ type: 'adopt', agent: oldId, from: newId, reason: `${newId} adopted identity ${oldId}` });
@@ -1519,7 +1718,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       const name = newAgent.friendly_name || oldId;
       const orientMsg = `You have been assigned the identity "${name}" (fleet ID: ${oldId}). You are a continuation of a previous agent. Use a subagent to read your old session logs via search_logs(agent: "${oldId}") and orient yourself — figure out what you were working on, what tasks are active, and what the current state is. Report back via chat when oriented.`;
       if (!state.messages) state.messages = [];
-      state.messages.push({ to: oldId, from: ME, text: orientMsg, timestamp: now(), read: false });
+      state.messages.push({ to: oldId, from: AGENT_ID, text: orientMsg, timestamp: now(), read: false });
       saveState(state);
     }
 
@@ -1534,36 +1733,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const state = loadState();
     let agent = getAgent(state, agentId);
 
-    // Fall back to roster breadcrumbs if not in live registry
+    // Fall back to identity ledger if not in live registry
     if (!agent) {
-      try {
-        const rosterFiles = fs.readdirSync(ROSTER_DIR).filter(f => f.endsWith('.json'));
-        for (const f of rosterFiles) {
-          const b = JSON.parse(fs.readFileSync(path.join(ROSTER_DIR, f), 'utf8'));
-          if (b.fleet_id === agentId || b.friendly_name === agentId || b.name === agentId ||
-              b.session_id === agentId || (b.session_ids && b.session_ids.includes(agentId))) {
-            // Re-add to registry from roster
-            agent = {
-              id: b.fleet_id,
-              session_id: b.session_id,
-              session_ids: b.session_ids || [],
-              kitty_win: b.kitty_win,
-              cwd: b.cwd,
-              friendly_name: b.friendly_name,
-              name: b.name,
-              registered_at: b.registered_at,
-              last_seen: new Date().toISOString(),
-              is_manager: b.is_manager || false,
-            };
-            if (!state.agents) state.agents = [];
-            state.agents.push(agent);
-            break;
-          }
-        }
-      } catch (e) { /* roster dir missing or unreadable */ }
+      const ledgerAgent = ledger.findByFleetId(agentId) || ledger.findByName(agentId) || ledger.findBySession(agentId);
+      if (ledgerAgent) {
+        agent = {
+          id: ledgerAgent.fleet_id,
+          session_id: ledgerAgent.session,
+          session_ids: ledgerAgent.sessions || [],
+          cwd: ledgerAgent.cwd,
+          friendly_name: ledgerAgent.name,
+          registered_at: ledgerAgent.created_at,
+          last_seen: new Date().toISOString(),
+        };
+        if (!state.agents) state.agents = [];
+        state.agents.push(agent);
+      }
     }
 
-    if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not found in registry or roster.` }], isError: true };
+    if (!agent) return { content: [{ type: 'text', text: `Agent ${agentId} not found in registry or ledger.` }], isError: true };
     if (!agent.session_id) return { content: [{ type: 'text', text: `Agent ${agentId} has no session_id — can't resume.` }], isError: true };
 
     // Find a kitty window to use
@@ -1598,16 +1786,13 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       return { content: [{ type: 'text', text: `No idle kitty tab found. Open a new terminal tab and try again, or pass win explicitly.` }], isError: true };
     }
 
-    // Clear stale roster entries for this window before the agent's MCP boots
-    clearRosterWindow(targetWin, agent.id);
-
-    // Build the command: cd to cwd if available, then claude --resume
+    // Build the command: cd to cwd if available, then claude --resume with FLEET_ID
     const parts = [];
     if (agent.cwd) parts.push(`cd ${JSON.stringify(agent.cwd)}`);
-    parts.push(`claude --resume ${agent.session_id}`);
+    parts.push(`FLEET_ID=${agent.id} claude --resume ${agent.session_id}`);
     const cmd = parts.join(' && ');
 
-    // Send the resume command directly via kitty (not agent-kick — we need to send actual text, not 📬)
+    // Send the resume command directly via kitty
     try {
       const sock = execSync(`ls -t /tmp/kitty-sock-* 2>/dev/null | head -1`, { encoding: 'utf8' }).trim();
       if (!sock) throw new Error('no kitty socket found');
@@ -1622,29 +1807,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     agent.kitty_win = targetWin;
     delete agent.dead;
     saveState(state);
-
-    // Update roster breadcrumb with new kitty window so MCP session detection works
-    try {
-      const safeId = agent.id.replace(/[^a-zA-Z0-9_:-]/g, '_');
-      const rosterPath = path.join(ROSTER_DIR, `${safeId}.json`);
-      if (fs.existsSync(rosterPath)) {
-        const breadcrumb = JSON.parse(fs.readFileSync(rosterPath, 'utf8'));
-        breadcrumb.kitty_win = targetWin;
-        fs.writeFileSync(rosterPath, JSON.stringify(breadcrumb, null, 2));
-      } else {
-        // Create breadcrumb if missing
-        fs.mkdirSync(ROSTER_DIR, { recursive: true });
-        fs.writeFileSync(rosterPath, JSON.stringify({
-          fleet_id: agent.id,
-          session_id: agent.session_id,
-          session_ids: agent.session_ids || [],
-          kitty_win: targetWin,
-          cwd: agent.cwd || null,
-          friendly_name: agent.friendly_name || null,
-          name: agent.name || null,
-        }, null, 2));
-      }
-    } catch {}
 
     const label = agent.friendly_name || agent.name || agent.id;
     setTabTitle(targetWin, label);
@@ -1670,11 +1832,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
         if (isNaN(targetWin)) throw new Error(`kitty launch returned unexpected value: ${winId}`);
       }
 
-      // Clear stale roster entries for this window before the new agent's MCP boots
-      clearRosterWindow(targetWin, null);
+      // Pre-create fleet ID so the new agent knows its identity immediately
+      const spawnFleetId = `fleet:${crypto.randomUUID().slice(0, 8)}`;
+      ledger.upsertAgent(spawnFleetId, null, cwd, null);
 
-      // Send claude command
-      const cmd = `cd ${JSON.stringify(cwd)} && claude`;
+      // Send claude command with FLEET_ID in env
+      const cmd = `cd ${JSON.stringify(cwd)} && FLEET_ID=${spawnFleetId} claude`;
       const escaped = cmd.replace(/\\/g, '\\\\');
       execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${targetWin}" "${escaped}"`, { encoding: 'utf8', timeout: 10000 });
       execSync(`kitty @ --to "unix:${sock}" send-text --match "id:${targetWin}" '\\r'`, { encoding: 'utf8', timeout: 10000 });
@@ -1731,11 +1894,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       endLine: args.endLine,
       content: args.content,
       created: now(),
-      pinned_by: ME || 'unknown',
+      pinned_by: AGENT_ID || 'unknown',
     };
     refs.push(ref);
     fs.writeFileSync(refsFile, JSON.stringify(refs, null, 2));
-    logEvent({ type: 'pin_ref', from: ME || 'unknown', ref_type: args.type, label: args.label });
+    logEvent({ type: 'pin_ref', from: AGENT_ID || 'unknown', ref_type: args.type, label: args.label });
     return { content: [{ type: 'text', text: `Pinned: [${args.type}] ${args.label}` }] };
   }
 
@@ -1755,9 +1918,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     let agentIds;
     if (args.agent) {
       const state = loadState();
-      // Collect all matching agent IDs (name, friendly_name, session_id)
+      // Collect all matching agent IDs (friendly_name, session_id)
+      // Prefix match is intentional here — search_logs is read-only, broad matching is useful
       const matches = (state.agents || []).filter(a =>
-        a.id === args.agent || a.name === args.agent || a.friendly_name === args.agent ||
+        a.id === args.agent || a.friendly_name === args.agent ||
         a.id.startsWith(args.agent)
       );
       const ids = new Set();
@@ -1807,7 +1971,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     });
     logEvent({
       type: 'search',
-      from: ME || 'unknown',
+      from: AGENT_ID || 'unknown',
       query: args.query,
       filters: filters.join(', '),
       resultCount: results.length,
@@ -1911,8 +2075,10 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     // Format as readable thread
     const lines = filtered.map(m => {
       const ts = m.timestamp ? new Date(m.timestamp).toLocaleString() : '';
-      const from = m.from === 'web' ? 'skip' : (getAgent(state, m.from)?.friendly_name || m.from?.slice?.(0, 8) || m.from);
-      const to = m.to === 'web' ? 'skip' : (getAgent(state, m.to)?.friendly_name || m.to?.slice?.(0, 8) || m.to);
+      const fromAgent = getAgent(state, m.from);
+      const from = fromAgent?.friendly_name || fromAgent?.name || m.from?.slice?.(0, 8) || m.from;
+      const toAgent = getAgent(state, m.to);
+      const to = toAgent?.friendly_name || toAgent?.name || m.to?.slice?.(0, 8) || m.to;
       return `[${ts}] ${from} → ${to}\n${m.text}`;
     });
 
@@ -1947,9 +2113,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
 
     // Optionally send a message first so the agent knows why they were interrupted
     if (message) {
-      postMessage(state, entry.id, ME || 'manager', message);
+      postMessage(state, entry.id, AGENT_ID || 'manager', message);
       saveState(state);
-      logEvent({ type: 'chat', from: ME || 'manager', to: entry.id, message });
+      logEvent({ type: 'chat', from: AGENT_ID || 'manager', to: entry.id, message });
     }
 
     const kick = interruptAgent(state, entry.id);
@@ -1971,7 +2137,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       if (!entry.kitty_win) return { content: [{ type: 'text', text: `Agent "${args.agent}" has no kitty window.` }], isError: true };
       targets.push(entry);
     } else {
-      targets.push(...state.agents.filter(a => a.kitty_win && a.id !== ME));
+      targets.push(...state.agents.filter(a => a.kitty_win && a.id !== AGENT_ID));
     }
     const results = [];
     for (const t of targets) {
@@ -2001,7 +2167,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const orphaned = [];
 
     for (const a of agents) {
-      if (a.id === ME || a.dead) continue;
+      if (a.id === AGENT_ID || a.dead) continue;
       const lastSeenMs = a.last_seen ? now - new Date(a.last_seen).getTime() : Infinity;
       if (lastSeenMs < ALIVE_THRESHOLD_MS) continue;
       if (a.kitty_win && kittyWindowExists(a.kitty_win)) continue;
@@ -2036,7 +2202,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   if (name === 'roll_call') {
     const state = loadState();
     const agents = state.agents || [];
-    const roster = readRoster();
     const windows = scanKittyWindows();
     const now = Date.now();
 
@@ -2060,14 +2225,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (stale.length) lines.push(`Stale (${stale.length}):\n  ${stale.join('\n  ')}`);
     if (dead.length) lines.push(`Dead (${dead.length}):\n  ${dead.join('\n  ')}`);
 
-    // Roster entries not in registry
+    // Ledger entries not in registry
     const registryIds = new Set(agents.map(a => a.id));
-    const missing = roster.filter(r => !registryIds.has(r.fleet_id));
+    const ledgerAgents = ledger.listAgents();
+    const missing = ledgerAgents.filter(r => !registryIds.has(r.fleet_id));
     if (missing.length) {
-      lines.push(`\nIn roster but gone (${missing.length}):`);
+      lines.push(`\nIn ledger but gone (${missing.length}):`);
       for (const m of missing) {
-        const label = m.friendly_name || m.name || m.fleet_id;
-        lines.push(`  ${label} (${m.fleet_id}) — cwd: ${m.cwd || '?'}, session: ${m.session_id || '?'}${m.is_manager ? ' [manager]' : ''}`);
+        const label = m.name || m.fleet_id;
+        lines.push(`  ${label} (${m.fleet_id}) — cwd: ${m.cwd || '?'}, session: ${m.session || '?'}`);
       }
     }
 
@@ -2087,7 +2253,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       lines.push(`\nIdle windows (${idle.length}): ${idle.map(w => `kitty:${w.id}`).join(', ')}`);
     }
 
-    return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no roster, no windows.' }] };
+    return { content: [{ type: 'text', text: lines.join('\n') || 'No agents, no ledger entries, no windows.' }] };
   }
 
   // ---- rehydrate ----
@@ -2096,25 +2262,25 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (guard) return { content: [{ type: 'text', text: guard }], isError: true };
 
     const state = loadState();
-    const roster = readRoster();
+    const ledgerAgents = ledger.listAgents();
     const windows = scanKittyWindows();
     const spawnMissing = args.spawn_missing === true;
 
     const registryIds = new Set((state.agents || []).map(a => a.id));
     const registeredWins = new Set((state.agents || []).filter(a => a.kitty_win).map(a => a.kitty_win));
 
-    // Match unregistered claude windows to missing roster entries
+    // Match unregistered claude windows to missing ledger entries
     const unmatchedWindows = windows.filter(w => w.has_claude && !registeredWins.has(w.id));
-    const missingRoster = roster.filter(r => !registryIds.has(r.fleet_id));
+    const missingFromRegistry = ledgerAgents.filter(r => !registryIds.has(r.fleet_id));
 
     const matched = [];
     const ambiguous = [];
 
     for (const w of unmatchedWindows) {
-      const candidates = missingRoster.filter(r => r.cwd === w.cwd);
+      const candidates = missingFromRegistry.filter(r => r.cwd === w.cwd);
       if (candidates.length === 1) {
-        matched.push({ window: w, roster: candidates[0] });
-        missingRoster.splice(missingRoster.indexOf(candidates[0]), 1);
+        matched.push({ window: w, ledgerEntry: candidates[0] });
+        missingFromRegistry.splice(missingFromRegistry.indexOf(candidates[0]), 1);
       } else {
         ambiguous.push({ window: w, candidates });
       }
@@ -2126,25 +2292,22 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (matched.length) {
       lines.push(`Matched ${matched.length} agent(s):`);
       for (const m of matched) {
-        const r = m.roster;
+        const r = m.ledgerEntry;
         const w = m.window;
         const entry = {
           id: r.fleet_id,
           registered_at: new Date().toISOString(),
           kitty_win: w.id,
-          session_id: r.session_id,
-          session_ids: r.session_ids || [],
-          friendly_name: r.friendly_name || null,
-          name: r.name || null,
-          labels: r.labels || [],
-          is_manager: r.is_manager || false,
+          session_id: r.session,
+          session_ids: r.sessions || [],
+          friendly_name: r.name || null,
           cwd: r.cwd,
           last_seen: new Date().toISOString(),
         };
         state.agents = (state.agents || []).filter(a => a.id !== r.fleet_id && a.kitty_win !== w.id);
         state.agents.push(entry);
-        logEvent({ type: 'rehydrate', agent: r.fleet_id, name: r.friendly_name, kitty_win: w.id, reason: 'cwd_match' });
-        lines.push(`  ${r.friendly_name || r.name || r.fleet_id} -> kitty:${w.id} (cwd: ${r.cwd})`);
+        logEvent({ type: 'rehydrate', agent: r.fleet_id, name: r.name, kitty_win: w.id, reason: 'cwd_match' });
+        lines.push(`  ${r.name || r.fleet_id} -> kitty:${w.id} (cwd: ${r.cwd})`);
       }
       saveState(state);
     }
@@ -2152,35 +2315,35 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (ambiguous.length) {
       lines.push(`\nAmbiguous (${ambiguous.length} window(s) — manual matching needed):`);
       for (const u of ambiguous) {
-        lines.push(`  kitty:${u.window.id} (cwd: ${u.window.cwd}) — ${u.candidates.length} candidates: ${u.candidates.map(c => c.friendly_name || c.fleet_id).join(', ') || 'none'}`);
+        lines.push(`  kitty:${u.window.id} (cwd: ${u.window.cwd}) — ${u.candidates.length} candidates: ${u.candidates.map(c => c.name || c.fleet_id).join(', ') || 'none'}`);
       }
     }
 
-    if (missingRoster.length) {
-      lines.push(`\nStill missing (${missingRoster.length}):`);
-      for (const r of missingRoster) {
-        lines.push(`  ${r.friendly_name || r.name || r.fleet_id} (${r.fleet_id}) — cwd: ${r.cwd}${r.is_manager ? ' [manager]' : ''}`);
+    if (missingFromRegistry.length) {
+      lines.push(`\nStill missing (${missingFromRegistry.length}):`);
+      for (const r of missingFromRegistry) {
+        lines.push(`  ${r.name || r.fleet_id} (${r.fleet_id}) — cwd: ${r.cwd}`);
       }
 
       if (spawnMissing) {
         lines.push('\nSpawning missing agents...');
-        for (const r of missingRoster) {
+        for (const r of missingFromRegistry) {
           try {
             const cwd = r.cwd || os.homedir();
             const sock = execSync('ls -t /tmp/kitty-sock-* 2>/dev/null | head -1', { encoding: 'utf8', timeout: 3000 }).trim();
-            if (!sock) { lines.push(`  ${r.friendly_name || r.fleet_id}: no kitty socket`); continue; }
-            const result = execSync(`kitty @ --to "unix:${sock}" launch --type=tab --cwd="${cwd}" --title="${r.friendly_name || r.fleet_id}" -- zsh -c 'claude'`, { encoding: 'utf8', timeout: 10000 }).trim();
-            lines.push(`  ${r.friendly_name || r.fleet_id}: spawned (${result})`);
-            logEvent({ type: 'rehydrate', action: 'spawn', agent: r.fleet_id, name: r.friendly_name, cwd });
+            if (!sock) { lines.push(`  ${r.name || r.fleet_id}: no kitty socket`); continue; }
+            const result = execSync(`kitty @ --to "unix:${sock}" launch --type=tab --cwd="${cwd}" --title="${r.name || r.fleet_id}" -- zsh -c 'FLEET_ID=${r.fleet_id} claude'`, { encoding: 'utf8', timeout: 10000 }).trim();
+            lines.push(`  ${r.name || r.fleet_id}: spawned (${result})`);
+            logEvent({ type: 'rehydrate', action: 'spawn', agent: r.fleet_id, name: r.name, cwd });
           } catch (e) {
-            lines.push(`  ${r.friendly_name || r.fleet_id}: failed (${e.message})`);
+            lines.push(`  ${r.name || r.fleet_id}: failed (${e.message})`);
           }
         }
       }
     }
 
-    if (!matched.length && !ambiguous.length && !missingRoster.length) {
-      lines.push('Nothing to rehydrate — all roster entries are in the registry.');
+    if (!matched.length && !ambiguous.length && !missingFromRegistry.length) {
+      lines.push('Nothing to rehydrate — all ledger entries are in the registry.');
     }
 
     return { content: [{ type: 'text', text: lines.join('\n') }] };
@@ -2204,11 +2367,11 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     if (!state.cluster_jobs) state.cluster_jobs = [];
     state.cluster_jobs.push({
       id: job_id, label, output_dir, output_pattern, total_reps,
-      cluster: host, agent: ME, registered_at: now(),
+      cluster: host, agent: AGENT_ID, registered_at: now(),
     });
     saveState(state);
 
-    logEvent({ type: 'job_register', job_id, label, cluster: host, agent: ME });
+    logEvent({ type: 'job_register', job_id, label, cluster: host, agent: AGENT_ID });
     return { content: [{ type: 'text', text: `Registered job ${job_id} (${label}) on ${host}. Watcher will track ${output_pattern} in ${output_dir}.` }] };
   }
 
@@ -2308,7 +2471,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     const seconds = Math.min(Math.max(args.seconds || 10, 1), 600);
     const message = args.message || 'Timer fired';
     const state = loadState();
-    const agent = (state.agents || []).find(a => a.id === ME);
+    const agent = (state.agents || []).find(a => a.id === AGENT_ID);
     if (agent) {
       if (!agent._timers) agent._timers = [];
       const timerId = `timer-${Date.now()}`;
@@ -2325,15 +2488,15 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
           // Add message to self
           if (!s.messages) s.messages = [];
           s.messages.push({
-            to: ME,
-            from: ME,
+            to: AGENT_ID,
+            from: AGENT_ID,
             text: `⏰ ${message}`,
             timestamp: new Date().toISOString(),
             read: false,
             _timer: true,
           });
           // Remove this timer from agent state
-          const a = (s.agents || []).find(a => a.id === ME);
+          const a = (s.agents || []).find(a => a.id === AGENT_ID);
           if (a?._timers) {
             a._timers = a._timers.filter(t => t.id !== timerId);
             if (a._timers.length === 0) delete a._timers;
@@ -2347,6 +2510,46 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       }, seconds * 1000);
     }
     return { content: [{ type: 'text', text: `Timer set: ${seconds}s → "${message}". You'll get 📬 when it fires.` }] };
+  }
+
+  // ---- watch_highlights ----
+  if (name === 'watch_highlights') {
+    if (!isManager) return { content: [{ type: 'text', text: 'Manager only.' }], isError: true };
+    const action = args.action;
+    const state = loadState();
+    if (!state.highlight_watchers) state.highlight_watchers = [];
+
+    if (action === 'list') {
+      if (state.highlight_watchers.length === 0) {
+        return { content: [{ type: 'text', text: 'No active highlight watchers.' }] };
+      }
+      const lines = state.highlight_watchers.map(w => {
+        const a = getAgent(state, w.agent);
+        const label = a?.friendly_name || w.agent;
+        return `- **${w.doc}** → ${label}`;
+      });
+      return { content: [{ type: 'text', text: `Active watchers:\n${lines.join('\n')}` }] };
+    }
+
+    if (action === 'stop') {
+      if (!args.doc) return { content: [{ type: 'text', text: 'Missing doc parameter.' }], isError: true };
+      state.highlight_watchers = state.highlight_watchers.filter(w => w.doc !== args.doc);
+      saveState(state);
+      return { content: [{ type: 'text', text: `Stopped watching "${args.doc}".` }] };
+    }
+
+    if (action === 'start') {
+      if (!args.doc || !args.agent) return { content: [{ type: 'text', text: 'Missing doc or agent parameter.' }], isError: true };
+      const agent = getAgent(state, args.agent);
+      const agentId = agent ? agent.id : args.agent;
+      state.highlight_watchers = state.highlight_watchers.filter(w => w.doc !== args.doc);
+      state.highlight_watchers.push({ doc: args.doc, agent: agentId });
+      saveState(state);
+      const label = agent?.friendly_name || agentId;
+      return { content: [{ type: 'text', text: `Watching "${args.doc}" → highlights delivered to ${label}. Dashboard bridge will pick this up within 10s.` }] };
+    }
+
+    return { content: [{ type: 'text', text: `Unknown action: ${action}` }], isError: true };
   }
 
   // ---- playback_record ----
@@ -2396,7 +2599,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
       end: args.end,
     });
 
-    logEvent({ type: 'playback_record', from: ME || 'unknown', playbackId: result.id, eventCount: result.event_count, title: args.title });
+    logEvent({ type: 'playback_record', from: AGENT_ID || 'unknown', playbackId: result.id, eventCount: result.event_count, title: args.title });
 
     return { content: [{ type: 'text', text: `Playback created: ${result.id}\n\nTitle: ${result.title}\nEvents: ${result.event_count}\nDuration: ${(result.duration_ms / 1000).toFixed(1)}s\nSources: ${result.sources}` }] };
   }
@@ -2463,6 +2666,273 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
     }
 
     return { content: [{ type: 'text', text: result.transcript }] };
+  }
+
+  // ---- share ----
+  if (name === 'share') {
+    const filePath = args.path;
+    if (!filePath) {
+      return { content: [{ type: 'text', text: 'Path is required.' }], isError: true };
+    }
+
+    // Resolve the file
+    const resolved = path.resolve(filePath);
+    let content;
+    try {
+      content = fs.readFileSync(resolved, 'utf8');
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+    }
+
+    // Generate doc name from filename if not provided
+    const basename = path.basename(resolved, path.extname(resolved));
+    const docName = (args.doc || basename).toLowerCase().replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+    if (!docName) {
+      return { content: [{ type: 'text', text: 'Could not generate a valid doc name. Provide one explicitly.' }], isError: true };
+    }
+
+    // Extract title from first heading or use provided title
+    let title = args.title;
+    if (!title) {
+      const headingMatch = content.match(/^#\s+(.+)$/m);
+      title = headingMatch ? headingMatch[1].trim() : basename;
+    }
+
+    const mainFile = path.basename(resolved);
+
+    try {
+      // Check if project exists
+      const check = await tldaFetch(docName);
+      if (check.status === 404) {
+        // Create project
+        const createRes = await tldaFetch('', {
+          method: 'POST',
+          body: { name: docName, title, format: 'markdown', mainFile },
+        });
+        if (createRes.status >= 400) {
+          return { content: [{ type: 'text', text: `Failed to create tlda project: ${JSON.stringify(createRes.data)}` }], isError: true };
+        }
+      }
+
+      // Push file content
+      const pushRes = await tldaFetch(docName + '/push', {
+        method: 'POST',
+        body: {
+          files: [{ path: mainFile, content }],
+          sourceDir: path.dirname(resolved),
+          session: CLAUDE_SESSION,
+        },
+      });
+      if (pushRes.status >= 400) {
+        return { content: [{ type: 'text', text: `Failed to push to tlda: ${JSON.stringify(pushRes.data)}` }], isError: true };
+      }
+
+      // Track shared doc in state
+      const state = loadState();
+      if (!state.shared_docs) state.shared_docs = [];
+      const existing = state.shared_docs.find(d => d.doc === docName);
+      if (existing) {
+        existing.updated_at = new Date().toISOString();
+        existing.path = resolved;
+        existing.agent = AGENT_ID;
+      } else {
+        state.shared_docs.push({
+          doc: docName,
+          path: resolved,
+          title,
+          agent: AGENT_ID,
+          shared_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        });
+      }
+      saveState(state);
+      logEvent({ type: 'share', agent: AGENT_ID, doc: docName, path: resolved, title });
+
+      return { content: [{ type: 'text', text: `Shared "${title}" as tlda doc: **${docName}**\nFile: ${resolved}\nThe doc is now live on the canvas for review. Use \`check_doc_feedback("${docName}")\` to read highlight feedback.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}. Is tlda running on port ${TLDA_PORT}?` }], isError: true };
+    }
+  }
+
+  // ---- check_doc_feedback ----
+  if (name === 'check_doc_feedback') {
+    const doc = args.doc;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
+    }
+
+    try {
+      // Read pen/highlighter annotations from tlda
+      const shapesRes = await tldaFetch(doc + '/shapes?type=highlight,draw');
+      if (shapesRes.status >= 400) {
+        return { content: [{ type: 'text', text: `Failed to read shapes: ${JSON.stringify(shapesRes.data)}` }], isError: true };
+      }
+
+      const shapes = Array.isArray(shapesRes.data) ? shapesRes.data : [];
+
+      // Also read math-note annotations (sticky notes with text feedback)
+      const notesRes = await tldaFetch(doc + '/shapes?type=math-note');
+      const notes = Array.isArray(notesRes.data) ? notesRes.data : [];
+
+      // Read the source file for line content extraction
+      const state = loadState();
+      const sharedDoc = (state.shared_docs || []).find(d => d.doc === doc);
+      let sourceLines = [];
+      if (sharedDoc?.path) {
+        try { sourceLines = fs.readFileSync(sharedDoc.path, 'utf8').split('\n'); } catch {}
+      }
+
+      // Process highlights into structured feedback
+      const feedback = [];
+
+      for (const shape of shapes) {
+        const color = shape.props?.color || shape.meta?.color || 'orange';
+        const theme = HIGHLIGHT_THEMES[color] || { type: 'comment', label: color };
+        const startLine = shape.meta?.sourceAnchor?.startLine || shape.meta?.startLine;
+        const endLine = shape.meta?.sourceAnchor?.endLine || shape.meta?.endLine || startLine;
+
+        if (!startLine) continue; // Skip shapes without source anchors
+
+        // Extract the highlighted text from source
+        const text = sourceLines.length > 0
+          ? sourceLines.slice(startLine - 1, endLine).join('\n')
+          : `(lines ${startLine}-${endLine})`;
+
+        feedback.push({
+          type: theme.type,
+          label: theme.label,
+          color,
+          lines: [startLine, endLine],
+          text,
+          shapeId: shape.id,
+        });
+      }
+
+      // Process sticky notes as text feedback
+      for (const note of notes) {
+        if (note.meta?.createdBy === 'claude') continue; // Skip agent's own notes
+        const anchor = note.meta?.sourceAnchor;
+        const line = anchor?.line || anchor?.startLine;
+        feedback.push({
+          type: 'note',
+          label: 'Text feedback',
+          color: note.props?.color || 'yellow',
+          lines: line ? [line, anchor?.endLine || line] : null,
+          text: note.props?.text || '',
+          done: note.props?.done || false,
+          shapeId: note.id,
+        });
+      }
+
+      if (feedback.length === 0) {
+        return { content: [{ type: 'text', text: `No feedback on "${doc}" yet. The doc is on the canvas — waiting for highlights.` }] };
+      }
+
+      // Format feedback summary
+      const summary = feedback.map(f => {
+        const lineRef = f.lines ? `L${f.lines[0]}${f.lines[1] !== f.lines[0] ? '-' + f.lines[1] : ''}` : '';
+        const icon = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', note: '📝', info: 'ℹ️' }[f.type] || '•';
+        return `${icon} **${f.type}** ${lineRef}: ${f.text.slice(0, 200)}${f.text.length > 200 ? '...' : ''}`;
+      }).join('\n');
+
+      return { content: [{ type: 'text', text: `**Feedback on "${doc}"** (${feedback.length} items):\n\n${summary}\n\n---\nRaw feedback:\n${JSON.stringify(feedback, null, 2)}` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}. Is tlda running?` }], isError: true };
+    }
+  }
+
+  // ---- suggest ----
+  if (name === 'suggest') {
+    const { doc, text } = args;
+    if (!doc || !text) {
+      return { content: [{ type: 'text', text: 'Doc and text are required.' }], isError: true };
+    }
+
+    const choices = args.choices || ['Accept', 'Reject', 'Modify'];
+    const color = args.color || 'orange';
+    const line = args.line || null;
+    const replyTo = args.reply_to || null;
+
+    try {
+      if (replyTo) {
+        // Reply to an existing annotation thread
+        const replyRes = await tldaFetch(doc + '/shapes', {
+          method: 'POST',
+          body: {
+            type: 'math-note',
+            props: { text, color, choices },
+            meta: { createdBy: 'claude', replyTo, sourceAnchor: line ? { line } : undefined },
+          },
+        });
+        if (replyRes.status >= 400) {
+          return { content: [{ type: 'text', text: `Failed to post reply: ${JSON.stringify(replyRes.data)}` }], isError: true };
+        }
+        logEvent({ type: 'suggest', agent: AGENT_ID, doc, line, replyTo, text: text.slice(0, 200) });
+        return { content: [{ type: 'text', text: `Posted reply on "${doc}" ${line ? 'at L' + line : ''} (replying to ${replyTo}). Choices: ${choices.join(', ')}` }] };
+      } else {
+        // Create new suggestion note
+        const noteRes = await tldaFetch(doc + '/shapes', {
+          method: 'POST',
+          body: {
+            type: 'math-note',
+            props: { text, color, choices },
+            meta: { createdBy: 'claude', sourceAnchor: line ? { line } : undefined },
+          },
+        });
+        if (noteRes.status >= 400) {
+          return { content: [{ type: 'text', text: `Failed to post suggestion: ${JSON.stringify(noteRes.data)}` }], isError: true };
+        }
+        logEvent({ type: 'suggest', agent: AGENT_ID, doc, line, text: text.slice(0, 200) });
+        return { content: [{ type: 'text', text: `Posted suggestion on "${doc}" ${line ? 'at L' + line : ''}. Choices: ${choices.join(', ')}` }] };
+      }
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
+  }
+
+  // ---- update_shared_doc ----
+  if (name === 'update_shared_doc') {
+    const doc = args.doc;
+    if (!doc) {
+      return { content: [{ type: 'text', text: 'Doc name is required.' }], isError: true };
+    }
+
+    const state = loadState();
+    const sharedDoc = (state.shared_docs || []).find(d => d.doc === doc);
+    if (!sharedDoc) {
+      return { content: [{ type: 'text', text: `Doc "${doc}" not found in shared docs. Share it first with share().` }], isError: true };
+    }
+
+    let content;
+    try {
+      content = fs.readFileSync(sharedDoc.path, 'utf8');
+    } catch (e) {
+      return { content: [{ type: 'text', text: `Cannot read file: ${e.message}` }], isError: true };
+    }
+
+    const mainFile = path.basename(sharedDoc.path);
+
+    try {
+      const pushRes = await tldaFetch(doc + '/push', {
+        method: 'POST',
+        body: {
+          files: [{ path: mainFile, content }],
+          sourceDir: path.dirname(sharedDoc.path),
+          session: CLAUDE_SESSION,
+        },
+      });
+      if (pushRes.status >= 400) {
+        return { content: [{ type: 'text', text: `Failed to push update: ${JSON.stringify(pushRes.data)}` }], isError: true };
+      }
+
+      sharedDoc.updated_at = new Date().toISOString();
+      saveState(state);
+      logEvent({ type: 'update_doc', agent: AGENT_ID, doc, path: sharedDoc.path });
+
+      return { content: [{ type: 'text', text: `Updated "${doc}" on tlda. The canvas will reload with the new content.` }] };
+    } catch (e) {
+      return { content: [{ type: 'text', text: `tlda server error: ${e.message}` }], isError: true };
+    }
   }
 
   return { content: [{ type: 'text', text: `Unknown tool: ${name}` }], isError: true };

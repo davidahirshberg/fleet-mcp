@@ -25,7 +25,7 @@ All agents call this at session start. Auto-detects the session UUID from the mo
 
 - `manager`: set true to register as manager
 - `session_id`: Claude session ID (override auto-detection)
-- `name`: agent name (for headless agents without a session)
+- `name`: display name for headless agents (stored but not used for resolution — use `friendly_name` via `name_agent` for identity)
 
 ### my_task()
 
@@ -39,7 +39,7 @@ Show your current task and read unread messages inline. Call this:
 Send a message to another agent's inbox. Recipient is notified via fs.watch.
 
 - `message`: Message to send
-- `to`: Optional. Session UUID, agent name, or friendly name. Omit to message whoever delegated your current task (falls back to any live manager). Use `"web"`, `"skip"`, or `"human"` to message the dashboard.
+- `to`: Optional. Fleet ID, session UUID, or friendly name. Omit to message whoever delegated your current task (falls back to any live manager). Use `"web"`, `"skip"`, or `"human"` to message the dashboard.
 
 Keep messages concise. If reporting completion, include what you did and any issues.
 
@@ -60,6 +60,13 @@ Set a non-blocking timer. Returns immediately — you get 📬 when it fires. **
 
 When the timer fires, the message appears in your inbox as ⏰. Call `my_task()` to see it.
 
+## Manager triage
+
+Managers (especially the chief of staff) own the decision of whether to handle a request themselves or delegate it. When the user asks for something to get done, the manager decides and communicates the decision with a brief rationale if taking it on themselves. Bias toward delegating when actively collaborating with the user — the manager's attention is more valuable on coordination than execution. If the user gives an explicit instruction on whether to do it or delegate, follow that. Otherwise, use judgment:
+
+- **Delegate** when: the task is self-contained, an agent is available, or the manager is mid-conversation with the user.
+- **Take it on** when: it's faster (small fix, quick investigation), requires the manager's context, or no agents are free.
+
 ## Manager tools
 
 These require `register(manager=true)`:
@@ -68,7 +75,7 @@ These require `register(manager=true)`:
 
 Assign a tracked task to an agent. Agent must be registered — rejects unknown identifiers.
 
-- `agent`: Session UUID, agent name, or friendly name
+- `agent`: Fleet ID, session UUID, or friendly name
 - `description`: Short human-readable label (5-10 words)
 - `message`: Full task message
 - `after`: Optional. Task ID or array of IDs — task is blocked until all complete.
@@ -80,7 +87,7 @@ Returns task ID. Use in `after` for dependent tasks.
 
 Set or change a friendly name. Names must be unique — rejects duplicates. Names persist across re-registrations.
 
-- `agent`: Session UUID, agent name, or friendly name
+- `agent`: Fleet ID, session UUID, or friendly name
 - `friendly_name`: Human-readable name (e.g. "sims guy", "survival paper")
 
 ### label_agent(agent, labels)
@@ -100,14 +107,14 @@ Returns the kitty window ID. Once the agent registers, find its UUID via `task_l
 
 Resume a dead agent session. Looks up session ID and cwd from the registry.
 
-- `agent`: Session UUID, agent name, or friendly name
+- `agent`: Fleet ID, session UUID, or friendly name
 - `win`: Optional. Kitty window to use. Omit to auto-find an idle tab.
 
 ### interrupt(agent, message?)
 
 Send ESC to break into a stuck agent. **Not for routine notifications** — those go through fs.watch automatically.
 
-- `agent`: Session UUID, agent name, or friendly name
+- `agent`: Fleet ID, session UUID, or friendly name
 - `message`: Optional message delivered via chat before the interrupt
 
 ### task_check(win)

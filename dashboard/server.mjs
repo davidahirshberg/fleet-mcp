@@ -19,6 +19,7 @@ import { fileURLToPath } from 'url';
 import { SearchIndex, parseSessionLine } from './search-index.mjs';
 import { SessionExtractor, EventExtractor, TldaExtractor } from '../playback/extractors.mjs';
 import { createPlayback, getPlayback, listPlaybacks, editPlayback, trimCopy } from '../playback/storage.mjs';
+import { ledger } from '../identity.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const BIN = path.join(__dirname, '..', 'bin');
@@ -109,6 +110,52 @@ for (let i = 2; i < process.argv.length; i++) {
   }
 }
 
+// --- Human agent registration ---
+// Register the local user as a human agent on startup
+const HUMAN_HOST = `${os.userInfo().username}@${os.hostname()}`;
+const HUMAN_FLEET_ID = ledger.fleetIdFromHost(HUMAN_HOST);
+const HUMAN_NAME = os.userInfo().username;
+
+function ensureHumanRegistered() {
+  // Register in ledger
+  ledger.upsertHuman(HUMAN_FLEET_ID, HUMAN_HOST, HUMAN_NAME);
+
+  // Register in state file
+  const state = loadState();
+  if (!state.agents) state.agents = [];
+  let entry = state.agents.find(a => a.id === HUMAN_FLEET_ID);
+  if (!entry) {
+    entry = {
+      id: HUMAN_FLEET_ID,
+      registered_at: new Date().toISOString(),
+      human: true,
+      friendly_name: HUMAN_NAME,
+    };
+    state.agents.push(entry);
+  } else {
+    entry.human = true;
+    if (!entry.friendly_name) entry.friendly_name = HUMAN_NAME;
+  }
+  entry.last_seen = new Date().toISOString();
+  delete entry.dead;
+  saveState(state);
+
+  // Migrate existing 'web' messages to human fleet ID
+  migrateWebMessages(state);
+}
+
+function migrateWebMessages(state) {
+  let dirty = false;
+  for (const m of (state.messages || [])) {
+    if (m.from === 'web') { m.from = HUMAN_FLEET_ID; dirty = true; }
+    if (m.to === 'web') { m.to = HUMAN_FLEET_ID; dirty = true; }
+  }
+  if (dirty) saveState(state);
+}
+
+ensureHumanRegistered();
+console.log(`Human agent registered: ${HUMAN_FLEET_ID} (${HUMAN_HOST})`);
+
 function loadState() {
   try {
     return JSON.parse(fs.readFileSync(STATE_FILE, 'utf8'));
@@ -124,14 +171,13 @@ function saveState(state) {
 function findAgent(state, query) {
   if (!query) return null;
   return (state.agents || []).find(a =>
-    a.id === query || a.friendly_name === query || a.name === query ||
-    a.session_id === query || (a.session_ids && a.session_ids.includes(query)) ||
-    (a.id && a.id.startsWith(query))
+    a.id === query || a.friendly_name === query ||
+    a.session_id === query || (a.session_ids && a.session_ids.includes(query))
   );
 }
 
 function kickAgentById(state, agentId) {
-  if (!agentId || agentId === 'web') return { ok: false, error: 'invalid target' };
+  if (!agentId || agentId === HUMAN_FLEET_ID) return { ok: false, error: 'invalid target' };
   const agent = (state.agents || []).find(a => a.id === agentId);
   const win = agent?.kitty_win;
   if (!win) return { ok: false, error: 'no kitty window' };
@@ -316,8 +362,62 @@ const server = http.createServer(async (req, res) => {
 
   // State snapshot
   if (url.pathname === '/api/state' && req.method === 'GET') {
+    // Update human last_seen on every state poll (heartbeat)
+    const state = loadState();
+    const humanEntry = (state.agents || []).find(a => a.id === HUMAN_FLEET_ID);
+    if (humanEntry) {
+      humanEntry.last_seen = new Date().toISOString();
+      saveState(state);
+    }
     res.writeHead(200, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(loadState()));
+    res.end(JSON.stringify(state));
+    return;
+  }
+
+  // Human identity endpoint
+  if (url.pathname === '/api/human' && req.method === 'GET') {
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ id: HUMAN_FLEET_ID, host: HUMAN_HOST, name: HUMAN_NAME }));
+    return;
+  }
+
+  // Highlight watcher management
+  if (url.pathname === '/api/highlight-watch' && req.method === 'POST') {
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { action, doc, agent } = JSON.parse(body);
+        const state = loadState();
+        if (!state.highlight_watchers) state.highlight_watchers = [];
+
+        if (action === 'start') {
+          if (!doc || !agent) { res.writeHead(400); res.end('missing doc or agent'); return; }
+          // Resolve agent
+          const a = (state.agents || []).find(a => a.id === agent || a.friendly_name === agent);
+          const agentId = a ? a.id : agent;
+          // Remove existing watcher for this doc
+          state.highlight_watchers = state.highlight_watchers.filter(w => w.doc !== doc);
+          state.highlight_watchers.push({ doc, agent: agentId });
+          saveState(state);
+          syncHighlightWatchers();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, watching: doc, agent: agentId }));
+        } else if (action === 'stop') {
+          if (!doc) { res.writeHead(400); res.end('missing doc'); return; }
+          state.highlight_watchers = state.highlight_watchers.filter(w => w.doc !== doc);
+          saveState(state);
+          syncHighlightWatchers();
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, stopped: doc }));
+        } else if (action === 'list') {
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ watchers: state.highlight_watchers, active: [...highlightWatchers.keys()] }));
+        } else {
+          res.writeHead(400); res.end('action must be start, stop, or list');
+        }
+      } catch (e) { res.writeHead(500); res.end(e.message); }
+    });
     return;
   }
 
@@ -333,8 +433,7 @@ const server = http.createServer(async (req, res) => {
         const state = loadState();
         const resolve = (id) => {
           const a = (state.agents || []).find(a =>
-            a.id === id || a.friendly_name === id || a.name === id ||
-            (a.id && a.id.startsWith(id))
+            a.id === id || a.friendly_name === id
           );
           return a ? a.id : id;
         };
@@ -350,7 +449,7 @@ const server = http.createServer(async (req, res) => {
         if (!state.messages) state.messages = [];
         const msg = {
           to: recipient,
-          from: 'web',
+          from: HUMAN_FLEET_ID,
           text,
           timestamp: new Date().toISOString(),
           read: false,
@@ -360,7 +459,7 @@ const server = http.createServer(async (req, res) => {
         if (_raw) msg._raw = true;
         state.messages.push(msg);
         saveState(state);
-        logEvent({ type: 'chat', from: 'web', to: recipient, cc: ccResolved, message: text });
+        logEvent({ type: 'chat', from: HUMAN_FLEET_ID, to: recipient, cc: ccResolved, message: text });
         const kick = kickAgentById(state, recipient);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, kick }));
@@ -382,7 +481,7 @@ const server = http.createServer(async (req, res) => {
         if (!timestamp) { res.writeHead(400); res.end('missing timestamp'); return; }
         const state = loadState();
         const idx = (state.messages || []).findIndex(m =>
-          m.timestamp === timestamp && m.from === (from || 'web')
+          m.timestamp === timestamp && m.from === (from || HUMAN_FLEET_ID)
         );
         if (idx < 0) { res.writeHead(404); res.end('message not found'); return; }
         const msg = state.messages[idx];
@@ -394,7 +493,7 @@ const server = http.createServer(async (req, res) => {
           msg._retracted = true;
         }
         saveState(state);
-        logEvent({ type: 'retract', from: from || 'web', timestamp, deleted: !msg.read });
+        logEvent({ type: 'retract', from: from || HUMAN_FLEET_ID, timestamp, deleted: !msg.read });
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ ok: true, deleted: !msg._retracted }));
       } catch (e) {
@@ -443,8 +542,9 @@ const server = http.createServer(async (req, res) => {
       let agentIds;
       if (agentParam) {
         const state = loadState();
+        // Prefix match intentional — search is read-only, broad matching useful
         const matches = (state.agents || []).filter(a =>
-          a.id === agentParam || a.name === agentParam || a.friendly_name === agentParam ||
+          a.id === agentParam || a.friendly_name === agentParam ||
           a.id.startsWith(agentParam)
         );
         const ids = new Set();
@@ -581,9 +681,9 @@ const server = http.createServer(async (req, res) => {
       const agentMap = {};
       for (const a of (state.agents || [])) {
         agentMap[a.id] = a.friendly_name || a.name || a.id;
-        if (a.name) agentMap[a.name] = a.friendly_name || a.name;
       }
-      agentMap['web'] = 'skip';
+      // Legacy alias: resolve old 'web' messages to human fleet ID
+      agentMap['web'] = agentMap[HUMAN_FLEET_ID] || HUMAN_NAME;
 
       const resolved = page.map(e => ({
         ...e,
@@ -616,11 +716,9 @@ const server = http.createServer(async (req, res) => {
       const agentMap = {};
       for (const a of (state.agents || [])) {
         agentMap[a.id] = a.friendly_name || a.name || a.id;
-        if (a.name) agentMap[a.name] = a.friendly_name || a.name;
       }
-      agentMap['web'] = 'skip';
-      agentMap['skip'] = 'skip';
-      agentMap['human'] = 'skip';
+      // Legacy alias: resolve old 'web' messages to human fleet ID
+      agentMap['web'] = agentMap[HUMAN_FLEET_ID] || HUMAN_NAME;
 
       const resolved = events.map(e => ({
         ...e,
@@ -868,7 +966,7 @@ const server = http.createServer(async (req, res) => {
         if (!agent) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'agent not found' })); return; }
         if (message) {
           if (!state.messages) state.messages = [];
-          state.messages.push({ to: agent.id, from: 'web', text: message, timestamp: new Date().toISOString(), read: false, _interrupt: true });
+          state.messages.push({ to: agent.id, from: HUMAN_FLEET_ID, text: message, timestamp: new Date().toISOString(), read: false, _interrupt: true });
           fs.writeFileSync(STATE_FILE, JSON.stringify(state, null, 2));
         }
         if (!agent.kitty_win) { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ ok: false, error: 'no kitty window — message delivered via state file only' })); return; }
@@ -1423,8 +1521,8 @@ const server = http.createServer(async (req, res) => {
         if (bucket < 0 || bucket >= numBuckets) continue;
 
         const agents = new Set();
-        if (e.from && e.from !== 'web' && e.from !== 'keepalive') agents.add(e.from);
-        if (e.to && e.to !== 'web') agents.add(e.to);
+        if (e.from && e.from !== 'keepalive') agents.add(e.from);
+        if (e.to) agents.add(e.to);
         if (e.agent) agents.add(e.agent);
 
         for (const aid of agents) {
@@ -1536,6 +1634,129 @@ const server = http.createServer(async (req, res) => {
         fs.writeFileSync(filePath, buf);
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ path: filePath, url: `/api/file?path=${encodeURIComponent(filePath)}` }));
+      } catch (e) {
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
+  // --- Shared docs routes ---
+
+  // List shared docs (from state file)
+  if (url.pathname === '/api/shared-docs' && req.method === 'GET') {
+    const state = loadState();
+    const docs = state.shared_docs || [];
+    // Enrich with agent names
+    const enriched = docs.map(d => {
+      const agent = (state.agents || []).find(a => a.id === d.agent);
+      return { ...d, agent_name: agent?.friendly_name || agent?.name || d.agent };
+    });
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify(enriched));
+    return;
+  }
+
+  // Check feedback on a shared doc (proxies to tlda shapes API + translates)
+  if (url.pathname.startsWith('/api/shared-docs/') && url.pathname.endsWith('/feedback') && req.method === 'GET') {
+    const doc = url.pathname.split('/')[3];
+    const HIGHLIGHT_THEMES = {
+      'light-green': { type: 'approve', label: 'Good, keep this' },
+      'green': { type: 'approve', label: 'Good, keep this' },
+      'light-red': { type: 'reject', label: 'Fix this' },
+      'red': { type: 'reject', label: 'Fix this' },
+      'yellow': { type: 'question', label: 'Question / unsure' },
+      'light-violet': { type: 'expand', label: 'Develop further' },
+      'violet': { type: 'expand', label: 'Develop further' },
+      'orange': { type: 'comment', label: 'General comment' },
+      'light-blue': { type: 'info', label: 'Note / reference' },
+      'blue': { type: 'info', label: 'Note / reference' },
+    };
+    try {
+      const shapesRes = await tldaFetch(doc + '/shapes?type=highlight,draw');
+      const shapes = Array.isArray(shapesRes.data) ? shapesRes.data : [];
+      const notesRes = await tldaFetch(doc + '/shapes?type=math-note');
+      const notes = Array.isArray(notesRes.data) ? notesRes.data : [];
+
+      // Read source for line extraction
+      const state = loadState();
+      const sharedDoc = (state.shared_docs || []).find(d => d.doc === doc);
+      let sourceLines = [];
+      if (sharedDoc?.path) {
+        try { sourceLines = fs.readFileSync(sharedDoc.path, 'utf8').split('\n'); } catch {}
+      }
+
+      const feedback = [];
+      for (const shape of shapes) {
+        const color = shape.props?.color || shape.meta?.color || 'orange';
+        const theme = HIGHLIGHT_THEMES[color] || { type: 'comment', label: color };
+        const startLine = shape.meta?.sourceAnchor?.startLine || shape.meta?.startLine;
+        const endLine = shape.meta?.sourceAnchor?.endLine || shape.meta?.endLine || startLine;
+        if (!startLine) continue;
+        const text = sourceLines.length > 0
+          ? sourceLines.slice(startLine - 1, endLine).join('\n')
+          : `(lines ${startLine}-${endLine})`;
+        feedback.push({ type: theme.type, label: theme.label, color, lines: [startLine, endLine], text, shapeId: shape.id });
+      }
+      for (const note of notes) {
+        if (note.meta?.createdBy === 'claude') continue;
+        const anchor = note.meta?.sourceAnchor;
+        const line = anchor?.line || anchor?.startLine;
+        feedback.push({
+          type: 'note', label: 'Text feedback', color: note.props?.color || 'yellow',
+          lines: line ? [line, anchor?.endLine || line] : null,
+          text: note.props?.text || '', done: note.props?.done || false, shapeId: note.id,
+        });
+      }
+
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ doc, feedback }));
+    } catch (e) {
+      res.writeHead(502, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+
+  // Deliver feedback to agent as a fleet message
+  if (url.pathname.startsWith('/api/shared-docs/') && url.pathname.endsWith('/deliver') && req.method === 'POST') {
+    const doc = url.pathname.split('/')[3];
+    let body = '';
+    req.on('data', chunk => body += chunk);
+    req.on('end', () => {
+      try {
+        const { feedback } = JSON.parse(body);
+        const state = loadState();
+        const sharedDoc = (state.shared_docs || []).find(d => d.doc === doc);
+        if (!sharedDoc) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Doc not found in shared docs' }));
+          return;
+        }
+
+        // Format feedback as a chat message to the authoring agent
+        const lines = feedback.map(f => {
+          const icon = { approve: '✅', reject: '❌', question: '❓', expand: '💡', comment: '💬', note: '📝', info: 'ℹ️' }[f.type] || '•';
+          const lineRef = f.lines ? `L${f.lines[0]}${f.lines[1] !== f.lines[0] ? '-' + f.lines[1] : ''}` : '';
+          return `${icon} **${f.type}** ${lineRef}: ${f.text.slice(0, 200)}`;
+        });
+        const message = `**Feedback on "${doc}"** (${feedback.length} items):\n\n${lines.join('\n')}`;
+
+        // Post as message from human to the authoring agent
+        if (!state.messages) state.messages = [];
+        state.messages.push({
+          to: sharedDoc.agent,
+          from: HUMAN_FLEET_ID,
+          text: message,
+          timestamp: new Date().toISOString(),
+          read: false,
+        });
+        saveState(state);
+        logEvent({ type: 'feedback_delivered', doc, agent: sharedDoc.agent, count: feedback.length });
+
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ delivered: true, agent: sharedDoc.agent, count: feedback.length }));
       } catch (e) {
         res.writeHead(500, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: e.message }));
@@ -1817,6 +2038,109 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  // Embeddable HUD for tlda sidebar — compact chat + shared docs status
+  if (url.pathname === '/embed' || url.pathname === '/embed/') {
+    const state = loadState();
+    const agents = state.agents || [];
+    const docs = state.shared_docs || [];
+    const messages = (state.messages || []).filter(m => !m.read).slice(-20);
+
+    res.writeHead(200, { 'Content-Type': 'text/html', 'Cache-Control': 'no-store' });
+    res.end(`<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Fleet HUD</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: -apple-system, system-ui, sans-serif; font-size: 13px; background: #1a1a2e; color: #e0e0e0; }
+  .hud { display: flex; flex-direction: column; height: 100vh; }
+  .section { padding: 8px 12px; border-bottom: 1px solid #2a2a4a; }
+  .section-title { font-size: 11px; font-weight: 600; color: #888; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px; }
+  .agent-row { display: flex; align-items: center; gap: 6px; padding: 3px 0; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; }
+  .dot-alive { background: #4ade80; }
+  .dot-dead { background: #666; }
+  .doc-row { padding: 4px 0; cursor: pointer; }
+  .doc-row:hover { color: #60a5fa; }
+  .messages { flex: 1; overflow-y: auto; padding: 8px 12px; }
+  .msg { padding: 4px 0; border-bottom: 1px solid #1f1f3a; }
+  .msg-from { font-weight: 600; color: #60a5fa; font-size: 11px; }
+  .msg-text { margin-top: 2px; white-space: pre-wrap; word-break: break-word; }
+  .input-bar { padding: 8px; border-top: 1px solid #2a2a4a; display: flex; gap: 6px; }
+  .input-bar input { flex: 1; background: #2a2a4a; border: none; color: #e0e0e0; padding: 6px 8px; border-radius: 4px; font-size: 13px; }
+  .input-bar button { background: #3b82f6; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px; }
+</style>
+</head><body>
+<div class="hud">
+  <div class="section">
+    <div class="section-title">Agents</div>
+    <div id="agents"></div>
+  </div>
+  <div class="section">
+    <div class="section-title">Shared Docs</div>
+    <div id="docs"></div>
+  </div>
+  <div class="messages" id="messages"></div>
+  <div class="input-bar">
+    <input id="input" placeholder="Message..." />
+    <button onclick="sendMsg()">Send</button>
+  </div>
+</div>
+<script>
+const BASE = location.origin;
+const es = new EventSource(BASE + '/events');
+es.onmessage = e => {
+  try { render(JSON.parse(e.data)); } catch {}
+};
+fetch(BASE + '/api/state').then(r => r.json()).then(render);
+
+function render(state) {
+  const agentsEl = document.getElementById('agents');
+  const docsEl = document.getElementById('docs');
+  const msgsEl = document.getElementById('messages');
+
+  agentsEl.innerHTML = (state.agents || []).map(a => {
+    const alive = a.last_seen && (Date.now() - new Date(a.last_seen).getTime()) < 600000;
+    const name = a.friendly_name || a.name || a.id?.slice(0, 8);
+    return '<div class="agent-row"><span class="dot ' + (alive && !a.dead ? 'dot-alive' : 'dot-dead') + '"></span>' + esc(name) + '</div>';
+  }).join('');
+
+  docsEl.innerHTML = (state.shared_docs || []).map(d => {
+    const agent = (state.agents || []).find(a => a.id === d.agent);
+    const name = agent?.friendly_name || agent?.name || '';
+    return '<div class="doc-row">' + esc(d.title || d.doc) + ' <span style="color:#666;font-size:11px">by ' + esc(name) + '</span></div>';
+  }).join('') || '<div style="color:#666">No shared docs</div>';
+
+  const humanId = '${HUMAN_FLEET_ID}';
+  const unread = (state.messages || []).filter(m => m.to === humanId || m.to === 'web' || !m.read).slice(-30);
+  msgsEl.innerHTML = unread.map(m => {
+    const from = (state.agents || []).find(a => a.id === m.from);
+    const fromName = from?.friendly_name || from?.name || m.from?.slice(0, 8) || '?';
+    return '<div class="msg"><div class="msg-from">' + esc(fromName) + '</div><div class="msg-text">' + esc(m.text) + '</div></div>';
+  }).join('');
+  msgsEl.scrollTop = msgsEl.scrollHeight;
+}
+
+function esc(s) { return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function sendMsg() {
+  const input = document.getElementById('input');
+  const msg = input.value.trim();
+  if (!msg) return;
+  // Send to all managers
+  fetch(BASE + '/api/chat', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ message: msg, to: 'all' }),
+  });
+  input.value = '';
+}
+document.getElementById('input').addEventListener('keydown', e => { if (e.key === 'Enter') sendMsg(); });
+</script>
+</body></html>`);
+    return;
+  }
+
   // Serve HTML
   if (url.pathname === '/' || url.pathname === '/index.html') {
     try {
@@ -1842,3 +2166,212 @@ server.listen(PORT, '0.0.0.0', () => {
     if (ip) console.log(`  Tailscale: http://${ip}:${PORT}`);
   } catch {}
 });
+
+// --- tlda highlight bridge ---
+// Watches tlda shape streams for new highlights, converts them to fleet messages.
+// Configured via state.highlight_watchers: [{ doc, agent }]
+// The agent field is the fleet ID of the reading-assist agent assigned to that doc.
+
+const TLDA_SERVER = `http://localhost:${TLDA_PORT}`;
+const TLDA_AUTH = tldaToken ? { 'Authorization': `Bearer ${tldaToken}` } : {};
+
+// Lightweight SSE client (inline — same logic as tlda's shared/sse-parser.mjs)
+function connectTldaSSE(urlPath, onEvent) {
+  let closed = false;
+  let req = null;
+
+  function connect() {
+    if (closed) return;
+    const url = new URL(urlPath, TLDA_SERVER);
+    req = http.get({
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname + url.search,
+      headers: { ...TLDA_AUTH, 'Accept': 'text/event-stream' },
+    }, (res) => {
+      if (res.statusCode !== 200) { res.resume(); return; }
+      let buffer = '';
+      res.on('data', (chunk) => {
+        buffer += chunk.toString();
+        let idx;
+        while ((idx = buffer.indexOf('\n\n')) !== -1) {
+          const block = buffer.slice(0, idx).trim();
+          buffer = buffer.slice(idx + 2);
+          const dataLine = block.split('\n').find(l => l.startsWith('data: '));
+          if (!dataLine) continue;
+          try {
+            const event = JSON.parse(dataLine.slice(6));
+            if (event.type !== 'connected') onEvent(event);
+          } catch {}
+        }
+      });
+      res.on('end', () => {
+        if (!closed) setTimeout(connect, 3000);
+      });
+      res.on('error', () => {
+        if (!closed) setTimeout(connect, 5000);
+      });
+    });
+    req.on('error', () => {
+      if (!closed) setTimeout(connect, 5000);
+    });
+  }
+
+  connect();
+  return {
+    close() { closed = true; req?.destroy(); },
+    reconnect() { req?.destroy(); connect(); },
+  };
+}
+
+// Color → intent mapping for highlight shapes
+const HIGHLIGHT_INTENTS = {
+  'yellow': 'expand',
+  'light-green': 'structural', 'green': 'structural',
+  'light-blue': 'notation', 'blue': 'notation',
+  'orange': 'wrong',
+  'light-red': 'wrong', 'red': 'wrong',
+};
+
+// Active watchers: Map<doc, { stream, knownShapes, agent }>
+const highlightWatchers = new Map();
+
+function startHighlightWatcher(doc, agentId) {
+  if (highlightWatchers.has(doc)) return; // already watching
+
+  const knownShapes = new Map();
+  let initializing = true;
+
+  // Fetch initial shapes to build baseline
+  tldaFetch(`${doc}/shapes`).then(({ data }) => {
+    if (Array.isArray(data)) {
+      for (const s of data) {
+        if (s.typeName === 'shape') knownShapes.set(s.id, s);
+      }
+    }
+    initializing = false;
+    console.log(`Highlight bridge: watching "${doc}" (${knownShapes.size} existing shapes, agent=${agentId})`);
+  }).catch(e => {
+    console.error(`Highlight bridge: failed to fetch shapes for "${doc}": ${e.message}`);
+    initializing = false;
+  });
+
+  // Connect to shape change SSE stream
+  const stream = connectTldaSSE(`/api/projects/${doc}/shapes/stream`, async () => {
+    if (initializing) return;
+
+    // Debounce: small delay to batch rapid shape additions
+    clearTimeout(watcher._debounce);
+    watcher._debounce = setTimeout(async () => {
+      try {
+        const { data: currentShapes } = await tldaFetch(`${doc}/shapes`);
+        if (!Array.isArray(currentShapes)) return;
+
+        const currentIds = new Set();
+        for (const record of currentShapes) {
+          if (record.typeName !== 'shape') continue;
+          currentIds.add(record.id);
+          if (knownShapes.has(record.id)) continue;
+
+          knownShapes.set(record.id, record);
+
+          // Only process highlight and draw shapes
+          if (!['highlight', 'draw'].includes(record.type)) continue;
+
+          // Skip violet (reader's personal notes)
+          const color = record.props?.color || '';
+          if (color === 'violet' || color === 'light-violet') continue;
+
+          const intent = HIGHLIGHT_INTENTS[color] || 'unknown';
+          const page = record.meta?.page || null;
+          const lines = record.meta?.sourceLines || null;
+
+          // Write fleet message to the assigned agent
+          const state = loadState();
+          if (!state.messages) state.messages = [];
+          const msg = {
+            to: agentId,
+            from: 'tlda-bridge',
+            text: `**New highlight** on \`${doc}\`\n` +
+              `- **Color**: ${color} → **intent**: ${intent}\n` +
+              `- **Shape ID**: ${record.id}\n` +
+              `- **Type**: ${record.type}\n` +
+              (page ? `- **Page**: ${page}\n` : '') +
+              (lines ? `- **Lines**: ${lines.start}–${lines.end}\n` : ''),
+            timestamp: new Date().toISOString(),
+            read: false,
+            _highlight: { doc, shapeId: record.id, color, intent, page, lines },
+          };
+          state.messages.push(msg);
+          saveState(state);
+          logEvent({ type: 'highlight', doc, shapeId: record.id, color, intent, agent: agentId });
+          kickAgentById(state, agentId);
+          broadcastEvent('highlight', { doc, shapeId: record.id, color, intent });
+        }
+
+        // Detect deleted highlights — notify agent to clean up responses
+        for (const [id, record] of knownShapes) {
+          if (currentIds.has(id)) continue;
+          knownShapes.delete(id);
+          if (!['highlight', 'draw'].includes(record.type)) continue;
+          const color = record.props?.color || '';
+          if (color === 'violet' || color === 'light-violet') continue;
+
+          const state = loadState();
+          if (!state.messages) state.messages = [];
+          state.messages.push({
+            to: agentId,
+            from: 'tlda-bridge',
+            text: `**Highlight deleted** on \`${doc}\`\n- **Shape ID**: ${id}\n- Remove any response annotation for this highlight.`,
+            timestamp: new Date().toISOString(),
+            read: false,
+            _highlightDeleted: { doc, shapeId: id },
+          });
+          saveState(state);
+          logEvent({ type: 'highlight-deleted', doc, shapeId: id, agent: agentId });
+          kickAgentById(state, agentId);
+        }
+      } catch (e) {
+        console.error(`Highlight bridge: error processing shapes for "${doc}": ${e.message}`);
+      }
+    }, 1000);
+  });
+
+  const watcher = { stream, knownShapes, agent: agentId, _debounce: null };
+  highlightWatchers.set(doc, watcher);
+}
+
+function stopHighlightWatcher(doc) {
+  const watcher = highlightWatchers.get(doc);
+  if (watcher) {
+    watcher.stream.close();
+    clearTimeout(watcher._debounce);
+    highlightWatchers.delete(doc);
+    console.log(`Highlight bridge: stopped watching "${doc}"`);
+  }
+}
+
+// Check state file for highlight_watchers config on startup and periodically
+function syncHighlightWatchers() {
+  try {
+    const state = loadState();
+    const desired = state.highlight_watchers || [];
+    const desiredDocs = new Set(desired.map(w => w.doc));
+
+    // Start new watchers
+    for (const w of desired) {
+      if (!highlightWatchers.has(w.doc)) {
+        startHighlightWatcher(w.doc, w.agent);
+      }
+    }
+
+    // Stop removed watchers
+    for (const doc of highlightWatchers.keys()) {
+      if (!desiredDocs.has(doc)) stopHighlightWatcher(doc);
+    }
+  } catch {}
+}
+
+// Sync watchers on startup and every 10s
+syncHighlightWatchers();
+setInterval(syncHighlightWatchers, 10000);
