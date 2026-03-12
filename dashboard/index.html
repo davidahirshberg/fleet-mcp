@@ -3048,6 +3048,16 @@ function applyChatTarget(container, agentId) {
   if (currentState) {
     const params = container._widgetParams || {}
     updateChatWidget(container, params, currentState)
+    // Scroll to bottom after tab switch — ResizeObserver won't fire because the log
+    // container's layout size doesn't change, only its scrollHeight.
+    const log = container.querySelector('.chat-log')
+    if (log) {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          log.scrollTop = log.scrollHeight
+        })
+      })
+    }
   }
 }
 
@@ -4231,6 +4241,17 @@ function createChatWidget(container, params) {
     // Handle /terminal commands
     if (msg === '/terminal' || msg === '/terminal on') { openTerminalCard(); return }
     if (msg === '/terminal off' || msg === '/terminal close') { closeTerminalCard(); return }
+    // /over — signal "I'm done talking, process the batch." Sent as a fleet message
+    // so the manager's PostToolUse hook picks it up and cancels pending batch timers.
+    if (msg === '/over') {
+      const target = container._chatTarget || null
+      fetch('/api/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: '/over', to: target }),
+      })
+      return
+    }
     // /queue — toggle queue mode. Messages held until each target goes idle.
     if (msg === '/queue' || msg.startsWith('/queue ')) {
       if (container._queueMode) {
@@ -4319,6 +4340,31 @@ function createChatWidget(container, params) {
     }
     const dnfFilter = container._labelFilter && container._labelFilter.length > 0 ? container._labelFilter : null
     const target = container._chatTarget
+    // Interrupt mode: send as interrupt (kitty ESC + chat) instead of regular chat.
+    // Checked before broadcast/no-target paths which would otherwise skip it.
+    if (container._interruptMode) {
+      const targets = container._modeTargets ? [...container._modeTargets] : (target ? [target] : [])
+      for (const t of targets) {
+        try {
+          const body = { agent: t }
+          if (msg) body.message = msg
+          const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
+          const data = await res.json()
+          if (data.error) {
+            log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed (${esc(t.substring(0,8))}): ${esc(data.error)}</div>`
+          }
+        } catch (err) {
+          log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>`
+        }
+      }
+      // Auto-toggle off after sending interrupt
+      container._interruptMode = false
+      container._modeTargets = null
+      container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
+      updatePillMode()
+      if (container._autoScroll !== false) smoothScrollToBottom(log)
+      return
+    }
     // Broadcast: no single target + filter active → send to all matching agents
     if (!target && dnfFilter && currentState) {
       const matchingAgents = (currentState.agents || []).filter(a => agentMatchesDnf(dnfFilter, a))
@@ -4357,30 +4403,6 @@ function createChatWidget(container, params) {
       return
     }
     container._autoScroll = true
-    // Interrupt mode: send as interrupt (kitty ESC + chat) instead of regular chat
-    if (container._interruptMode) {
-      const targets = container._modeTargets ? [...container._modeTargets] : [target]
-      for (const t of targets) {
-        try {
-          const body = { agent: t }
-          if (msg) body.message = msg
-          const res = await fetch('/api/interrupt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) })
-          const data = await res.json()
-          if (data.error) {
-            log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed (${esc(t.substring(0,8))}): ${esc(data.error)}</div>`
-          }
-        } catch (err) {
-          log.innerHTML += `<div class="chat-line" style="color:var(--orange)">Interrupt failed: ${esc(err.message)}</div>`
-        }
-      }
-      // Auto-toggle off after sending interrupt
-      container._interruptMode = false
-      container._modeTargets = null
-      container.querySelector('.chat-input-bar').classList.remove('interrupt-mode')
-      updatePillMode()
-      if (container._autoScroll !== false) smoothScrollToBottom(log)
-      return
-    }
     // Queue mode: buffer messages locally instead of sending
     if (container._queueMode) {
       if (!container._queueBuffer) container._queueBuffer = []
@@ -4881,10 +4903,10 @@ function renderFilterExpression(container, params) {
 // Noise tools to filter out of activity stream
 const ACTIVITY_NOISE = new Set([
   'wait_for_task', 'my_task', 'task_list', 'register', 'register_manager',
-  'task_check', 'unregister_manager', 'task_done',
+  'task_check', 'unregister_manager', 'task_done', 'timer',
   'mcp__fleet__wait_for_task', 'mcp__fleet__my_task', 'mcp__fleet__task_list',
   'mcp__fleet__register', 'mcp__fleet__register_manager', 'mcp__fleet__task_check',
-  'mcp__fleet__task_done',
+  'mcp__fleet__task_done', 'mcp__fleet__timer',
   'ToolSearch',
 ])
 // Fleet tool calls that should render as chat messages instead of tool cards
@@ -5262,8 +5284,13 @@ function renderChatLine(m, state) {
     : ''
   const lineClass = `chat-line${isFromUser ? ' from-user' : ''}${isAmbient ? ' ambient' : ''}`
   // Simplify nick display: skip →target when user is sender or receiver
+  // Diagonal arrows for manager hierarchy: ↗ agent→manager, ↘ manager→agent
+  const toAgent = (state.agents || []).find(a => a.id === m.to)
+  const isToManager = toAgent?.is_manager
+  const isFromManager = sender?.is_manager
+  const arrowHtml = isToManager ? '&#8599;' : isFromManager ? '&#8600;' : '&rarr;'
   const nickHtml = isAmbient
-    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">&rarr;</span>${toHtml}:</span>`
+    ? `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}</span><span style="color:var(--text-dim)">${arrowHtml}</span>${toHtml}:</span>`
     : `<span class="chat-nick"><span class="${fromCls}">${esc(nick)}:</span></span>`
   // Long message: block display for readability
   const rawLineCount = (m.text || '').split('\n').length
@@ -5312,6 +5339,7 @@ async function fetchChatHistory(container, before, agent) {
     console.warn('Chat history fetch failed:', e)
   }
   container._dbLoading = false
+  container._dbFetched = true
 }
 
 function repositionTldaIframes(container, log) {
@@ -5442,6 +5470,7 @@ function updateChatWidget(container, params, state) {
       container._dbHistory = null
       container._dbExhausted = false
       container._dbLoading = false
+      container._dbFetched = false
       container._dbTargetKey = currentTarget
     }
     if (container._dbHistory && container._dbHistory.length > 0) {
@@ -5662,11 +5691,11 @@ function updateChatWidget(container, params, state) {
   let topSentinel = ''
   if (hasMore) {
     topSentinel = `<div class="chat-load-more" data-total="${total}">↑ ${startIdx} older messages — click to load</div>`
-  } else if (total > 0 && !container._streamSource && !container._dbExhausted) {
+  } else if (total > 0 && !container._streamSource && !container._dbExhausted && container._dbFetched) {
     topSentinel = `<div class="chat-db-sentinel">↑ Load older messages</div>`
   } else if (total > 0 && container._dbExhausted) {
     topSentinel = `<div class="chat-db-sentinel" style="opacity:0.3;cursor:default">Beginning of chat history</div>`
-  } else if (total > 0) {
+  } else if (total > 0 && container._dbFetched) {
     topSentinel = `<div class="chat-stale-link">Older messages in search →</div>`
   }
   let renderedLines = topSentinel
@@ -5718,6 +5747,10 @@ function updateChatWidget(container, params, state) {
         const v = visible[j]
         if (v._activity && v.from === agentId) {
           group.push(v)
+          j++
+        } else if (v._timerCountdown && v.from === agentId) {
+          // Timer from same agent — skip over it (rendered as chat line),
+          // but don't break the activity group
           j++
         } else {
           break
@@ -6331,13 +6364,7 @@ function updateAgentsWidget(container, params, state) {
     if (compacting) {
       badges.push(`<span class="agent-badge compacting-badge">compacting...</span>`)
     }
-    if (a._timers?.length) {
-      for (const t of a._timers) {
-        const remaining = Math.max(0, Math.ceil((new Date(t.until) - Date.now()) / 1000))
-        const timerText = `⏰ ${remaining}s → ${t.message}`
-        badges.push(`<span class="agent-badge" style="color:var(--text-dim);opacity:0.6">${esc(timerText)}</span>`)
-      }
-    }
+    // Timers shown in chat timeline countdowns only, not duplicated here
     if (a._task && !a._task.synthetic) {
       const leadsMatch = a._task.description?.match(/^leads?\s+([\w-]+)$/i)
       if (leadsMatch) {
@@ -6372,7 +6399,10 @@ function updateAgentsWidget(container, params, state) {
         const toNick = agentLabel(state, m.to)
         const fromCls = getNickClass(m.from, state)
         const toCls = getNickClass(m.to, state)
-        return `<div class="msg-item"><div class="msg-header"><span class="msg-nick"><span class="${fromCls}">${esc(fromNick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}">${esc(toNick)}</span></span><span class="msg-time">${timeStr}</span></div><div class="msg-text">${renderMarkdown(esc(m.text || ''))}</div></div>`
+        const _toA = (state.agents || []).find(x => x.id === m.to)
+        const _fromA = (state.agents || []).find(x => x.id === m.from)
+        const _arrow = _toA?.is_manager ? '&#8599;' : _fromA?.is_manager ? '&#8600;' : '&rarr;'
+        return `<div class="msg-item"><div class="msg-header"><span class="msg-nick"><span class="${fromCls}">${esc(fromNick)}</span><span style="color:var(--text-dim)">${_arrow}</span><span class="${toCls}">${esc(toNick)}</span></span><span class="msg-time">${timeStr}</span></div><div class="msg-text">${renderMarkdown(esc(m.text || ''))}</div></div>`
       }).join('')}</div></span></span>` : ''}</td>
       <td><span class="agent-seen ${dotClass}" title="${dotTip}">${seenText}</span></td>
       <td class="agent-ctx-cell">${a.context_pct != null ? `<span class="agent-ctx" style="opacity:${a.context_pct > 80 ? '0.9' : a.context_pct > 60 ? '0.6' : '0.4'}">${a.context_pct}%</span>` : ''}</td>
@@ -6538,7 +6568,10 @@ function updateAgentsWidget(container, params, state) {
           const t = new Date(m.timestamp)
           const timeStr = t.toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'})
           const text = m.text ? renderMarkdown(esc(m.text.length > 200 ? m.text.slice(0, 200) + '…' : m.text)) : ''
-          return `<div class="atp-msg"><span class="${fromCls}" style="font-weight:500">${esc(fromNick)}</span><span style="color:var(--text-dim)">&rarr;</span><span class="${toCls}" style="font-weight:500">${esc(toNick)}</span> <span style="color:var(--text-dim);font-size:9px">${timeStr}</span><div style="margin-top:1px">${text}</div></div>`
+          const _toA = (state.agents || []).find(x => x.id === m.to)
+          const _fromA = (state.agents || []).find(x => x.id === m.from)
+          const _arrow = _toA?.is_manager ? '&#8599;' : _fromA?.is_manager ? '&#8600;' : '&rarr;'
+          return `<div class="atp-msg"><span class="${fromCls}" style="font-weight:500">${esc(fromNick)}</span><span style="color:var(--text-dim)">${_arrow}</span><span class="${toCls}" style="font-weight:500">${esc(toNick)}</span> <span style="color:var(--text-dim);font-size:9px">${timeStr}</span><div style="margin-top:1px">${text}</div></div>`
         }).join('')
         previewEl = document.createElement('div')
         previewEl.className = 'agent-terminal-preview agent-chat-preview'
